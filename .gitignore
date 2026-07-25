@@ -1,0 +1,19 @@
+# dependencies
+node_modules/
+
+# local runtime data (regenerates on npm start)
+escrow-service/data/*.sqlite3
+escrow-service/data/*.sqlite3-shm
+escrow-service/data/*.sqlite3-wal
+
+# env secrets - never commit real keys
+.env
+escrow-service/.env
+
+# scratch/leftover
+_to_delete/
+escrow-service/_to_delete/
+
+# OS/editor
+.DS_Store
+Thumbs.db

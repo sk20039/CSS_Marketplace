@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Order Status - Escrow Demo</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+<header>
+  <h1>USA Cricket Marketplace - Escrow Demo</h1>
+  <nav>
+    <a href="index.html">Checkout</a>
+    <a href="admin.html">Admin</a>
+  </nav>
+</header>
+<main>
+  <div class="card">
+    <h2>Order <span id="orderIdLabel"></span> <span id="statusBadge"></span></h2>
+    <div class="row">
+      <div>
+        <p class="muted">Amount: <b id="amount"></b></p>
+        <p class="muted">Platform fee (3%): <b id="fee"></b></p>
+        <p class="muted">Seller payout: <b id="payout"></b></p>
+      </div>
+      <div>
+        <p class="muted">Stripe PaymentIntent: <code id="pi"></code></p>
+        <p class="muted">Stripe Transfer: <code id="transfer"></code></p>
+        <p class="muted">Stripe Refund: <code id="refund"></code></p>
+      </div>
+    </div>
+    <p class="muted">Delivered at: <span id="deliveredAt"></span> | Window expires: <span id="windowExpires"></span></p>
+
+    <div id="actions"></div>
+    <div id="error" class="error"></div>
+    <div id="notice" class="notice"></div>
+  </div>
+
+  <div class="card">
+    <h3>Timeline</h3>
+    <table>
+      <thead><tr><th>#</th><th>Event</th><th>When</th><th>Payload</th></tr></thead>
+      <tbody id="timelineBody"></tbody>
+    </table>
+  </div>
+</main>
+
+<script src="js/api.js"></script>
+<script>
+const params = new URLSearchParams(window.location.search);
+const orderId = params.get('id');
+
+function badge(status) {
+  return `<span class="badge ${status}">${status}</span>`;
+}
+
+function renderActions(order) {
+  const box = document.getElementById('actions');
+  box.innerHTML = '';
+
+  function addButton(label, cls, onClick) {
+    const btn = document.createElement('button');
+    btn.textContent = label;
+    btn.className = cls;
+    btn.addEventListener('click', onClick);
+    box.appendChild(btn);
+  }
+
+  if (order.status === 'CREATED') {
+    addButton('Capture Payment', 'primary', () => runAction(`/orders/${order.id}/capture`));
+  }
+  if (order.status === 'HELD') {
+    addButton('Mark Shipped (seller)', 'primary', () => runAction(`/orders/${order.id}/ship`));
+  }
+  if (order.status === 'SHIPPED') {
+    addButton('Mark Delivered', 'primary', () => runAction(`/orders/${order.id}/deliver`));
+  }
+  if (order.status === 'DELIVERED') {
+    addButton('Confirm Receipt & Release Now (buyer)', 'primary', () => runAction(`/orders/${order.id}/confirm`));
+
+    const reasonWrap = document.createElement('div');
+    reasonWrap.innerHTML = `
+      <label for="disputeReason">Raise a dispute (buyer)</label>
+      <textarea id="disputeReason" placeholder="e.g. major undisclosed crack in the bat"></textarea>
+    `;
+    box.appendChild(reasonWrap);
+    addButton('File Dispute', 'danger', () => {
+      const reason = document.getElementById('disputeReason').value;
+      runAction(`/orders/${order.id}/dispute`, { reason });
+    });
+
+    if (order.window_expires_at) {
+      const note = document.createElement('p');
+      note.className = 'muted';
+      note.textContent = `Auto-release will fire after the 48h window (${fmtDate(order.window_expires_at)}) if no dispute is filed and the buyer does not confirm early.`;
+      box.appendChild(note);
+    }
+  }
+  if (order.status === 'DISPUTED') {
+    const note = document.createElement('p');
+    note.className = 'notice';
+    note.textContent = `Dispute filed (category: ${order.dispute_category || 'uncategorized'}). Reason: "${order.dispute_reason_text || ''}". Awaiting admin resolution - see the Admin page.`;
+    box.appendChild(note);
+  }
+  if (order.status === 'RELEASED') {
+    const note = document.createElement('p');
+    note.className = 'notice';
+    note.textContent = 'Funds released to seller. This order is complete.';
+    box.appendChild(note);
+  }
+  if (order.status === 'REFUNDED') {
+    const note = document.createElement('p');
+    note.className = 'notice';
+    note.textContent = 'Order refunded to buyer following dispute resolution.';
+    box.appendChild(note);
+  }
+}
+
+function render(order) {
+  document.getElementById('orderIdLabel').textContent = `#${order.id}`;
+  document.getElementById('statusBadge').innerHTML = badge(order.status);
+  document.getElementById('amount').textContent = money(order.amount_cents);
+  document.getElementById('fee').textContent = money(order.platform_fee_cents);
+  document.getElementById('payout').textContent = money(order.seller_payout_cents);
+  document.getElementById('pi').textContent = order.stripe_payment_intent_id || '-';
+  document.getElementById('transfer').textContent = order.stripe_transfer_id || '-';
+  document.getElementById('refund').textContent = order.stripe_refund_id || '-';
+  document.getElementById('deliveredAt').textContent = fmtDate(order.delivered_at);
+  document.getElementById('windowExpires').textContent = fmtDate(order.window_expires_at);
+
+  const tbody = document.getElementById('timelineBody');
+  tbody.innerHTML = '';
+  order.events.forEach(ev => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${ev.id}</td><td>${ev.event_type}</td><td>${fmtDate(ev.created_at)}</td><td><code>${JSON.stringify(ev.payload)}</code></td>`;
+    tbody.appendChild(tr);
+  });
+
+  renderActions(order);
+}
+
+async function load() {
+  document.getElementById('error').textContent = '';
+  try {
+    const order = await api('GET', `/orders/${orderId}`);
+    render(order);
+  } catch (err) {
+    document.getElementById('error').textContent = err.message;
+  }
+}
+
+async function runAction(url, body) {
+  document.getElementById('error').textContent = '';
+  document.getElementById('notice').textContent = '';
+  try {
+    await api('POST', url, body || undefined);
+    document.getElementById('notice').textContent = 'Action completed.';
+    await load();
+  } catch (err) {
+    document.getElementById('error').textContent = err.message;
+  }
+}
+
+if (!orderId) {
+  document.getElementById('error').textContent = 'No order id provided in URL (?id=...)';
+} else {
+  load();
+}
+</script>
+</body>
+</html>

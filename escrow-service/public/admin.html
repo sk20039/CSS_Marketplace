@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Admin - Escrow Demo</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+<header>
+  <h1>USA Cricket Marketplace - Escrow Demo</h1>
+  <nav>
+    <a href="index.html">Checkout</a>
+    <a href="admin.html">Admin</a>
+  </nav>
+</header>
+<main>
+  <div class="card">
+    <h2>Admin: Disputed &amp; Pending Orders</h2>
+    <p class="muted">
+      Disputed orders need a manual release/refund decision. Delivered orders are shown so you can
+      watch them auto-release once their 48h window passes (or trigger the sweep manually below).
+    </p>
+    <button class="secondary" id="refreshBtn">Refresh</button>
+    <button class="warn" id="sweepBtn">Run Release Check Now</button>
+    <div id="notice" class="notice"></div>
+    <div id="error" class="error"></div>
+  </div>
+
+  <div class="card">
+    <h3>Disputed orders</h3>
+    <table>
+      <thead><tr><th>Order</th><th>Reason</th><th>Category</th><th>Amount</th><th>Actions</th></tr></thead>
+      <tbody id="disputedBody"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3>Delivered orders (awaiting confirm / auto-release)</h3>
+    <table>
+      <thead><tr><th>Order</th><th>Delivered at</th><th>Window expires</th><th>Amount</th><th></th></tr></thead>
+      <tbody id="deliveredBody"></tbody>
+    </table>
+  </div>
+</main>
+
+<script src="js/api.js"></script>
+<script>
+async function loadDisputed() {
+  const orders = await api('GET', '/orders?status=DISPUTED');
+  const tbody = document.getElementById('disputedBody');
+  tbody.innerHTML = '';
+  if (orders.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="muted">No disputed orders.</td></tr>';
+    return;
+  }
+  orders.forEach(o => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><a href="order.html?id=${o.id}">#${o.id}</a></td>
+      <td>${o.dispute_reason_text || ''}</td>
+      <td>${o.dispute_category || 'uncategorized'}</td>
+      <td>${money(o.amount_cents)}</td>
+      <td>
+        <button class="primary" data-action="release" data-id="${o.id}">Release to seller</button>
+        <button class="danger" data-action="refund" data-id="${o.id}">Refund buyer</button>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+  tbody.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => resolve(btn.dataset.id, btn.dataset.action));
+  });
+}
+
+async function loadDelivered() {
+  const orders = await api('GET', '/orders?status=DELIVERED');
+  const tbody = document.getElementById('deliveredBody');
+  tbody.innerHTML = '';
+  if (orders.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" class="muted">No delivered orders pending release.</td></tr>';
+    return;
+  }
+  orders.forEach(o => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><a href="order.html?id=${o.id}">#${o.id}</a></td>
+      <td>${fmtDate(o.delivered_at)}</td>
+      <td>${fmtDate(o.window_expires_at)}</td>
+      <td>${money(o.amount_cents)}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+async function resolve(id, action) {
+  document.getElementById('error').textContent = '';
+  document.getElementById('notice').textContent = '';
+  try {
+    await api('POST', `/admin/orders/${id}/resolve`, { action });
+    document.getElementById('notice').textContent = `Order #${id} resolved (${action}).`;
+    await refreshAll();
+  } catch (err) {
+    document.getElementById('error').textContent = err.message;
+  }
+}
+
+async function refreshAll() {
+  document.getElementById('error').textContent = '';
+  try {
+    await Promise.all([loadDisputed(), loadDelivered()]);
+  } catch (err) {
+    document.getElementById('error').textContent = err.message;
+  }
+}
+
+document.getElementById('refreshBtn').addEventListener('click', refreshAll);
+document.getElementById('sweepBtn').addEventListener('click', async () => {
+  document.getElementById('error').textContent = '';
+  try {
+    const result = await api('POST', '/admin/run-release-check');
+    document.getElementById('notice').textContent =
+      `Sweep checked ${result.candidateCount} candidate(s), released [${result.releasedOrderIds.join(', ') || 'none'}].`;
+    await refreshAll();
+  } catch (err) {
+    document.getElementById('error').textContent = err.message;
+  }
+});
+
+refreshAll();
+</script>
+</body>
+</html>

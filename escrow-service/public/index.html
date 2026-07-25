@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Checkout - Cricket Gear Marketplace (Escrow Demo)</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+<header>
+  <h1>USA Cricket Marketplace - Escrow Demo</h1>
+  <nav>
+    <a href="index.html">Checkout</a>
+    <a href="admin.html">Admin</a>
+  </nav>
+</header>
+<main>
+  <div class="card">
+    <h2>Buy a listing</h2>
+    <p class="muted">
+      Creates an order (Stripe PaymentIntent, manual capture) and then simulates the buyer
+      paying, which captures the payment and moves the order into escrow (<code>HELD</code>).
+    </p>
+
+    <label for="buyer">Buyer</label>
+    <select id="buyer"></select>
+
+    <label for="listing">Listing</label>
+    <select id="listing"></select>
+
+    <div id="feeBreakdown" class="muted" style="margin-top: 10px;"></div>
+
+    <button class="primary" id="buyBtn">Create Order &amp; Pay</button>
+
+    <div id="error" class="error"></div>
+    <div id="result" class="notice"></div>
+  </div>
+
+  <div class="card">
+    <h3>Jump to an existing order</h3>
+    <label for="orderIdInput">Order ID</label>
+    <input type="text" id="orderIdInput" placeholder="e.g. 1" />
+    <button class="secondary" id="gotoBtn">View order</button>
+  </div>
+</main>
+
+<script src="js/api.js"></script>
+<script>
+let listings = [];
+
+async function loadOptions() {
+  const [users, listingsResp] = await Promise.all([
+    api('GET', '/api/users'),
+    api('GET', '/api/listings'),
+  ]);
+  listings = listingsResp;
+
+  const buyerSelect = document.getElementById('buyer');
+  users.filter(u => u.role === 'buyer').forEach(u => {
+    const opt = document.createElement('option');
+    opt.value = u.id;
+    opt.textContent = `${u.name} (${u.email})`;
+    buyerSelect.appendChild(opt);
+  });
+
+  const listingSelect = document.getElementById('listing');
+  listings.forEach(l => {
+    const opt = document.createElement('option');
+    opt.value = l.id;
+    opt.textContent = `${l.title} - ${money(l.price_cents)} (seller: ${l.seller_name})`;
+    listingSelect.appendChild(opt);
+  });
+
+  updateFeeBreakdown();
+  listingSelect.addEventListener('change', updateFeeBreakdown);
+}
+
+function updateFeeBreakdown() {
+  const listingId = Number(document.getElementById('listing').value);
+  const listing = listings.find(l => l.id === listingId);
+  const box = document.getElementById('feeBreakdown');
+  if (!listing) { box.textContent = ''; return; }
+  const fee = Math.round(listing.price_cents * 0.03);
+  const payout = listing.price_cents - fee;
+  box.innerHTML = `Price: <b>${money(listing.price_cents)}</b> &nbsp;|&nbsp; ` +
+    `Platform fee (3%): <b>${money(fee)}</b> &nbsp;|&nbsp; ` +
+    `Seller payout: <b>${money(payout)}</b>`;
+}
+
+async function buy() {
+  const errBox = document.getElementById('error');
+  const resultBox = document.getElementById('result');
+  errBox.textContent = '';
+  resultBox.textContent = '';
+  const buyerId = Number(document.getElementById('buyer').value);
+  const listingId = Number(document.getElementById('listing').value);
+  try {
+    const order = await api('POST', '/orders', { listing_id: listingId, buyer_id: buyerId });
+    resultBox.textContent = `Order #${order.id} created (status ${order.status}). Capturing payment...`;
+    const captured = await api('POST', `/orders/${order.id}/capture`);
+    resultBox.textContent = `Order #${captured.id} paid and held in escrow. Redirecting...`;
+    setTimeout(() => { window.location.href = `order.html?id=${captured.id}`; }, 700);
+  } catch (err) {
+    errBox.textContent = err.message;
+  }
+}
+
+document.getElementById('buyBtn').addEventListener('click', buy);
+document.getElementById('gotoBtn').addEventListener('click', () => {
+  const id = document.getElementById('orderIdInput').value.trim();
+  if (id) window.location.href = `order.html?id=${id}`;
+});
+
+loadOptions().catch(err => {
+  document.getElementById('error').textContent = err.message;
+});
+</script>
+</body>
+</html>
