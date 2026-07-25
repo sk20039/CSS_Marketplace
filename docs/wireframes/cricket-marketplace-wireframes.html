@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<script type="application/json" id="cowork-artifact-meta">
+{
+  "name": "Cricket Marketplace Wireframes",
+  "schemaVersion": 1,
+  "description": "Low-fidelity wireframes for all 9 screens in the USA Cricket Marketplace PRD: Home, Marketplace Listing, Product Details, Seller Dashboard, Buyer Dashboard, Checkout, Order Tracking, Admin Dashboard, and Dispute Resolution. Tab navigation switches between screens.",
+  "mcpTools": [],
+  "mcpServerNames": []
+}
+</script>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>USA Cricket Marketplace — Clickable Prototype</title>
+<style>
+  :root{
+    --ink:#1f2328;
+    --line:#8a9099;
+    --line-soft:#c7cbd1;
+    --bg:#f4f5f6;
+    --panel:#ffffff;
+    --muted:#6b7280;
+    --accent:#2f6f4f;
+    --accent-soft:#e4ede8;
+    --danger:#a83232;
+    --danger-soft:#f6e6e6;
+    --radius:6px;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    font-family:"Helvetica Neue",Arial,sans-serif;
+    background:var(--bg);
+    color:var(--ink);
+  }
+  header.top{
+    background:var(--panel);
+    border-bottom:1px solid var(--line-soft);
+    padding:14px 24px;
+    position:sticky;
+    top:0;
+    z-index:50;
+  }
+  header.top .row{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;}
+  header.top h1{margin:0 0 2px 0;font-size:16px;letter-spacing:.2px;}
+  header.top p{margin:0;font-size:11.5px;color:var(--muted);}
+  .proto-badge{
+    font-size:10px;font-weight:700;letter-spacing:.4px;
+    background:var(--ink);color:#fff;
+    padding:4px 10px;border-radius:20px;white-space:nowrap;
+  }
+  .toolbar{
+    display:flex;align-items:center;gap:8px;
+    padding:8px 24px;background:#fafafb;border-bottom:1px solid var(--line-soft);
+    position:sticky;top:0;z-index:48;
+  }
+  .toolbar button.nav-ctrl{
+    font-family:inherit;font-size:11px;padding:6px 12px;border-radius:5px;
+    border:1px solid var(--line-soft);background:#fff;color:var(--ink);cursor:pointer;
+  }
+  .toolbar button.nav-ctrl:disabled{opacity:.35;cursor:default;}
+  #crumb{font-size:11px;color:var(--muted);margin-left:4px;}
+  #crumb b{color:var(--ink);}
+  nav.tabs{
+    display:flex;flex-wrap:wrap;gap:6px;
+    padding:10px 24px;background:var(--panel);border-bottom:1px solid var(--line-soft);
+    position:sticky;top:37px;z-index:47;
+  }
+  nav.tabs button{
+    font-family:inherit;font-size:12px;padding:7px 12px;border-radius:20px;
+    border:1px solid var(--line-soft);background:#fff;color:var(--muted);cursor:pointer;
+  }
+  nav.tabs button.active{background:var(--ink);color:#fff;border-color:var(--ink);}
+  main{max-width:1180px;margin:24px auto 80px;padding:0 24px;}
+  .screen{display:none;}
+  .screen.active{display:block;animation:fadein .18s ease;}
+  @keyframes fadein{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:none;}}
+  .frame-label{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin:0 0 8px 2px;}
+  .device{background:var(--panel);border:1px solid var(--line-soft);border-radius:10px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06);}
+  .wf-box{border:1.5px solid var(--line);border-radius:var(--radius);padding:10px;position:relative;}
+  .wf-box .tag{position:absolute;top:-9px;left:8px;background:var(--bg);padding:0 5px;font-size:9px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);}
+  .device .wf-box .tag, .device .tag{background:#fff;}
+  .placeholder-img{background:repeating-linear-gradient(45deg,#eef0f2,#eef0f2 8px,#e4e6e9 8px,#e4e6e9 16px);border:1.5px dashed var(--line-soft);border-radius:var(--radius);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11px;text-align:center;}
+  .btn{display:inline-block;border:1.5px solid var(--ink);border-radius:5px;padding:8px 16px;font-size:12px;font-weight:600;text-align:center;color:var(--ink);background:#fff;cursor:pointer;user-select:none;transition:transform .08s ease, box-shadow .08s ease;}
+  .btn:hover{box-shadow:0 2px 6px rgba(0,0,0,.12);}
+  .btn:active{transform:scale(.97);}
+  .btn.primary{background:var(--ink);color:#fff;}
+  .btn.accent{background:var(--accent);border-color:var(--accent);color:#fff;}
+  .btn.danger{background:#fff;border-color:var(--danger);color:var(--danger);}
+  .btn.small{padding:5px 10px;font-size:11px;}
+  .btn.disabled,.btn:disabled{opacity:.4;pointer-events:none;}
+  .line{height:9px;background:var(--line-soft);border-radius:3px;}
+  .line.short{width:40%;}
+  .line.mid{width:65%;}
+  .line.long{width:90%;}
+  .pill{font-size:10px;padding:3px 9px;border-radius:20px;border:1px solid var(--line-soft);color:var(--muted);display:inline-block;}
+  .badge-escrow{font-size:10px;padding:3px 9px;border-radius:20px;background:var(--accent-soft);color:var(--accent);border:1px solid var(--accent);display:inline-block;font-weight:600;}
+  .badge-danger{font-size:10px;padding:3px 9px;border-radius:20px;background:var(--danger-soft);color:var(--danger);border:1px solid var(--danger);display:inline-block;font-weight:600;}
+  .badge-neutral{font-size:10px;padding:3px 9px;border-radius:20px;background:#eee;color:var(--muted);border:1px solid var(--line-soft);display:inline-block;font-weight:600;}
+  .grid{display:grid;gap:14px;}
+  .g2{grid-template-columns:1fr 1fr;}
+  .g3{grid-template-columns:1fr 1fr 1fr;}
+  .g4{grid-template-columns:1fr 1fr 1fr 1fr;}
+  .g-sidebar{grid-template-columns:220px 1fr;}
+  .g-checkout{grid-template-columns:1.4fr 1fr;}
+  .navbar-mock{display:flex;align-items:center;justify-content:space-between;padding:12px 18px;border-bottom:1.5px solid var(--line);flex-wrap:wrap;gap:10px;}
+  .navbar-mock .brand{font-weight:700;font-size:14px;cursor:pointer;}
+  .navbar-mock .links{display:flex;gap:16px;font-size:11px;color:var(--muted);flex-wrap:wrap;}
+  .navbar-mock .links span{cursor:pointer;}
+  .navbar-mock .links span:hover{color:var(--ink);text-decoration:underline;}
+  .section{padding:20px;border-bottom:1px solid #eee;}
+  .section:last-child{border-bottom:none;}
+  .card{border:1.5px solid var(--line-soft);border-radius:var(--radius);padding:10px;background:#fff;cursor:pointer;transition:box-shadow .12s ease, transform .12s ease;}
+  .card:hover{box-shadow:0 4px 12px rgba(0,0,0,.10);transform:translateY(-2px);}
+  .card .placeholder-img{height:110px;margin-bottom:8px;}
+  .step-track{display:flex;align-items:center;gap:0;margin:14px 0 20px;}
+  .step{display:flex;flex-direction:column;align-items:center;flex:1;font-size:10px;color:var(--muted);text-align:center;}
+  .step .dot{width:22px;height:22px;border-radius:50%;border:2px solid var(--line-soft);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--muted);background:#fff;margin-bottom:6px;transition:all .2s ease;}
+  .step.done .dot{background:var(--accent);border-color:var(--accent);color:#fff;}
+  .step.current .dot{border-color:var(--ink);color:var(--ink);font-weight:700;}
+  .step-connector{flex:1;height:2px;background:var(--line-soft);margin-top:-22px;}
+  table.mock-table{width:100%;border-collapse:collapse;font-size:11px;}
+  table.mock-table th{text-align:left;color:var(--muted);font-weight:600;padding:8px 10px;border-bottom:1.5px solid var(--line);font-size:10px;text-transform:uppercase;letter-spacing:.4px;}
+  table.mock-table td{padding:9px 10px;border-bottom:1px solid #eee;vertical-align:middle;}
+  .stat-box{border:1.5px solid var(--line-soft);border-radius:var(--radius);padding:12px;text-align:center;}
+  .stat-box .num{font-size:18px;font-weight:700;}
+  .stat-box .cap{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px;}
+  .annot{font-size:11px;color:var(--muted);margin-top:16px;padding:10px 12px;background:#fbfbfc;border-left:3px solid var(--line-soft);}
+  .annot b{color:var(--ink);}
+  .flex{display:flex;}
+  .between{justify-content:space-between;}
+  .center{align-items:center;}
+  .gap8{gap:8px;}
+  .gap12{gap:12px;}
+  .mt8{margin-top:8px;}
+  .mt12{margin-top:12px;}
+  .mt16{margin-top:16px;}
+  .mb8{margin-bottom:8px;}
+  .link-back{font-size:11px;color:var(--muted);cursor:pointer;display:inline-block;margin-bottom:12px;}
+  .link-back:hover{color:var(--ink);text-decoration:underline;}
+  .clickable-hint{outline-offset:2px;}
+  .clickable-hint:hover{outline:1.5px dashed var(--accent);}
+  input.mockfield, select.mockfield{
+    width:100%;font-family:inherit;font-size:11px;padding:7px 8px;border:1px solid var(--line-soft);border-radius:4px;color:var(--ink);background:#fcfcfd;
+  }
+  label.mocklabel{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px;}
+  .field{margin-bottom:12px;}
+  .upload-tile{height:80px;cursor:pointer;}
+  .upload-tile:hover{outline:1.5px dashed var(--accent);}
+  #toast-wrap{position:fixed;bottom:20px;right:20px;z-index:999;display:flex;flex-direction:column;gap:8px;align-items:flex-end;}
+  .toast{background:var(--ink);color:#fff;font-size:12px;padding:10px 16px;border-radius:6px;box-shadow:0 4px 14px rgba(0,0,0,.25);opacity:0;transform:translateY(6px);transition:all .25s ease;max-width:280px;}
+  .toast.show{opacity:1;transform:none;}
+  .step-mini{display:flex;gap:6px;margin-bottom:16px;}
+  .step-mini span{font-size:10px;padding:5px 10px;border-radius:20px;background:#eee;color:var(--muted);}
+  .step-mini span.on{background:var(--ink);color:#fff;}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="row">
+    <div>
+      <h1>USA Cricket Equipment Marketplace — Clickable Prototype</h1>
+      <p>Click cards, buttons, and nav links below to move through the flow, just like a real app.</p>
+    </div>
+    <span class="proto-badge">▶ CLICKABLE PROTOTYPE</span>
+  </div>
+</header>
+
+<div class="toolbar">
+  <button class="nav-ctrl" id="backBtn" onclick="goBack()">‹ Back</button>
+  <button class="nav-ctrl" onclick="goTo('home', true)">⌂ Home</button>
+  <span id="crumb"></span>
+</div>
+
+<nav class="tabs" id="tabs"></nav>
+
+<main id="screens"></main>
+<div id="toast-wrap"></div>
+
+<script>
+const screens = [
+  {id:'home', label:'Home'},
+  {id:'listing', label:'Marketplace Listing'},
+  {id:'product', label:'Product Details'},
+  {id:'newlisting', label:'Create Listing'},
+  {id:'seller', label:'Seller Dashboard'},
+  {id:'buyer', label:'Buyer Dashboard'},
+  {id:'checkout', label:'Checkout'},
+  {id:'tracking', label:'Order Tracking'},
+  {id:'admin', label:'Admin Dashboard'},
+  {id:'dispute', label:'Dispute Resolution'},
+];
+
+const tabsEl = document.getElementById('tabs');
+const backBtn = document.getElementById('backBtn');
+const crumbEl = document.getElementById('crumb');
+let history_ = [];
+let current = 'home';
+
+screens.forEach((s)=>{
+  const btn = document.createElement('button');
+  btn.textContent = s.label;
+  btn.dataset.target = s.id;
+  btn.onclick = ()=>goTo(s.id, true);
+  tabsEl.appendChild(btn);
+});
+
+function labelOf(id){ const s = screens.find(x=>x.id===id); return s ? s.label : id; }
+
+function showScreen(id){
+  document.querySelectorAll('.screen').forEach(el=>el.classList.remove('active'));
+  document.getElementById('screen-'+id).classList.add('active');
+  document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.toggle('active', b.dataset.target===id));
+  crumbEl.innerHTML = 'You are here: <b>'+labelOf(id)+'</b>';
+  window.scrollTo({top:0, behavior:'smooth'});
+}
+
+function goTo(id, isJump){
+  if(id === current) return;
+  history_.push(current);
+  current = id;
+  backBtn.disabled = history_.length === 0;
+  showScreen(id);
+}
+
+function goBack(){
+  if(history_.length === 0) return;
+  const prev = history_.pop();
+  current = prev;
+  backBtn.disabled = history_.length === 0;
+  showScreen(prev);
+}
+
+function toast(msg){
+  const wrap = document.getElementById('toast-wrap');
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = msg;
+  wrap.appendChild(el);
+  requestAnimationFrame(()=>el.classList.add('show'));
+  setTimeout(()=>{
+    el.classList.remove('show');
+    setTimeout(()=>el.remove(), 300);
+  }, 2600);
+}
+
+// ---- in-place state actions ----
+function markShipped(btn, pillId){
+  const pill = document.getElementById(pillId);
+  pill.textContent = 'Shipped — In Transit';
+  pill.className = 'pill';
+  btn.textContent = 'Shipped ✓';
+  btn.classList.add('disabled');
+  toast('Order marked as shipped. Buyer notified.');
+}
+
+function confirmDelivery(rowId){
+  const pill = document.getElementById(rowId);
+  pill.textContent = 'Completed';
+  pill.className = 'pill';
+  toast('Delivery confirmed — funds released to seller.');
+}
+
+function reviewListing(rowId, approve, btn){
+  const pill = document.getElementById(rowId);
+  if(approve){
+    pill.textContent = 'Approved — Live';
+    pill.className = 'pill';
+    toast('Listing approved and published.');
+  } else {
+    pill.textContent = 'Rejected';
+    pill.className = 'badge-danger';
+    toast('Listing rejected — seller notified with reason.');
+  }
+  const row = btn.closest('tr');
+  row.querySelectorAll('.btn').forEach(b=>b.classList.add('disabled'));
+}
+
+function releaseFunds(){
+  const step4 = document.getElementById('step4');
+  step4.classList.remove('current');
+  step4.classList.add('done');
+  step4.querySelector('.dot').textContent = '✓';
+  document.getElementById('escrowBadge').textContent = '✓ Funds Released to Seller';
+  document.getElementById('confirmBtn').textContent = 'Delivery Confirmed ✓';
+  document.getElementById('confirmBtn').classList.add('disabled');
+  toast('Funds released to seller. Thanks for confirming!');
+}
+
+function ruleDispute(outcome, btn){
+  const badge = document.getElementById('disputeStatus');
+  badge.textContent = outcome === 'buyer' ? 'Resolved — Refunded Buyer' : (outcome === 'seller' ? 'Resolved — Released to Seller' : 'Awaiting More Info');
+  badge.className = outcome === 'seller' ? 'badge-escrow' : (outcome === 'buyer' ? 'badge-neutral' : 'badge-danger');
+  toast(outcome === 'buyer' ? 'Buyer refunded. Case closed.' : outcome === 'seller' ? 'Funds released to seller. Case closed.' : 'Requested more info from both parties.');
+  btn.closest('.flex').querySelectorAll('.btn').forEach(b=>b.classList.add('disabled'));
+}
+
+function publishListing(){
+  toast('Listing submitted for admin review.');
+  goTo('seller', true);
+}
+
+function saveDraft(){
+  toast('Draft saved.');
+}
+</script>
+
+<!-- ================= HOME ================= -->
+<div class="screen active" id="screen-home">
+  <p class="frame-label">01 · Home Page</p>
+  <div class="device">
+    <div class="navbar-mock">
+      <div class="brand" onclick="goTo('home')">🏏 [Logo] CricketGear USA</div>
+      <div class="links">
+        <span onclick="goTo('listing')">Browse</span>
+        <span onclick="goTo('newlisting')">Sell</span>
+        <span onclick="toast('Opens How It Works page (escrow explainer).')">How It Works</span>
+        <span onclick="goTo('buyer')">Sign In</span>
+      </div>
+      <div class="btn primary small" onclick="goTo('newlisting')">Sell a Bat</div>
+    </div>
+    <div class="section">
+      <div class="wf-box" style="padding:24px;">
+        <span class="tag">Hero</span>
+        <div class="line long mb8" style="height:16px;width:60%;"></div>
+        <div class="line mid mb8"></div>
+        <div class="flex gap8 mt12">
+          <div class="wf-box clickable-hint" style="flex:1;padding:8px;cursor:pointer;" onclick="goTo('listing')"><span class="tag">Search Bar</span><div class="line short" style="margin:6px 0;">Search brand, model, city…</div></div>
+          <div class="btn accent" onclick="goTo('listing')">Search</div>
+        </div>
+        <div class="flex gap8 mt12">
+          <span class="badge-escrow">🔒 Escrow Protected Payments</span>
+          <span class="pill">Verified Sellers</span>
+          <span class="pill">USA Only</span>
+        </div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="frame-label" style="margin-bottom:10px;">Shop by Category</div>
+      <div class="grid g4">
+        <div class="card" style="text-align:center;" onclick="goTo('listing')"><div class="placeholder-img" style="height:60px;">Bats</div></div>
+        <div class="card" style="text-align:center;" onclick="goTo('listing')"><div class="placeholder-img" style="height:60px;">Gloves</div></div>
+        <div class="card" style="text-align:center;" onclick="goTo('listing')"><div class="placeholder-img" style="height:60px;">Pads</div></div>
+        <div class="card" style="text-align:center;" onclick="goTo('listing')"><div class="placeholder-img" style="height:60px;">Helmets</div></div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="flex between center mb8">
+        <div class="frame-label" style="margin:0;">Featured Listings</div>
+        <span class="pill" style="cursor:pointer;" onclick="goTo('listing')">View All →</span>
+      </div>
+      <div class="grid g4">
+        <div class="card" onclick="goTo('product')"><div class="placeholder-img">Bat Photo</div><div class="line mid mt8"></div><div class="line short mt8"></div><div class="flex between mt8"><b style="font-size:12px;">$220</b><span class="pill">Good</span></div></div>
+        <div class="card" onclick="goTo('product')"><div class="placeholder-img">Bat Photo</div><div class="line mid mt8"></div><div class="line short mt8"></div><div class="flex between mt8"><b style="font-size:12px;">$180</b><span class="pill">Like New</span></div></div>
+        <div class="card" onclick="goTo('product')"><div class="placeholder-img">Bat Photo</div><div class="line mid mt8"></div><div class="line short mt8"></div><div class="flex between mt8"><b style="font-size:12px;">$95</b><span class="pill">Fair</span></div></div>
+        <div class="card" onclick="goTo('product')"><div class="placeholder-img">Bat Photo</div><div class="line mid mt8"></div><div class="line short mt8"></div><div class="flex between mt8"><b style="font-size:12px;">$340</b><span class="pill">New</span></div></div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="wf-box" style="text-align:center;padding:20px;">
+        <span class="tag">Trust Strip</span>
+        <div class="grid g3">
+          <div><div class="line short" style="margin:0 auto;"></div><p style="font-size:11px;color:var(--muted);">Funds held in escrow until delivery confirmed</p></div>
+          <div><div class="line short" style="margin:0 auto;"></div><p style="font-size:11px;color:var(--muted);">Admin-reviewed listings only</p></div>
+          <div><div class="line short" style="margin:0 auto;"></div><p style="font-size:11px;color:var(--muted);">Dispute support if item doesn't match</p></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="annot"><b>Try it:</b> Click a category tile or featured card, or use the search bar / "Sell a Bat" button.</div>
+</div>
+
+<!-- ================= LISTING ================= -->
+<div class="screen" id="screen-listing">
+  <p class="frame-label">02 · Marketplace Listing Page (Browse / Search Results)</p>
+  <span class="link-back" onclick="goBack()">← Back</span>
+  <div class="device">
+    <div class="navbar-mock">
+      <div class="brand" onclick="goTo('home')">🏏 CricketGear USA</div>
+      <div class="wf-box" style="flex:1;max-width:400px;padding:6px 10px;margin:0 16px;"><div class="line short" style="margin:0;">Search…</div></div>
+      <div class="btn small" onclick="goTo('buyer')">Sign In</div>
+    </div>
+    <div class="section">
+      <div class="grid g-sidebar" style="align-items:start;">
+        <div class="wf-box">
+          <span class="tag">Filters</span>
+          <div class="frame-label">Brand</div>
+          <div class="line short mb8"></div><div class="line short mb8"></div><div class="line short mb8"></div>
+          <div class="frame-label mt12">Condition</div>
+          <div class="line short mb8"></div><div class="line short mb8"></div>
+          <div class="frame-label mt12">Price Range</div>
+          <div class="line mid mb8"></div>
+          <div class="frame-label mt12">Weight (lbs/oz)</div>
+          <div class="line mid mb8"></div>
+          <div class="frame-label mt12">Location / Distance</div>
+          <div class="line mid mb8"></div>
+          <div class="btn small mt12" style="width:100%;text-align:center;" onclick="toast('Filters applied — 12 results narrowed.')">Apply Filters</div>
+        </div>
+        <div>
+          <div class="flex between center mb8">
+            <span style="font-size:12px;color:var(--muted);">128 results for "English Willow Bat"</span>
+            <span class="pill">Sort: Newest ▾</span>
+          </div>
+          <div class="grid g3">
+            <div class="card" onclick="goTo('product')"><div class="placeholder-img">Photo</div><div class="line mid mt8"></div><div class="flex between mt8"><b style="font-size:12px;">$250</b><span class="badge-escrow">Escrow</span></div><div class="line short mt8"></div></div>
+            <div class="card" onclick="goTo('product')"><div class="placeholder-img">Photo</div><div class="line mid mt8"></div><div class="flex between mt8"><b style="font-size:12px;">$150</b><span class="badge-escrow">Escrow</span></div><div class="line short mt8"></div></div>
+            <div class="card" onclick="goTo('product')"><div class="placeholder-img">Photo</div><div class="line mid mt8"></div><div class="flex between mt8"><b style="font-size:12px;">$310</b><span class="badge-escrow">Escrow</span></div><div class="line short mt8"></div></div>
+            <div class="card" onclick="goTo('product')"><div class="placeholder-img">Photo</div><div class="line mid mt8"></div><div class="flex between mt8"><b style="font-size:12px;">$90</b><span class="badge-escrow">Escrow</span></div><div class="line short mt8"></div></div>
+            <div class="card" onclick="goTo('product')"><div class="placeholder-img">Photo</div><div class="line mid mt8"></div><div class="flex between mt8"><b style="font-size:12px;">$275</b><span class="badge-escrow">Escrow</span></div><div class="line short mt8"></div></div>
+            <div class="card" onclick="goTo('product')"><div class="placeholder-img">Photo</div><div class="line mid mt8"></div><div class="flex between mt8"><b style="font-size:12px;">$130</b><span class="badge-escrow">Escrow</span></div><div class="line short mt8"></div></div>
+          </div>
+          <div class="flex center" style="justify-content:center;margin-top:16px;"><span class="pill" style="cursor:pointer;" onclick="toast('Loading previous page…')">‹ Prev</span>&nbsp;<span class="pill">1 2 3 …</span>&nbsp;<span class="pill" style="cursor:pointer;" onclick="toast('Loading next page…')">Next ›</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="annot"><b>Try it:</b> Click any product card to open its detail page.</div>
+</div>
+
+<!-- ================= PRODUCT DETAILS ================= -->
+<div class="screen" id="screen-product">
+  <p class="frame-label">03 · Product Details Page</p>
+  <span class="link-back" onclick="goTo('listing')">← Back to results</span>
+  <div class="device">
+    <div class="section">
+      <div class="grid g2">
+        <div>
+          <div class="placeholder-img" style="height:260px;">Main Photo</div>
+          <div class="grid g4 mt8">
+            <div class="placeholder-img" style="height:50px;">Thumb</div>
+            <div class="placeholder-img" style="height:50px;">Thumb</div>
+            <div class="placeholder-img" style="height:50px;">Thumb</div>
+            <div class="placeholder-img" style="height:50px;">Thumb</div>
+          </div>
+        </div>
+        <div>
+          <div class="line long mb8" style="height:16px;width:80%;"></div>
+          <div class="flex gap8 mb8"><span class="pill">Brand: GM</span><span class="pill">Condition: Good</span></div>
+          <div style="font-size:22px;font-weight:700;">$220</div>
+          <span class="badge-escrow mt8" style="display:inline-block;">🔒 Payment held in escrow until you confirm delivery</span>
+
+          <div class="wf-box mt16">
+            <span class="tag">Specs</span>
+            <table class="mock-table">
+              <tr><td>Model</td><td>Six6 Original</td></tr>
+              <tr><td>Weight</td><td>2lb 9oz</td></tr>
+              <tr><td>Grains</td><td>8 straight</td></tr>
+              <tr><td>Repairs</td><td>None disclosed</td></tr>
+              <tr><td>Pickup / Mail</td><td>Ships nationwide</td></tr>
+              <tr><td>Location</td><td>Dallas, TX</td></tr>
+            </table>
+          </div>
+
+          <div class="wf-box mt16">
+            <span class="tag">Seller</span>
+            <div class="flex gap8 center">
+              <div class="placeholder-img" style="width:36px;height:36px;border-radius:50%;">S</div>
+              <div><div class="line short"></div><div class="pill mt8">Member since 2025</div></div>
+            </div>
+          </div>
+
+          <div class="flex gap8 mt16">
+            <div class="btn accent" style="flex:1;text-align:center;" onclick="goTo('checkout')">Buy Now — $220</div>
+            <div class="btn" style="flex:1;text-align:center;" onclick="toast('Message sent to seller.')">Message Seller</div>
+          </div>
+        </div>
+      </div>
+      <div class="wf-box mt16">
+        <span class="tag">Description</span>
+        <div class="line long mb8"></div><div class="line long mb8"></div><div class="line mid"></div>
+      </div>
+    </div>
+  </div>
+  <div class="annot"><b>Try it:</b> Click "Buy Now" to go to checkout.</div>
+</div>
+
+<!-- ================= CREATE LISTING ================= -->
+<div class="screen" id="screen-newlisting">
+  <p class="frame-label">04 · Create Listing (Seller Journey — new)</p>
+  <span class="link-back" onclick="goBack()">← Back</span>
+  <div class="device">
+    <div class="section">
+      <div class="step-mini">
+        <span class="on">1. Photos</span>
+        <span class="on">2. Details</span>
+        <span class="on">3. Review &amp; Publish</span>
+      </div>
+
+      <div class="wf-box">
+        <span class="tag">Step 1 — Photos</span>
+        <div class="grid g4 mt8">
+          <div class="placeholder-img upload-tile" onclick="toast('Opens photo picker.')">+ Add Photo</div>
+          <div class="placeholder-img upload-tile" onclick="toast('Opens photo picker.')">+ Add Photo</div>
+          <div class="placeholder-img upload-tile" onclick="toast('Opens photo picker.')">+ Add Photo</div>
+          <div class="placeholder-img upload-tile" onclick="toast('Opens photo picker.')">+ Add Photo</div>
+        </div>
+        <p style="font-size:10px;color:var(--muted);margin-top:8px;">Up to 8 photos. Include close-ups of any damage or repairs.</p>
+      </div>
+
+      <div class="wf-box mt16">
+        <span class="tag">Step 2 — Product Details</span>
+        <div class="grid g2 mt8">
+          <div class="field"><label class="mocklabel">Brand</label><input class="mockfield" placeholder="e.g. GM, SS, MRF, SG"></div>
+          <div class="field"><label class="mocklabel">Model</label><input class="mockfield" placeholder="e.g. Six6 Original"></div>
+          <div class="field"><label class="mocklabel">Weight</label><input class="mockfield" placeholder="e.g. 2lb 9oz"></div>
+          <div class="field"><label class="mocklabel">Grains</label><input class="mockfield" placeholder="e.g. 8 straight"></div>
+          <div class="field"><label class="mocklabel">Condition</label><select class="mockfield"><option>New</option><option>Like New</option><option>Good</option><option>Fair</option></select></div>
+          <div class="field"><label class="mocklabel">Repairs / Damage</label><input class="mockfield" placeholder="Disclose any repairs"></div>
+          <div class="field"><label class="mocklabel">Pickup or Ship</label><select class="mockfield"><option>Ship Nationwide</option><option>Local Pickup Only</option><option>Both</option></select></div>
+          <div class="field"><label class="mocklabel">Location</label><input class="mockfield" placeholder="City, State"></div>
+          <div class="field" style="grid-column:1/3;"><label class="mocklabel">Price (USD)</label><input class="mockfield" placeholder="$"></div>
+        </div>
+      </div>
+
+      <div class="wf-box mt16" style="background:var(--accent-soft);border-color:var(--accent);">
+        <span class="tag" style="background:var(--accent-soft);">Step 3 — Review &amp; Publish</span>
+        <p style="font-size:11px;margin:4px 0 0;">Your listing will be reviewed by an admin before it goes live (MVP requirement). You'll be notified once it's approved or if changes are needed.</p>
+      </div>
+
+      <div class="flex gap8 mt16">
+        <div class="btn accent" style="flex:1;text-align:center;" onclick="publishListing()">Submit for Review</div>
+        <div class="btn" style="flex:1;text-align:center;" onclick="saveDraft()">Save Draft</div>
+      </div>
+    </div>
+  </div>
+  <div class="annot"><b>Notes:</b> Fields map to PRD Seller Journey step 3. This screen wasn't in the original suggested-screens list but is required to complete the "Sell a Bat" flow from Home / Seller Dashboard. <b>Try it:</b> Click "Submit for Review" to publish and land back on the Seller Dashboard.</div>
+</div>
+
+<!-- ================= SELLER DASHBOARD ================= -->
+<div class="screen" id="screen-seller">
+  <p class="frame-label">05 · Seller Dashboard</p>
+  <div class="device">
+    <div class="navbar-mock">
+      <div class="brand" onclick="goTo('home')">🏏 CricketGear USA</div>
+      <div class="links">
+        <span onclick="toast('Scrolls to Active Listings.')">My Listings</span>
+        <span onclick="toast('Scrolls to Orders.')">Orders</span>
+        <span onclick="toast('Opens Payouts / bank details.')">Payouts</span>
+        <span onclick="toast('Opens Messages inbox.')">Messages</span>
+      </div>
+      <div class="btn primary small" onclick="goTo('newlisting')">+ New Listing</div>
+    </div>
+    <div class="section">
+      <div class="grid g4">
+        <div class="stat-box"><div class="num">6</div><div class="cap">Active Listings</div></div>
+        <div class="stat-box"><div class="num">$1,240</div><div class="cap">Total Sales (90d)</div></div>
+        <div class="stat-box"><div class="num">$310</div><div class="cap">Pending Payout</div></div>
+        <div class="stat-box"><div class="num">2</div><div class="cap">Awaiting Shipment</div></div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="frame-label">Active Listings</div>
+      <table class="mock-table">
+        <tr><th>Item</th><th>Price</th><th>Status</th><th>Views</th><th></th></tr>
+        <tr><td>SS Ton Reserve Edition</td><td>$220</td><td><span class="pill">Live</span></td><td>84</td><td><span class="btn small" onclick="goTo('newlisting')">Edit</span></td></tr>
+        <tr><td>GM Six6 Original</td><td>$180</td><td><span class="badge-danger" id="pendingRow1">Pending Approval</span></td><td>—</td><td><span class="btn small" onclick="goTo('newlisting')">Edit</span></td></tr>
+        <tr><td>MRF Genius Grand Edition</td><td>$310</td><td><span class="pill">Live</span></td><td>142</td><td><span class="btn small" onclick="goTo('newlisting')">Edit</span></td></tr>
+      </table>
+    </div>
+    <div class="section">
+      <div class="frame-label">Orders Requiring Action</div>
+      <table class="mock-table">
+        <tr><th>Order</th><th>Buyer</th><th>Amount</th><th>Status</th><th></th></tr>
+        <tr><td>#10234</td><td>J. Patel</td><td>$220</td><td><span class="badge-danger" id="shipPill1">Ship by Jul 27</span></td><td><span class="btn small accent" onclick="markShipped(this,'shipPill1')">Mark Shipped</span></td></tr>
+        <tr><td>#10231</td><td>R. Alvarez</td><td>$95</td><td><span class="badge-escrow">Funds in Escrow</span></td><td><span class="btn small" onclick="goTo('tracking')">View</span></td></tr>
+      </table>
+    </div>
+  </div>
+  <div class="annot"><b>Try it:</b> Click "Mark Shipped" to update order status in place, or "View" to open order tracking.</div>
+</div>
+
+<!-- ================= BUYER DASHBOARD ================= -->
+<div class="screen" id="screen-buyer">
+  <p class="frame-label">06 · Buyer Dashboard</p>
+  <div class="device">
+    <div class="navbar-mock">
+      <div class="brand" onclick="goTo('home')">🏏 CricketGear USA</div>
+      <div class="links">
+        <span onclick="toast('Scrolls to My Orders.')">My Orders</span>
+        <span onclick="toast('Scrolls to Saved Items.')">Saved Items</span>
+        <span onclick="toast('Opens Messages inbox.')">Messages</span>
+        <span onclick="goTo('dispute')">Disputes</span>
+      </div>
+      <div class="btn small" onclick="goTo('listing')">Browse Gear</div>
+    </div>
+    <div class="section">
+      <div class="frame-label">My Orders</div>
+      <table class="mock-table">
+        <tr><th>Item</th><th>Seller</th><th>Amount</th><th>Status</th><th></th></tr>
+        <tr><td>SS Ton Reserve Edition</td><td>M. Khan</td><td>$220</td><td><span class="pill" id="trackPill1">Shipped — Tracking</span></td><td><span class="btn small" onclick="goTo('tracking')">Track</span></td></tr>
+        <tr><td>Kookaburra Kahuna</td><td>D. Singh</td><td>$275</td><td><span class="badge-escrow" id="confirmPill1">Delivered — Confirm?</span></td><td><span class="btn small accent" onclick="confirmDelivery('confirmPill1')">Confirm</span></td></tr>
+        <tr><td>SG Sunny Tonny</td><td>A. Rao</td><td>$130</td><td><span class="pill">Completed</span></td><td><span class="btn small" onclick="toast('Opens review form.')">Leave Review</span></td></tr>
+      </table>
+    </div>
+    <div class="section">
+      <div class="grid g2">
+        <div class="wf-box">
+          <span class="tag">Saved Items</span>
+          <div class="grid g3 mt8">
+            <div class="placeholder-img" style="height:70px;cursor:pointer;" onclick="goTo('product')">Bat</div>
+            <div class="placeholder-img" style="height:70px;cursor:pointer;" onclick="goTo('product')">Bat</div>
+            <div class="placeholder-img" style="height:70px;cursor:pointer;" onclick="goTo('product')">Bat</div>
+          </div>
+        </div>
+        <div class="wf-box">
+          <span class="tag">Recent Messages</span>
+          <div class="line mid mb8"></div>
+          <div class="line short mb8"></div>
+          <div class="line mid"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="annot"><b>Try it:</b> Click "Confirm" to release escrow funds in place, or "Track" to open order tracking.</div>
+</div>
+
+<!-- ================= CHECKOUT ================= -->
+<div class="screen" id="screen-checkout">
+  <p class="frame-label">07 · Checkout Page</p>
+  <span class="link-back" onclick="goTo('product')">← Back</span>
+  <div class="device">
+    <div class="section">
+      <div class="grid g-checkout">
+        <div>
+          <div class="wf-box">
+            <span class="tag">Shipping Address</span>
+            <div class="grid g2 mt8">
+              <div class="line mid"></div><div class="line mid"></div>
+              <div class="line long" style="grid-column:1/3;"></div>
+              <div class="line short"></div><div class="line short"></div>
+            </div>
+          </div>
+          <div class="wf-box mt16">
+            <span class="tag">Payment Method</span>
+            <div class="flex gap8 mt8">
+              <div class="pill">💳 Card ending 4242</div>
+              <div class="pill" style="cursor:pointer;" onclick="toast('Opens Stripe payment method form.')">+ Add Payment Method</div>
+            </div>
+            <p style="font-size:10px;color:var(--muted);margin-top:8px;">Processed securely via Stripe</p>
+          </div>
+          <div class="wf-box mt16" style="background:var(--accent-soft);border-color:var(--accent);">
+            <span class="tag" style="background:var(--accent-soft);">Escrow Protection</span>
+            <p style="font-size:11px;margin:4px 0 0;">Your payment is held by CricketGear USA until you confirm the item was received as described. Funds release to the seller after confirmation or automatically after the delivery window closes.</p>
+          </div>
+        </div>
+        <div class="wf-box" style="align-self:start;">
+          <span class="tag">Order Summary</span>
+          <div class="placeholder-img mt8" style="height:70px;">Item Photo</div>
+          <div class="line mid mt8"></div>
+          <div class="flex between mt12"><span style="font-size:11px;color:var(--muted);">Item Price</span><span style="font-size:11px;">$220.00</span></div>
+          <div class="flex between mt8"><span style="font-size:11px;color:var(--muted);">Shipping</span><span style="font-size:11px;">$12.00</span></div>
+          <div class="flex between mt8"><span style="font-size:11px;color:var(--muted);">Platform Fee (3%, seller-paid)</span><span style="font-size:11px;">—</span></div>
+          <div class="flex between mt12" style="border-top:1px solid var(--line-soft);padding-top:8px;"><b style="font-size:12px;">Total</b><b style="font-size:12px;">$232.00</b></div>
+          <div class="btn accent mt16" style="width:100%;text-align:center;" onclick="toast('Order placed! Payment held in escrow.'); goTo('tracking')">Place Order</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="annot"><b>Try it:</b> Click "Place Order" to complete checkout and land on order tracking with the "Paid" step active.</div>
+</div>
+
+<!-- ================= ORDER TRACKING ================= -->
+<div class="screen" id="screen-tracking">
+  <p class="frame-label">08 · Order Tracking Page</p>
+  <span class="link-back" onclick="goTo('buyer')">← Back to My Orders</span>
+  <div class="device">
+    <div class="section">
+      <div class="flex between center">
+        <div>
+          <div class="line mid" style="height:14px;"></div>
+          <p style="font-size:11px;color:var(--muted);">Order #10234 · Placed Jul 20, 2026</p>
+        </div>
+        <span class="badge-escrow" id="escrowBadge">🔒 Funds in Escrow</span>
+      </div>
+
+      <div class="step-track mt16">
+        <div class="step done"><div class="dot">✓</div>Paid</div>
+        <div class="step-connector"></div>
+        <div class="step done"><div class="dot">✓</div>Shipped</div>
+        <div class="step-connector"></div>
+        <div class="step done"><div class="dot">✓</div>Delivered</div>
+        <div class="step-connector"></div>
+        <div class="step current" id="step4"><div class="dot">4</div>Confirmed /<br>Released</div>
+      </div>
+
+      <div class="grid g2 mt16">
+        <div class="wf-box">
+          <span class="tag">Shipment</span>
+          <div class="line mid mt8"></div>
+          <p style="font-size:11px;color:var(--muted);">Carrier: USPS · Tracking #9400…</p>
+        </div>
+        <div class="wf-box" style="background:var(--accent-soft);border-color:var(--accent);">
+          <span class="tag" style="background:var(--accent-soft);">Confirmation Window</span>
+          <p style="font-size:11px;margin:4px 0 0;">You have until <b>Jul 26, 11:59 PM</b> to confirm or report an issue. Funds release automatically after this window.</p>
+        </div>
+      </div>
+
+      <div class="flex gap8 mt16">
+        <div class="btn accent" id="confirmBtn" style="flex:1;text-align:center;" onclick="releaseFunds()">Confirm Delivery — Release Funds</div>
+        <div class="btn danger" style="flex:1;text-align:center;" onclick="goTo('dispute')">Report an Issue</div>
+      </div>
+    </div>
+  </div>
+  <div class="annot"><b>Try it:</b> Click "Confirm Delivery" to complete the escrow flow in place, or "Report an Issue" to open a dispute case.</div>
+</div>
+
+<!-- ================= ADMIN DASHBOARD ================= -->
+<div class="screen" id="screen-admin">
+  <p class="frame-label">09 · Admin Dashboard</p>
+  <div class="device">
+    <div class="navbar-mock">
+      <div class="brand" onclick="goTo('home')">🏏 Admin Console</div>
+      <div class="links">
+        <span onclick="toast('Scrolls to Listings queue.')">Listings</span>
+        <span onclick="toast('Opens Orders overview.')">Orders</span>
+        <span onclick="toast('Scrolls to Disputes.')">Disputes</span>
+        <span onclick="toast('Opens Users management.')">Users</span>
+        <span onclick="toast('Opens platform Reports.')">Reports</span>
+      </div>
+    </div>
+    <div class="section">
+      <div class="grid g4">
+        <div class="stat-box"><div class="num">$48.2k</div><div class="cap">GMV (30d)</div></div>
+        <div class="stat-box"><div class="num">$1,446</div><div class="cap">Fees Collected</div></div>
+        <div class="stat-box"><div class="num">14</div><div class="cap">Listings Pending Review</div></div>
+        <div class="stat-box"><div class="num">3</div><div class="cap">Open Disputes</div></div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="frame-label">Listings Pending Approval</div>
+      <table class="mock-table">
+        <tr><th>Item</th><th>Seller</th><th>Price</th><th>Submitted</th><th></th></tr>
+        <tr><td>GM Six6 Original</td><td>D. Singh</td><td>$180</td><td>2h ago</td><td><span class="pill" id="adminRow1" style="margin-right:4px;">Pending</span><span class="btn small accent" onclick="reviewListing('adminRow1', true, this)">Approve</span> <span class="btn small danger" onclick="reviewListing('adminRow1', false, this)">Reject</span></td></tr>
+        <tr><td>SS Ton Player Edition</td><td>K. Lee</td><td>$260</td><td>5h ago</td><td><span class="pill" id="adminRow2" style="margin-right:4px;">Pending</span><span class="btn small accent" onclick="reviewListing('adminRow2', true, this)">Approve</span> <span class="btn small danger" onclick="reviewListing('adminRow2', false, this)">Reject</span></td></tr>
+      </table>
+    </div>
+    <div class="section">
+      <div class="frame-label">Open Disputes</div>
+      <table class="mock-table">
+        <tr><th>Order</th><th>Reason</th><th>Filed</th><th>Status</th><th></th></tr>
+        <tr><td>#10198</td><td>Undisclosed crack</td><td>Jul 21</td><td><span class="badge-danger">Needs Review</span></td><td><span class="btn small" onclick="goTo('dispute')">Open Case</span></td></tr>
+      </table>
+    </div>
+  </div>
+  <div class="annot"><b>Try it:</b> Click "Approve"/"Reject" to update a listing's status in place, or "Open Case" to review a dispute.</div>
+</div>
+
+<!-- ================= DISPUTE RESOLUTION ================= -->
+<div class="screen" id="screen-dispute">
+  <p class="frame-label">10 · Dispute Resolution Page</p>
+  <span class="link-back" onclick="goTo('admin')">← Back to Admin</span>
+  <div class="device">
+    <div class="section">
+      <div class="flex between center">
+        <div>
+          <div class="line mid" style="height:14px;"></div>
+          <p style="font-size:11px;color:var(--muted);">Dispute for Order #10198 · Filed Jul 21, 2026</p>
+        </div>
+        <span class="badge-danger" id="disputeStatus">Needs Review</span>
+      </div>
+
+      <div class="grid g2 mt16">
+        <div class="wf-box">
+          <span class="tag">Buyer Claim</span>
+          <div class="pill mb8">Reason: Major crack not disclosed</div>
+          <div class="line long mb8"></div><div class="line mid mb8"></div>
+          <div class="grid g3 mt8">
+            <div class="placeholder-img" style="height:60px;">Evidence</div>
+            <div class="placeholder-img" style="height:60px;">Evidence</div>
+            <div class="placeholder-img" style="height:60px;">Evidence</div>
+          </div>
+        </div>
+        <div class="wf-box">
+          <span class="tag">Seller Response</span>
+          <div class="line long mb8"></div><div class="line mid mb8"></div>
+          <div class="placeholder-img" style="height:60px;">Original Listing Photo</div>
+        </div>
+      </div>
+
+      <div class="wf-box mt16">
+        <span class="tag">Dispute Policy Reference</span>
+        <div class="grid g2 mt8">
+          <div>
+            <p style="font-size:10px;color:var(--accent);font-weight:700;margin:0 0 4px;">VALID REASONS</p>
+            <p style="font-size:11px;color:var(--muted);margin:0;">Undisclosed damage · Counterfeit item · Wrong item · Major photo mismatch</p>
+          </div>
+          <div>
+            <p style="font-size:10px;color:var(--danger);font-weight:700;margin:0 0 4px;">INVALID REASONS</p>
+            <p style="font-size:11px;color:var(--muted);margin:0;">Changed mind · Doesn't like pickup/feel · Disclosed weight variance</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex gap8 mt16">
+        <div class="btn accent" style="flex:1;text-align:center;" onclick="ruleDispute('buyer', this)">Rule for Buyer — Refund</div>
+        <div class="btn" style="flex:1;text-align:center;" onclick="ruleDispute('seller', this)">Rule for Seller — Release Funds</div>
+        <div class="btn danger" style="flex:1;text-align:center;" onclick="ruleDispute('info', this)">Request More Info</div>
+      </div>
+    </div>
+  </div>
+  <div class="annot"><b>Try it:</b> Click any of the three ruling buttons to resolve the case in place.</div>
+</div>
+
+<script>
+backBtn.disabled = true;
+showScreen('home');
+</script>
+</body>
+</html>
