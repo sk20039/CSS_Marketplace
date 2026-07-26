@@ -103,11 +103,10 @@ export async function uploadPhoto(listingId: number, file: File) {
 
 // ---- Escrow service ----
 export async function escrowFetch(path: string, options: RequestInit = {}) {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...(options.headers as Record<string, string>),
-  };
-  return fetch(`${ESCROW_URL}${path}`, { ...options, headers, credentials: 'include' });
+  // Routed through apiFetch so it attaches the Authorization header (and
+  // retries once via silent refresh on a 401) just like auth/listing calls -
+  // escrow-service now requires a valid token on every route.
+  return apiFetch(`${ESCROW_URL}${path}`, options);
 }
 
 export async function syncUserToEscrow(user: { id: number; name: string; email: string; role: string; stripe_account_id?: string }) {
@@ -139,7 +138,8 @@ export async function getOrder(id: string | number) {
   return res.json();
 }
 
-export async function createOrder(body: { listing_id: number; buyer_id: number }) {
+export async function createOrder(body: { listing_id: number }) {
+  // buyer_id is derived server-side from the auth token now, not sent by the client.
   return escrowFetch('/orders', { method: 'POST', body: JSON.stringify(body) });
 }
 

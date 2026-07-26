@@ -12,6 +12,11 @@ export interface User {
 interface AuthCtx {
   user: User | null;
   accessToken: string | null;
+  // True until the initial mount rehydration (refresh cookie -> /auth/me) has
+  // finished, one way or another. AuthGuard waits on this instead of a fixed
+  // timeout so it never redirects a logged-in user to /login just because
+  // the rehydration network round trip hadn't finished yet.
+  initializing: boolean;
   login: (token: string, user: User) => void;
   logout: () => Promise<void>;
   refreshToken: () => Promise<string | null>;
@@ -33,6 +38,7 @@ export function setAccessToken(t: string | null) {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [accessToken, setToken] = useState<string | null>(null);
+  const [initializing, setInitializing] = useState(true);
 
   function login(token: string, u: User) {
     _accessToken = token;
@@ -73,24 +79,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  // On mount: attempt silent refresh to restore session from httpOnly cookie
+  // On mount: attempt silent refresh to restore session from httpOnly cookie.
+  // initializing stays true until this whole chain settles (success, 401, or
+  // network error) - AuthGuard must not decide "not logged in" before then.
   useEffect(() => {
-    refreshToken().then((token) => {
-      if (token) {
-        fetch(`${process.env.NEXT_PUBLIC_AUTH_URL}/auth/me`, {
-          headers: { Authorization: `Bearer ${token}` },
-          credentials: 'include',
-        })
-          .then((r) => r.ok ? r.json() : null)
-          .then((u) => { if (u) setUser(u); })
-          .catch(() => {});
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await refreshToken();
+        if (token && !cancelled) {
+          const res = await fetch(`${process.env.NEXT_PUBLIC_AUTH_URL}/auth/me`, {
+            headers: { Authorization: `Bearer ${token}` },
+            credentials: 'include',
+          });
+          const u = res.ok ? await res.json() : null;
+          if (u && !cancelled) setUser(u);
+        }
+      } finally {
+        if (!cancelled) setInitializing(false);
       }
-    });
+    })();
+    return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, accessToken, login, logout, refreshToken }}>
+    <AuthContext.Provider value={{ user, accessToken, initializing, login, logout, refreshToken }}>
       {children}
     </AuthContext.Provider>
   );

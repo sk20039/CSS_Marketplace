@@ -2,7 +2,7 @@
 
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { useUser } from '@/lib/auth';
+import { useAuth } from '@/lib/auth';
 
 interface Props {
   children: React.ReactNode;
@@ -10,22 +10,23 @@ interface Props {
 }
 
 export default function AuthGuard({ children, allowedRoles }: Props) {
-  const user = useUser();
+  const { user, initializing } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
-    // Give auth context time to rehydrate from cookie before redirecting
-    const timer = setTimeout(() => {
-      if (!user) {
-        router.replace('/login');
-      } else if (allowedRoles && !allowedRoles.includes(user.role)) {
-        router.replace('/');
-      }
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [user, allowedRoles, router]);
+    // Wait for the actual rehydration check to finish (not a guessed delay)
+    // before deciding whether to redirect - a fresh tab, a shared link, or a
+    // page refresh all re-run this from scratch, and the refresh-cookie
+    // round trip can easily take longer than any fixed timeout would allow.
+    if (initializing) return;
+    if (!user) {
+      router.replace('/login');
+    } else if (allowedRoles && !allowedRoles.includes(user.role)) {
+      router.replace('/');
+    }
+  }, [user, initializing, allowedRoles, router]);
 
-  if (!user) {
+  if (initializing || !user) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
         <div className="text-gray-400">Loading...</div>

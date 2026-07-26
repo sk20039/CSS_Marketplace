@@ -5,6 +5,16 @@ const db = require('./db');
 const orderService = require('./orderService');
 const { runReleaseCheck } = require('./orderService');
 const { OrderError } = orderService;
+const requireAuth = require('./middleware/requireAuth');
+const { requireAdmin } = requireAuth;
+
+function isParty(user, order) {
+  return (
+    user.role === 'admin' ||
+    String(user.id) === String(order.buyer_id) ||
+    String(user.id) === String(order.seller_id)
+  );
+}
 
 function buildApp() {
   const app = express();
@@ -14,14 +24,15 @@ function buildApp() {
   // ---- static demo UI ----
   app.use(express.static(path.join(__dirname, '..', 'public')));
 
-  // ---- helper endpoints for the demo UI (not in the formal API list, but
-  // needed so the static pages can populate buyer/listing pickers without a
-  // real auth/catalog system - out of scope per the plan's non-goals) ----
-  app.get('/api/users', (req, res) => {
+  // ---- helper endpoints for the demo UI. These expose every user's email
+  // and every listing's seller, so they're admin-only now that real auth
+  // exists - the legacy static demo pages under public/ were built before
+  // auth-service existed and are superseded by the real frontend. ----
+  app.get('/api/users', requireAuth, requireAdmin, (req, res) => {
     res.json(db.prepare('SELECT id, name, email, role FROM users ORDER BY id').all());
   });
 
-  app.get('/api/listings', (req, res) => {
+  app.get('/api/listings', requireAuth, requireAdmin, (req, res) => {
     res.json(
       db
         .prepare(
@@ -33,23 +44,36 @@ function buildApp() {
   });
 
   // ---- orders ----
-  app.post('/orders', async (req, res, next) => {
+  app.post('/orders', requireAuth, async (req, res, next) => {
     try {
-      const { listing_id, buyer_id } = req.body;
-      if (!listing_id || !buyer_id) {
-        throw new OrderError('listing_id and buyer_id are required', 400);
+      const { listing_id } = req.body;
+      if (!listing_id) {
+        throw new OrderError('listing_id is required', 400);
       }
-      const order = await orderService.createOrder({ listingId: listing_id, buyerId: buyer_id });
+      // buyerId always comes from the verified token, never the request body,
+      // so a caller can't create an order "as" a different buyer.
+      const order = await orderService.createOrder({ listingId: listing_id, buyerId: req.user.id });
       res.status(201).json(order);
     } catch (err) {
       next(err);
     }
   });
 
-  app.get('/orders', (req, res, next) => {
+  app.get('/orders', requireAuth, (req, res, next) => {
     try {
-      const { buyer_id, seller_id, status } = req.query;
-      let orders = orderService.listOrders({ buyerId: buyer_id, sellerId: seller_id });
+      const { status } = req.query;
+      let orders;
+      if (req.user.role === 'admin') {
+        const { buyer_id, seller_id } = req.query;
+        orders = orderService.listOrders({ buyerId: buyer_id, sellerId: seller_id });
+      } else {
+        // Non-admins may only ever see orders where they're the buyer or the
+        // seller - query params can't be used to look at someone else's orders.
+        const mine = new Map();
+        for (const o of orderService.listOrders({ buyerId: req.user.id })) mine.set(o.id, o);
+        for (const o of orderService.listOrders({ sellerId: req.user.id })) mine.set(o.id, o);
+        orders = Array.from(mine.values()).sort((a, b) => b.id - a.id);
+      }
       if (status) {
         const wanted = String(status).split(',').map((s) => s.trim().toUpperCase());
         orders = orders.filter((o) => wanted.includes(o.status));
@@ -60,48 +84,72 @@ function buildApp() {
     }
   });
 
-  app.get('/orders/:id', (req, res, next) => {
+  app.get('/orders/:id', requireAuth, (req, res, next) => {
     try {
-      res.json(orderService.getOrderWithTimeline(req.params.id));
+      const order = orderService.getOrderWithTimeline(req.params.id);
+      if (!isParty(req.user, order)) {
+        throw new OrderError('Forbidden: not a party to this order', 403);
+      }
+      res.json(order);
     } catch (err) {
       next(err);
     }
   });
 
-  app.post('/orders/:id/capture', async (req, res, next) => {
+  app.post('/orders/:id/capture', requireAuth, async (req, res, next) => {
     try {
+      const order = orderService.getOrderWithTimeline(req.params.id);
+      if (req.user.role !== 'admin' && String(req.user.id) !== String(order.buyer_id)) {
+        throw new OrderError('Forbidden: only the buyer can pay for this order', 403);
+      }
       res.json(await orderService.captureOrder(req.params.id));
     } catch (err) {
       next(err);
     }
   });
 
-  app.post('/orders/:id/ship', (req, res, next) => {
+  app.post('/orders/:id/ship', requireAuth, (req, res, next) => {
     try {
+      const order = orderService.getOrderWithTimeline(req.params.id);
+      if (req.user.role !== 'admin' && String(req.user.id) !== String(order.seller_id)) {
+        throw new OrderError('Forbidden: only the seller can mark this order shipped', 403);
+      }
       res.json(orderService.shipOrder(req.params.id));
     } catch (err) {
       next(err);
     }
   });
 
-  app.post('/orders/:id/deliver', (req, res, next) => {
+  app.post('/orders/:id/deliver', requireAuth, (req, res, next) => {
     try {
+      const order = orderService.getOrderWithTimeline(req.params.id);
+      if (req.user.role !== 'admin' && String(req.user.id) !== String(order.seller_id)) {
+        throw new OrderError('Forbidden: only the seller can mark this order delivered', 403);
+      }
       res.json(orderService.deliverOrder(req.params.id));
     } catch (err) {
       next(err);
     }
   });
 
-  app.post('/orders/:id/confirm', async (req, res, next) => {
+  app.post('/orders/:id/confirm', requireAuth, async (req, res, next) => {
     try {
+      const order = orderService.getOrderWithTimeline(req.params.id);
+      if (req.user.role !== 'admin' && String(req.user.id) !== String(order.buyer_id)) {
+        throw new OrderError('Forbidden: only the buyer can confirm receipt of this order', 403);
+      }
       res.json(await orderService.confirmOrder(req.params.id));
     } catch (err) {
       next(err);
     }
   });
 
-  app.post('/orders/:id/dispute', (req, res, next) => {
+  app.post('/orders/:id/dispute', requireAuth, (req, res, next) => {
     try {
+      const order = orderService.getOrderWithTimeline(req.params.id);
+      if (req.user.role !== 'admin' && String(req.user.id) !== String(order.buyer_id)) {
+        throw new OrderError('Forbidden: only the buyer can file a dispute on this order', 403);
+      }
       const { reason } = req.body;
       res.json(orderService.disputeOrder(req.params.id, reason));
     } catch (err) {
@@ -110,10 +158,15 @@ function buildApp() {
   });
 
   // ---- internal sync endpoints (called by auth-service and listing-service after create) ----
-  app.post('/api/sync/user', (req, res) => {
+  app.post('/api/sync/user', requireAuth, (req, res) => {
     const { id, name, email, role, stripe_account_id } = req.body;
     if (!id || !name || !email || !role) {
       return res.status(400).json({ error: 'id, name, email, and role are required' });
+    }
+    // You can only ever sync your own user record - otherwise any logged-in
+    // user could overwrite another user's row (e.g. changing their role).
+    if (req.user.role !== 'admin' && String(req.user.id) !== String(id)) {
+      return res.status(403).json({ error: 'Forbidden: can only sync your own user record' });
     }
     db.prepare(
       'INSERT OR REPLACE INTO users (id, name, email, role, stripe_account_id) VALUES (?, ?, ?, ?, ?)'
@@ -121,10 +174,16 @@ function buildApp() {
     res.json({ ok: true });
   });
 
-  app.post('/api/sync/listing', (req, res) => {
+  app.post('/api/sync/listing', requireAuth, (req, res) => {
     const { id, seller_id, title, price_cents } = req.body;
     if (!id || !seller_id || !title || price_cents == null) {
       return res.status(400).json({ error: 'id, seller_id, title, and price_cents are required' });
+    }
+    // Only the listing's own seller (or an admin) may sync it. Without this,
+    // any logged-in buyer could sync a fabricated price/seller for an
+    // existing listing id right before buying it (price tampering).
+    if (req.user.role !== 'admin' && String(req.user.id) !== String(seller_id)) {
+      return res.status(403).json({ error: 'Forbidden: only the listing owner can sync it to escrow' });
     }
     db.prepare(
       'INSERT OR REPLACE INTO listings (id, seller_id, title, price_cents) VALUES (?, ?, ?, ?)'
@@ -133,7 +192,7 @@ function buildApp() {
   });
 
   // ---- admin ----
-  app.post('/admin/orders/:id/resolve', async (req, res, next) => {
+  app.post('/admin/orders/:id/resolve', requireAuth, requireAdmin, async (req, res, next) => {
     try {
       const { action } = req.body;
       res.json(await orderService.resolveDispute(req.params.id, action));
@@ -142,7 +201,7 @@ function buildApp() {
     }
   });
 
-  app.post('/admin/run-release-check', async (req, res, next) => {
+  app.post('/admin/run-release-check', requireAuth, requireAdmin, async (req, res, next) => {
     try {
       res.json(await runReleaseCheck());
     } catch (err) {

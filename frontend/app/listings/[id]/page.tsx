@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { getListing, createOrder, syncListingToEscrow } from '@/lib/api';
+import { getListing, createOrder } from '@/lib/api';
 import { useUser } from '@/lib/auth';
 
 interface Photo { id: number; filename: string; display_order: number; }
@@ -38,14 +38,12 @@ export default function ListingDetailPage() {
     setBuying(true);
     setError('');
     try {
-      // Ensure listing is synced to escrow first
-      await syncListingToEscrow({
-        id: listing.id,
-        seller_id: listing.seller_id,
-        title: listing.title,
-        price_cents: listing.price_cents,
-      });
-      const res = await createOrder({ listing_id: listing.id, buyer_id: user.id });
+      // The listing is synced to escrow by its seller at creation time (see
+      // listings/new). We deliberately don't re-sync it here as the buyer -
+      // escrow-service now rejects that (only the listing's owner may sync
+      // it), which also closes off a price-tampering path a buyer could
+      // otherwise use by syncing fabricated listing data right before buying.
+      const res = await createOrder({ listing_id: listing.id });
       const data = await res.json();
       if (!res.ok) { setError(data.error || 'Could not create order'); return; }
       router.push(`/checkout/${data.id}`);

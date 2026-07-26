@@ -14,6 +14,29 @@ const { categorizeDispute } = require('./disputeCategorizer');
 const DELIVERY_WINDOW_MS =
   Number(process.env.DELIVERY_WINDOW_HOURS || 48) * 60 * 60 * 1000;
 const PLATFORM_FEE_BPS = Number(process.env.PLATFORM_FEE_BPS || 300); // 300 bps = 3%
+const LISTING_SERVICE_URL = process.env.LISTING_SERVICE_URL || 'http://localhost:3002';
+
+// Fetches the listing straight from listing-service (the source of truth for
+// price and seller_id) rather than trusting escrow-service's own `listings`
+// table, which is only ever populated by client-pushed /api/sync/listing
+// calls. Trusting that local mirror for money-critical fields let any logged
+// -in buyer overwrite a listing's price/seller_id right before purchasing it
+// - fetching live from listing-service closes that off.
+async function fetchAuthoritativeListing(listingId) {
+  let res;
+  try {
+    res = await fetch(`${LISTING_SERVICE_URL}/listings/${listingId}`);
+  } catch (err) {
+    throw new OrderError(`Could not reach listing-service to verify listing ${listingId}`, 502);
+  }
+  if (res.status === 404) {
+    throw new OrderError(`Listing ${listingId} not found`, 404);
+  }
+  if (!res.ok) {
+    throw new OrderError(`listing-service returned an error for listing ${listingId}`, 502);
+  }
+  return res.json();
+}
 
 class OrderError extends Error {
   constructor(message, statusCode = 400) {
@@ -97,12 +120,15 @@ async function createOrder({ listingId, buyerId }) {
   const normalizedListingId = Number(listingId);
   const normalizedBuyerId = Number(buyerId);
 
-  const listing = db.prepare('SELECT * FROM listings WHERE id = ?').get(normalizedListingId);
-  if (!listing) throw new OrderError(`Listing ${normalizedListingId} not found`, 404);
+  const listing = await fetchAuthoritativeListing(normalizedListingId);
+  if (listing.status && listing.status !== 'active') {
+    throw new OrderError(`Listing ${normalizedListingId} is not active (status: ${listing.status})`, 409);
+  }
+  const sellerId = Number(listing.seller_id);
   const buyer = db.prepare('SELECT * FROM users WHERE id = ?').get(normalizedBuyerId);
   if (!buyer) throw new OrderError(`Buyer ${normalizedBuyerId} not found`, 404);
 
-  if (listing.seller_id === normalizedBuyerId) {
+  if (sellerId === normalizedBuyerId) {
     throw new OrderError('buyer_id cannot be the seller of the listing (cannot buy your own listing)', 400);
   }
 
@@ -114,6 +140,12 @@ async function createOrder({ listingId, buyerId }) {
     );
   }
   const { platformFeeCents, sellerPayoutCents } = computeFee(amountCents);
+
+  // Keep the local mirror in sync too, now purely for the admin demo views -
+  // it is no longer trusted for money-critical fields.
+  db.prepare(
+    'INSERT OR REPLACE INTO listings (id, seller_id, title, price_cents) VALUES (?, ?, ?, ?)'
+  ).run(normalizedListingId, sellerId, listing.title, amountCents);
 
   const intent = await stripeClient.createPaymentIntent({
     amountCents,
@@ -132,7 +164,7 @@ async function createOrder({ listingId, buyerId }) {
     .run(
       normalizedListingId,
       normalizedBuyerId,
-      listing.seller_id,
+      sellerId,
       amountCents,
       platformFeeCents,
       sellerPayoutCents,
@@ -145,7 +177,7 @@ async function createOrder({ listingId, buyerId }) {
   recordEvent(orderId, 'ORDER_CREATED', {
     listingId: normalizedListingId,
     buyerId: normalizedBuyerId,
-    sellerId: listing.seller_id,
+    sellerId,
     amountCents,
     platformFeeCents,
     sellerPayoutCents,
