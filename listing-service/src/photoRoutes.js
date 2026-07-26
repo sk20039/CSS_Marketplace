@@ -40,7 +40,7 @@ const upload = multer({
 });
 
 // POST /listings/:id/photos
-router.post('/:id/photos', requireAuth, (req, res, next) => {
+router.post('/listings/:id/photos', requireAuth, (req, res, next) => {
   const listing = db.prepare('SELECT * FROM listings WHERE id = ?').get(req.params.id);
   if (!listing) return res.status(404).json({ error: 'Listing not found' });
   if (String(listing.seller_id) !== String(req.user.id)) {

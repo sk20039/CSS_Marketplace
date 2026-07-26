@@ -12,7 +12,7 @@ function buildApp() {
   app.use(express.json());
 
   app.use('/listings', listingRoutes);
-  app.use('/', photoRouter);
+  app.use('/', photoRouter); // handles POST /listings/:id/photos and GET /photos/:filename
 
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, next) => {
