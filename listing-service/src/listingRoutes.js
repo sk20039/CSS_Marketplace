@@ -1,6 +1,7 @@
 const express = require('express');
 const db = require('./db');
 const requireAuth = require('./middleware/requireAuth');
+const { postNewListingToSocial } = require('./blotatoService');
 
 const router = express.Router();
 
@@ -53,6 +54,11 @@ router.post('/', requireAuth, (req, res) => {
 
   const listing = db.prepare('SELECT * FROM listings WHERE id = ?').get(result.lastInsertRowid);
   res.status(201).json(withPhotos(listing));
+
+  // Fire-and-forget, deliberately not awaited: a Blotato outage or missing
+  // config must never delay or fail listing creation. No-ops entirely
+  // unless BLOTATO_ENABLED is turned on - see blotatoService.js.
+  postNewListingToSocial(listing).catch(() => {});
 });
 
 // GET /listings/mine — the caller's own listings, ANY status (active, sold,
