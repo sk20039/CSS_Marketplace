@@ -55,6 +55,18 @@ router.post('/', requireAuth, (req, res) => {
   res.status(201).json(withPhotos(listing));
 });
 
+// GET /listings/mine — the caller's own listings, ANY status (active, sold,
+// inactive). Registered before GET /:id so "mine" isn't swallowed as an id.
+// The public GET / below always filters to status='active', so without this
+// a seller has no way to see their own listings once one sells - it would
+// just vanish from their dashboard instead of showing a "sold" badge.
+router.get('/mine', requireAuth, (req, res) => {
+  const rows = db
+    .prepare('SELECT * FROM listings WHERE seller_id = ? ORDER BY created_at DESC')
+    .all(req.user.id);
+  res.json({ listings: rows.map(withPhotos) });
+});
+
 // GET /listings — search + list
 router.get('/', (req, res) => {
   const { q, category, condition, min_price, max_price } = req.query;

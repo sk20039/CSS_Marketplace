@@ -31,8 +31,11 @@ function SellerContent() {
   useEffect(() => {
     if (!user) return;
     Promise.all([
-      listingFetch(`/listings?limit=50`).then((r) => r.json()).then((d) => {
-        setListings((d.listings || []).filter((l: Listing) => true));
+      // /listings/mine (not the public /listings search, which only ever
+      // returns status='active') so sold/inactive listings still show up
+      // here with their real status instead of silently disappearing.
+      listingFetch(`/listings/mine`).then((r) => r.json()).then((d) => {
+        setListings(d.listings || []);
       }),
       getOrders({ seller_id: String(user.id) }).then(setOrders),
     ]).finally(() => setLoading(false));
@@ -40,7 +43,7 @@ function SellerContent() {
 
   if (loading) return <div className="text-center py-20 text-gray-400">Loading...</div>;
 
-  const myListings = listings.filter((l) => true); // server already filters by seller in a real impl; here all are returned
+  const myListings = listings; // /listings/mine already scopes to the current seller, any status
 
   const activeOrders = orders.filter((o) => !['RELEASED', 'REFUNDED'].includes(o.status));
   const completedOrders = orders.filter((o) => ['RELEASED', 'REFUNDED'].includes(o.status));
