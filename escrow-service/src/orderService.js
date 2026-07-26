@@ -38,6 +38,28 @@ async function fetchAuthoritativeListing(listingId) {
   return res.json();
 }
 
+// Tells listing-service to flip a listing to 'sold' once its payment has
+// actually been captured (funds in escrow) - not at order creation, since an
+// order can still fail to capture and get abandoned. This is a best-effort
+// service-to-service call: if it fails, the payment has already succeeded,
+// so we log it rather than fail the request - a human can reconcile the
+// listing status manually, but we must never lose track of captured money
+// just because this side-call hiccuped.
+async function markListingSold(listingId) {
+  try {
+    const res = await fetch(`${LISTING_SERVICE_URL}/listings/${listingId}/mark-sold`, {
+      method: 'PATCH',
+      headers: { 'x-internal-secret': process.env.JWT_SECRET || 'change-me' },
+    });
+    if (!res.ok) {
+      throw new Error(`listing-service returned ${res.status}`);
+    }
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
 class OrderError extends Error {
   constructor(message, statusCode = 400) {
     super(message);
@@ -237,6 +259,11 @@ async function captureOrder(id) {
   recordEvent(id, 'PAYMENT_CAPTURED', {
     stripePaymentIntentId: captured.id,
     chargeId: captured.chargeId || null,
+  });
+
+  const markedSold = await markListingSold(order.listing_id);
+  recordEvent(id, markedSold ? 'LISTING_MARKED_SOLD' : 'LISTING_MARK_SOLD_FAILED', {
+    listingId: order.listing_id,
   });
 
   return getOrderWithTimeline(id);

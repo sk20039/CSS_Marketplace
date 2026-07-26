@@ -8,6 +8,21 @@ const VALID_CATEGORIES = ['bat', 'helmet', 'pads', 'gloves', 'kit-bag', 'other']
 const VALID_CONDITIONS = ['new', 'used_good', 'used_fair'];
 const PAGE_LIMIT_MAX = 50;
 
+// Shared secret for service-to-service calls (escrow-service marking a listing
+// sold once payment is captured). Reuses JWT_SECRET since it's already
+// provisioned identically across all three services - this is deliberately
+// NOT a user JWT check, since escrow-service has no seller session to act on
+// behalf of; it's escrow-service authenticating as itself.
+const INTERNAL_SECRET = process.env.JWT_SECRET || 'change-me';
+
+function requireInternalSecret(req, res, next) {
+  const secret = req.headers['x-internal-secret'];
+  if (!secret || secret !== INTERNAL_SECRET) {
+    return res.status(401).json({ error: 'Invalid or missing internal service secret' });
+  }
+  next();
+}
+
 function withPhotos(listing) {
   const photos = db.prepare(
     'SELECT id, filename, display_order FROM listing_photos WHERE listing_id = ? ORDER BY display_order, id'
@@ -113,6 +128,19 @@ router.patch('/:id', requireAuth, (req, res) => {
   const values = [...Object.values(updates), listing.id];
   db.prepare(`UPDATE listings SET ${setClauses}, updated_at = datetime('now') WHERE id = ?`).run(...values);
 
+  const updated = db.prepare('SELECT * FROM listings WHERE id = ?').get(listing.id);
+  res.json(withPhotos(updated));
+});
+
+// PATCH /listings/:id/mark-sold — internal, service-to-service only.
+// Called by escrow-service the moment a payment is captured (funds actually
+// held in escrow), so the listing stops appearing as buyable the instant a
+// purchase is real - closing the gap where a second buyer could otherwise
+// buy the same listing while an earlier order is already in escrow.
+router.patch('/:id/mark-sold', requireInternalSecret, (req, res) => {
+  const listing = db.prepare('SELECT * FROM listings WHERE id = ?').get(req.params.id);
+  if (!listing) return res.status(404).json({ error: 'Listing not found' });
+  db.prepare("UPDATE listings SET status = 'sold', updated_at = datetime('now') WHERE id = ?").run(listing.id);
   const updated = db.prepare('SELECT * FROM listings WHERE id = ?').get(listing.id);
   res.json(withPhotos(updated));
 });
