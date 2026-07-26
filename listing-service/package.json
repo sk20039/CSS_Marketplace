@@ -1,7 +1,7 @@
 {
-  "name": "escrow-service",
+  "name": "listing-service",
   "version": "1.0.0",
-  "description": "Escrow payment service for USA Cricket Marketplace (C2C resale) - order state machine, Stripe Connect escrow, dispute handling.",
+  "description": "Listing/catalog service for USA Cricket Marketplace",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
@@ -13,7 +13,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "node-cron": "^3.0.3",
-    "stripe": "^16.12.0"
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.1"
   }
 }

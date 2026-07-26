@@ -5,10 +5,26 @@ node_modules/
 escrow-service/data/*.sqlite3
 escrow-service/data/*.sqlite3-shm
 escrow-service/data/*.sqlite3-wal
+auth-service/data/*.sqlite3
+auth-service/data/*.sqlite3-shm
+auth-service/data/*.sqlite3-wal
+listing-service/data/*.sqlite3
+listing-service/data/*.sqlite3-shm
+listing-service/data/*.sqlite3-wal
+
+# uploaded photos
+listing-service/uploads/
+
+# Next.js build output
+frontend/.next/
+frontend/next-env.d.ts
 
 # env secrets - never commit real keys
 .env
 escrow-service/.env
+auth-service/.env
+listing-service/.env
+frontend/.env.local
 
 # scratch/leftover
 _to_delete/

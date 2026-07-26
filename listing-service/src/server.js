@@ -1,0 +1,6 @@
+require('dotenv').config();
+const { buildApp } = require('./app');
+
+const PORT = process.env.PORT || 3002;
+const app = buildApp();
+app.listen(PORT, () => console.log(`[listing-service] listening on port ${PORT}`));

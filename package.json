@@ -1,0 +1,12 @@
+{
+  "name": "css-marketplace",
+  "version": "1.0.0",
+  "description": "USA Cricket Equipment Marketplace — monorepo root",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -n escrow,auth,listing,frontend -c blue,green,yellow,magenta \"npm run dev --prefix escrow-service\" \"npm run dev --prefix auth-service\" \"npm run dev --prefix listing-service\" \"npm run dev --prefix frontend\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1"
+  }
+}

@@ -1,5 +1,6 @@
 const path = require('path');
 const express = require('express');
+const cors = require('cors');
 const db = require('./db');
 const orderService = require('./orderService');
 const { runReleaseCheck } = require('./orderService');
@@ -7,6 +8,7 @@ const { OrderError } = orderService;
 
 function buildApp() {
   const app = express();
+  app.use(cors({ origin: process.env.FRONTEND_ORIGIN || 'http://localhost:3003', credentials: true }));
   app.use(express.json());
 
   // ---- static demo UI ----
@@ -105,6 +107,29 @@ function buildApp() {
     } catch (err) {
       next(err);
     }
+  });
+
+  // ---- internal sync endpoints (called by auth-service and listing-service after create) ----
+  app.post('/api/sync/user', (req, res) => {
+    const { id, name, email, role, stripe_account_id } = req.body;
+    if (!id || !name || !email || !role) {
+      return res.status(400).json({ error: 'id, name, email, and role are required' });
+    }
+    db.prepare(
+      'INSERT OR REPLACE INTO users (id, name, email, role, stripe_account_id) VALUES (?, ?, ?, ?, ?)'
+    ).run(id, name, email, role, stripe_account_id || null);
+    res.json({ ok: true });
+  });
+
+  app.post('/api/sync/listing', (req, res) => {
+    const { id, seller_id, title, price_cents } = req.body;
+    if (!id || !seller_id || !title || price_cents == null) {
+      return res.status(400).json({ error: 'id, seller_id, title, and price_cents are required' });
+    }
+    db.prepare(
+      'INSERT OR REPLACE INTO listings (id, seller_id, title, price_cents) VALUES (?, ?, ?, ?)'
+    ).run(id, seller_id, title, price_cents);
+    res.json({ ok: true });
   });
 
   // ---- admin ----
