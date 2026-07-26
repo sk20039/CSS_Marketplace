@@ -1,0 +1,68 @@
+services:
+  # ---- auth-service ----
+  - type: web
+    name: css-marketplace-auth-sal2026
+    runtime: node
+    plan: free
+    rootDir: auth-service
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: JWT_SECRET
+        value: "NRjPIK5AaQfps4cPTW_-MlUqBhCWT55OWCQD8eZw0VGR5ZOdD-MgwYoxD65H3TyD"
+      - key: FRONTEND_ORIGIN
+        value: "https://css-marketplace-frontend-sal2026.onrender.com"
+
+  # ---- listing-service ----
+  - type: web
+    name: css-marketplace-listing-sal2026
+    runtime: node
+    plan: free
+    rootDir: listing-service
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: JWT_SECRET
+        value: "NRjPIK5AaQfps4cPTW_-MlUqBhCWT55OWCQD8eZw0VGR5ZOdD-MgwYoxD65H3TyD"
+      - key: FRONTEND_ORIGIN
+        value: "https://css-marketplace-frontend-sal2026.onrender.com"
+
+  # ---- escrow-service ----
+  - type: web
+    name: css-marketplace-escrow-sal2026
+    runtime: node
+    plan: free
+    rootDir: escrow-service
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: JWT_SECRET
+        value: "NRjPIK5AaQfps4cPTW_-MlUqBhCWT55OWCQD8eZw0VGR5ZOdD-MgwYoxD65H3TyD"
+      - key: FRONTEND_ORIGIN
+        value: "https://css-marketplace-frontend-sal2026.onrender.com"
+      - key: LISTING_SERVICE_URL
+        value: "https://css-marketplace-listing-sal2026.onrender.com"
+      - key: STRIPE_SECRET_KEY
+        value: ""
+      - key: DELIVERY_WINDOW_HOURS
+        value: "48"
+      - key: PLATFORM_FEE_BPS
+        value: "300"
+      - key: RELEASE_CHECK_CRON
+        value: "* * * * *"
+
+  # ---- frontend (Next.js) ----
+  - type: web
+    name: css-marketplace-frontend-sal2026
+    runtime: node
+    plan: free
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    startCommand: npx next start -p $PORT
+    envVars:
+      - key: NEXT_PUBLIC_AUTH_URL
+        value: "https://css-marketplace-auth-sal2026.onrender.com"
+      - key: NEXT_PUBLIC_LISTING_URL
+        value: "https://css-marketplace-listing-sal2026.onrender.com"
+      - key: NEXT_PUBLIC_ESCROW_URL
+        value: "https://css-marketplace-escrow-sal2026.onrender.com"
