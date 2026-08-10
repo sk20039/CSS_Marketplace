@@ -177,4 +177,80 @@ router.get('/me', requireAuth, (req, res) => {
   res.json(user);
 });
 
+// POST /auth/sellers/connect
+// Creates (or re-opens) a Stripe Express account onboarding link for the seller.
+// Returns { url } to redirect the seller to Stripe's hosted onboarding UI.
+// Requires STRIPE_SECRET_KEY to be set; returns 503 in stub mode.
+router.post('/sellers/connect', requireAuth, async (req, res, next) => {
+  try {
+    if (req.user.role !== 'seller' && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Only sellers can connect a Stripe account' });
+    }
+    const key = process.env.STRIPE_SECRET_KEY;
+    if (!key) {
+      return res.status(503).json({
+        error: 'Stripe is not configured on this server. Set STRIPE_SECRET_KEY to enable real payouts.',
+        stub: true,
+      });
+    }
+
+    const Stripe = require('stripe');
+    const stripe = new Stripe(key, { apiVersion: '2024-06-20' });
+    const BASE_URL = process.env.APP_BASE_URL || 'http://localhost:3003';
+
+    const user = db.prepare('SELECT id, email, stripe_account_id FROM users WHERE id = ?').get(req.user.id);
+
+    // Get or create Express account
+    let accountId = user.stripe_account_id;
+    if (!accountId) {
+      const account = await stripe.accounts.create({
+        type: 'express',
+        country: 'US',
+        email: user.email,
+        capabilities: { transfers: { requested: true } },
+      });
+      accountId = account.id;
+      db.prepare('UPDATE users SET stripe_account_id = ? WHERE id = ?').run(accountId, user.id);
+    }
+
+    const accountLink = await stripe.accountLinks.create({
+      account: accountId,
+      refresh_url: `${BASE_URL}/dashboard/seller?stripe_refresh=1`,
+      return_url: `${BASE_URL}/dashboard/seller?stripe_return=1`,
+      type: 'account_onboarding',
+    });
+
+    res.json({ url: accountLink.url });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /auth/sellers/connect/status
+// Returns the current Stripe Connect account status for the seller.
+router.get('/sellers/connect/status', requireAuth, async (req, res, next) => {
+  try {
+    const key = process.env.STRIPE_SECRET_KEY;
+    const user = db.prepare('SELECT stripe_account_id FROM users WHERE id = ?').get(req.user.id);
+
+    if (!key || !user.stripe_account_id) {
+      return res.json({ connected: false, charges_enabled: false, details_submitted: false, stub: !key });
+    }
+
+    const Stripe = require('stripe');
+    const stripe = new Stripe(key, { apiVersion: '2024-06-20' });
+    const account = await stripe.accounts.retrieve(user.stripe_account_id);
+
+    res.json({
+      connected: true,
+      charges_enabled: account.charges_enabled,
+      details_submitted: account.details_submitted,
+      payouts_enabled: account.payouts_enabled,
+      stripe_account_id: user.stripe_account_id,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

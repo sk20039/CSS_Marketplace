@@ -48,6 +48,34 @@ export async function authRegister(body: { name: string; email: string; password
   return res;
 }
 
+export async function authMe(token: string) {
+  const res = await fetch(`${AUTH_URL}/auth/me`, {
+    headers: { Authorization: `Bearer ${token}` },
+    credentials: 'include',
+  });
+  if (!res.ok) return null;
+  return res.json() as Promise<{ id: number; name: string; email: string; role: string; stripe_account_id: string | null }>;
+}
+
+export async function connectSellerStripe() {
+  const token = getAccessToken();
+  const res = await fetch(`${AUTH_URL}/auth/sellers/connect`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    credentials: 'include',
+  });
+  return res.json() as Promise<{ url?: string; error?: string; stub?: boolean }>;
+}
+
+export async function getSellerConnectStatus() {
+  const token = getAccessToken();
+  const res = await fetch(`${AUTH_URL}/auth/sellers/connect/status`, {
+    headers: { Authorization: `Bearer ${token}` },
+    credentials: 'include',
+  });
+  return res.json() as Promise<{ connected: boolean; charges_enabled: boolean; details_submitted: boolean; stub?: boolean; stripe_account_id?: string }>;
+}
+
 export async function authLogin(body: { email: string; password: string }) {
   const res = await fetch(`${AUTH_URL}/auth/login`, {
     method: 'POST',

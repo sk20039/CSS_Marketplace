@@ -1,10 +1,11 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import AuthGuard from '@/components/AuthGuard';
-import { listingFetch, getOrders } from '@/lib/api';
-import { useUser } from '@/lib/auth';
+import { listingFetch, getOrders, connectSellerStripe, getSellerConnectStatus, syncUserToEscrow, authMe } from '@/lib/api';
+import { useAuth } from '@/lib/auth';
 
 interface Listing {
   id: number; title: string; price_cents: number; status: string; category: string;
@@ -22,24 +23,61 @@ export default function SellerDashboard() {
   );
 }
 
+type ConnectStatus = { connected: boolean; charges_enabled: boolean; details_submitted: boolean; stub?: boolean } | null;
+
 function SellerContent() {
-  const user = useUser();
+  const { user, accessToken } = useAuth();
+  const searchParams = useSearchParams();
   const [listings, setListings] = useState<Listing[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
+  const [connectStatus, setConnectStatus] = useState<ConnectStatus>(null);
+  const [connecting, setConnecting] = useState(false);
+  const [connectError, setConnectError] = useState('');
+
+  // Fetch connect status; on stripe_return also sync the new stripe_account_id to escrow
+  useEffect(() => {
+    if (!user) return;
+    const isReturn = searchParams.get('stripe_return') === '1';
+    getSellerConnectStatus().then(async (status) => {
+      setConnectStatus(status);
+      if (isReturn && status.stripe_account_id && accessToken) {
+        const fullUser = await authMe(accessToken);
+        if (fullUser) syncUserToEscrow(fullUser).catch(() => {});
+      }
+    }).catch(() => {});
+  }, [user, accessToken, searchParams]);
 
   useEffect(() => {
     if (!user) return;
     Promise.all([
-      // /listings/mine (not the public /listings search, which only ever
-      // returns status='active') so sold/inactive listings still show up
-      // here with their real status instead of silently disappearing.
       listingFetch(`/listings/mine`).then((r) => r.json()).then((d) => {
         setListings(d.listings || []);
       }),
       getOrders({ seller_id: String(user.id) }).then(setOrders),
     ]).finally(() => setLoading(false));
   }, [user]);
+
+  async function handleConnect() {
+    setConnecting(true);
+    setConnectError('');
+    try {
+      const data = await connectSellerStripe();
+      if (data.stub) {
+        setConnectError('Stripe is not configured on this server. Add STRIPE_SECRET_KEY to your escrow-service .env to enable real payouts.');
+        return;
+      }
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        setConnectError(data.error || 'Failed to start Stripe onboarding');
+      }
+    } catch {
+      setConnectError('Network error');
+    } finally {
+      setConnecting(false);
+    }
+  }
 
   if (loading) return <div className="text-center py-20 text-gray-400">Loading...</div>;
 
@@ -56,6 +94,51 @@ function SellerContent() {
           + New Listing
         </Link>
       </div>
+
+      {/* Stripe Connect */}
+      {connectStatus && (
+        <div className={`rounded-xl border p-4 ${
+          connectStatus.charges_enabled ? 'bg-green-50 border-green-200' :
+          connectStatus.stub ? 'bg-gray-50 border-gray-200' :
+          'bg-amber-50 border-amber-200'
+        }`}>
+          {connectStatus.charges_enabled ? (
+            <div className="flex items-center gap-2 text-green-800">
+              <span className="text-lg">✓</span>
+              <div>
+                <p className="font-semibold text-sm">Stripe Connected</p>
+                <p className="text-xs text-green-700">You will receive payouts when orders are released.</p>
+              </div>
+            </div>
+          ) : connectStatus.stub ? (
+            <div className="text-gray-600 text-sm">
+              <p className="font-semibold">Stripe not configured</p>
+              <p className="text-xs mt-0.5">Running in stub mode — set <code className="bg-gray-100 px-1 rounded">STRIPE_SECRET_KEY</code> in <code className="bg-gray-100 px-1 rounded">escrow-service/.env</code> and <code className="bg-gray-100 px-1 rounded">auth-service/.env</code> to enable real payouts.</p>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between gap-4">
+              <div className="text-amber-800">
+                <p className="font-semibold text-sm">
+                  {connectStatus.details_submitted ? 'Stripe: Pending Approval' : 'Connect Stripe to receive payouts'}
+                </p>
+                <p className="text-xs text-amber-700 mt-0.5">
+                  {connectStatus.details_submitted
+                    ? 'Stripe is reviewing your account. This usually takes 1–2 business days.'
+                    : 'Complete onboarding to receive funds when buyers confirm receipt.'}
+                </p>
+              </div>
+              <button
+                onClick={handleConnect}
+                disabled={connecting}
+                className="shrink-0 bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50"
+              >
+                {connecting ? 'Redirecting…' : connectStatus.details_submitted ? 'Complete Onboarding' : 'Connect Stripe'}
+              </button>
+            </div>
+          )}
+          {connectError && <p className="text-red-600 text-xs mt-2">{connectError}</p>}
+        </div>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
