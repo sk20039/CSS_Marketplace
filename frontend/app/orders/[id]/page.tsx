@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams } from 'next/navigation';
 import AuthGuard from '@/components/AuthGuard';
 import OrderTimeline from '@/components/OrderTimeline';
-import { getOrder, shipOrder, deliverOrder, confirmOrder, disputeOrder, getMessages, sendMessage } from '@/lib/api';
+import { getOrder, shipOrder, deliverOrder, confirmOrder, disputeOrder, getMessages, sendMessage, submitReview, getOrderReview } from '@/lib/api';
 import { useUser } from '@/lib/auth';
 
 interface Order {
@@ -55,6 +55,13 @@ function OrderContent() {
   const [sending, setSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // Review state
+  const [existingReview, setExistingReview] = useState<{ id: number; rating: number; body: string | null } | null | undefined>(undefined);
+  const [reviewRating, setReviewRating] = useState(0);
+  const [reviewBody, setReviewBody] = useState('');
+  const [reviewError, setReviewError] = useState('');
+  const [submittingReview, setSubmittingReview] = useState(false);
+
   const refresh = useCallback(() => {
     getOrder(id).then(setOrder).catch(() => setError('Order not found')).finally(() => setLoading(false));
   }, [id]);
@@ -64,6 +71,13 @@ function OrderContent() {
   }, [id]);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  // Fetch existing review once order loads (only relevant when RELEASED + buyer)
+  useEffect(() => {
+    if (order?.status === 'RELEASED' && user && String(user.id) === String(order.buyer_id)) {
+      getOrderReview(id).then(setExistingReview).catch(() => setExistingReview(null));
+    }
+  }, [order?.status, order?.buyer_id, user, id]);
 
   // Poll messages every 5s
   useEffect(() => {
@@ -98,6 +112,23 @@ function OrderContent() {
     await act(() => disputeOrder(id, disputeReason));
     setShowDispute(false);
     setDisputeReason('');
+  }
+
+  async function handleSubmitReview(e: React.FormEvent) {
+    e.preventDefault();
+    if (!reviewRating || submittingReview) return;
+    setReviewError('');
+    setSubmittingReview(true);
+    try {
+      const res = await submitReview(id, reviewRating, reviewBody);
+      const data = await res.json();
+      if (!res.ok) { setReviewError(data.error || 'Failed to submit review'); return; }
+      setExistingReview(data);
+    } catch {
+      setReviewError('Network error');
+    } finally {
+      setSubmittingReview(false);
+    }
   }
 
   async function handleSendMessage(e: React.FormEvent) {
@@ -200,6 +231,54 @@ function OrderContent() {
         <h2 className="text-sm font-semibold text-gray-700 mb-4">Order Timeline</h2>
         <OrderTimeline events={order.events || []} />
       </div>
+
+      {/* Review — visible to buyer after RELEASED */}
+      {order.status === 'RELEASED' && isBuyer && existingReview !== undefined && (
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <h2 className="text-sm font-semibold text-gray-700 mb-4">Rate this seller</h2>
+          {existingReview ? (
+            <div>
+              <div className="flex gap-1 mb-2">
+                {[1,2,3,4,5].map((s) => (
+                  <span key={s} className={`text-xl ${s <= existingReview.rating ? 'text-yellow-400' : 'text-gray-200'}`}>★</span>
+                ))}
+              </div>
+              {existingReview.body && <p className="text-sm text-gray-600 italic">&ldquo;{existingReview.body}&rdquo;</p>}
+              <p className="text-xs text-gray-400 mt-1">Review submitted</p>
+            </div>
+          ) : (
+            <form onSubmit={handleSubmitReview} className="space-y-3">
+              {reviewError && <p className="text-red-600 text-sm bg-red-50 rounded p-2">{reviewError}</p>}
+              <div>
+                <p className="text-sm text-gray-600 mb-2">How was your experience?</p>
+                <div className="flex gap-1">
+                  {[1,2,3,4,5].map((s) => (
+                    <button
+                      key={s} type="button"
+                      onClick={() => setReviewRating(s)}
+                      className={`text-2xl transition-colors ${s <= reviewRating ? 'text-yellow-400' : 'text-gray-200 hover:text-yellow-300'}`}
+                    >★</button>
+                  ))}
+                </div>
+              </div>
+              <textarea
+                rows={3}
+                value={reviewBody}
+                onChange={(e) => setReviewBody(e.target.value)}
+                placeholder="Share your experience (optional)"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+              />
+              <button
+                type="submit"
+                disabled={!reviewRating || submittingReview}
+                className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50"
+              >
+                {submittingReview ? 'Submitting…' : 'Submit Review'}
+              </button>
+            </form>
+          )}
+        </div>
+      )}
 
       {/* Messages */}
       <div className="bg-white rounded-xl border border-gray-200 p-5">

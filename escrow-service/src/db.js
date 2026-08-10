@@ -72,6 +72,17 @@ CREATE TABLE IF NOT EXISTS messages (
   body TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS reviews (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_id INTEGER NOT NULL REFERENCES orders(id),
+  reviewer_id INTEGER NOT NULL REFERENCES users(id),
+  reviewee_id INTEGER NOT NULL REFERENCES users(id),
+  rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
+  body TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(order_id, reviewer_id)
+);
 `);
 
 function seed() {

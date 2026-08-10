@@ -167,6 +167,27 @@ export async function resolveDispute(id: string | number, action: 'release' | 'r
   return escrowFetch(`/admin/orders/${id}/resolve`, { method: 'POST', body: JSON.stringify({ action }) });
 }
 
+export async function submitReview(orderId: string | number, rating: number, body: string) {
+  return escrowFetch(`/orders/${orderId}/review`, { method: 'POST', body: JSON.stringify({ rating, body }) });
+}
+
+export async function getOrderReview(orderId: string | number) {
+  const res = await escrowFetch(`/orders/${orderId}/review`);
+  if (!res.ok) return null;
+  return res.json() as Promise<{ id: number; rating: number; body: string | null; created_at: string } | null>;
+}
+
+export async function getUserReviews(userId: string | number) {
+  const ESCROW_URL = process.env.NEXT_PUBLIC_ESCROW_URL!;
+  try {
+    const res = await fetch(`${ESCROW_URL}/users/${userId}/reviews`);
+    if (!res.ok) return { reviews: [], average_rating: null, count: 0 };
+    return res.json() as Promise<{ reviews: { id: number; rating: number; body: string | null; reviewer_name: string; created_at: string }[]; average_rating: number | null; count: number }>;
+  } catch {
+    return { reviews: [], average_rating: null, count: 0 };
+  }
+}
+
 export async function getMessages(orderId: string | number) {
   const res = await escrowFetch(`/orders/${orderId}/messages`);
   if (!res.ok) throw new Error('Failed to fetch messages');

@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { getListing, createOrder } from '@/lib/api';
+import { getListing, createOrder, getUserReviews } from '@/lib/api';
 import { useUser } from '@/lib/auth';
 
 interface Photo { id: number; filename: string; display_order: number; }
@@ -24,10 +24,14 @@ export default function ListingDetailPage() {
   const [buying, setBuying] = useState(false);
   const [error, setError] = useState('');
   const [activePhoto, setActivePhoto] = useState(0);
+  const [sellerRating, setSellerRating] = useState<{ average_rating: number | null; count: number } | null>(null);
 
   useEffect(() => {
     getListing(id)
-      .then(setListing)
+      .then((l) => {
+        setListing(l);
+        getUserReviews(l.seller_id).then(({ average_rating, count }) => setSellerRating({ average_rating, count }));
+      })
       .catch(() => setError('Listing not found'))
       .finally(() => setLoading(false));
   }, [id]);
@@ -99,6 +103,13 @@ export default function ListingDetailPage() {
         <div className="space-y-4">
           <h1 className="text-2xl font-bold text-gray-900">{listing.title}</h1>
           <p className="text-3xl font-bold text-green-700">${(listing.price_cents / 100).toFixed(2)}</p>
+          {sellerRating && sellerRating.count > 0 && (
+            <div className="flex items-center gap-1 text-sm">
+              <span className="text-yellow-400 text-base">{'★'.repeat(Math.round(sellerRating.average_rating ?? 0))}{'☆'.repeat(5 - Math.round(sellerRating.average_rating ?? 0))}</span>
+              <span className="text-gray-600 font-medium">{sellerRating.average_rating}</span>
+              <span className="text-gray-400">({sellerRating.count} {sellerRating.count === 1 ? 'review' : 'reviews'})</span>
+            </div>
+          )}
           <div className="flex gap-2">
             <span className="text-xs bg-green-50 text-green-700 px-2 py-1 rounded-full capitalize">{listing.category}</span>
             <span className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-full">

@@ -191,6 +191,49 @@ function buildApp() {
     res.json({ ok: true });
   });
 
+  // ---- reviews ----
+  app.post('/orders/:id/review', requireAuth, (req, res, next) => {
+    try {
+      const order = orderService.getOrderWithTimeline(req.params.id);
+      if (order.status !== 'RELEASED') throw new OrderError('Order must be RELEASED to leave a review', 400);
+      if (String(req.user.id) !== String(order.buyer_id)) throw new OrderError('Only the buyer can review this order', 403);
+      const { rating, body } = req.body;
+      const r = Math.round(Number(rating));
+      if (!r || r < 1 || r > 5) throw new OrderError('rating must be 1–5', 400);
+      if (db.prepare('SELECT id FROM reviews WHERE order_id = ? AND reviewer_id = ?').get(order.id, req.user.id)) {
+        throw new OrderError('You have already reviewed this order', 409);
+      }
+      const result = db.prepare(
+        "INSERT INTO reviews (order_id, reviewer_id, reviewee_id, rating, body, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))"
+      ).run(order.id, req.user.id, order.seller_id, r, body ? String(body).trim() || null : null);
+      res.status(201).json(db.prepare('SELECT * FROM reviews WHERE id = ?').get(result.lastInsertRowid));
+    } catch (err) { next(err); }
+  });
+
+  app.get('/orders/:id/review', requireAuth, (req, res, next) => {
+    try {
+      const order = orderService.getOrderWithTimeline(req.params.id);
+      if (!isParty(req.user, order)) throw new OrderError('Forbidden', 403);
+      res.json(db.prepare('SELECT * FROM reviews WHERE order_id = ? AND reviewer_id = ?').get(order.id, req.user.id) || null);
+    } catch (err) { next(err); }
+  });
+
+  // Public — no auth required
+  app.get('/users/:userId/reviews', (req, res, next) => {
+    try {
+      const reviews = db.prepare(
+        `SELECT r.id, r.order_id, r.rating, r.body, r.created_at, u.name AS reviewer_name
+         FROM reviews r JOIN users u ON u.id = r.reviewer_id
+         WHERE r.reviewee_id = ? ORDER BY r.created_at DESC`
+      ).all(req.params.userId);
+      const count = reviews.length;
+      const average_rating = count > 0
+        ? Math.round((reviews.reduce((s, r) => s + r.rating, 0) / count) * 10) / 10
+        : null;
+      res.json({ reviews, average_rating, count });
+    } catch (err) { next(err); }
+  });
+
   // ---- messages ----
   app.get('/orders/:id/messages', requireAuth, (req, res, next) => {
     try {
