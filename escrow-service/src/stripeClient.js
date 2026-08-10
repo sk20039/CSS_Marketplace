@@ -17,7 +17,7 @@
 //         dispute resolves in the buyer's favor.
 //
 // Interface (both modes implement all of these, all async):
-//   createPaymentIntent({ amountCents, currency, metadata }) -> { id, status }
+//   createPaymentIntent({ amountCents, currency, metadata }) -> { id, status, client_secret }
 //   capturePaymentIntent(paymentIntentId)                   -> { id, status }
 //   createTransfer({ amountCents, currency, destination, metadata, sourceTransactionId }) -> { id, status }
 //   createRefund({ paymentIntentId, amountCents })           -> { id, status }
@@ -50,6 +50,7 @@ class StubStripeClient {
     if (STUB_LATENCY_MS > 0) await sleep(STUB_LATENCY_MS);
     const id = fakeId('pi');
     const chargeId = fakeId('ch');
+    const client_secret = `${id}_secret_stub`;
     this._intents.set(id, {
       id,
       amountCents,
@@ -57,8 +58,9 @@ class StubStripeClient {
       metadata,
       status: 'requires_capture', // manual capture flow, mirrors real Stripe
       chargeId,
+      client_secret,
     });
-    return { id, status: 'requires_capture', chargeId };
+    return { id, status: 'requires_capture', chargeId, client_secret };
   }
 
   async capturePaymentIntent(paymentIntentId) {
@@ -115,13 +117,10 @@ class RealStripeClient {
       amount: amountCents,
       currency,
       capture_method: 'manual',
+      payment_method_types: ['card'],
       metadata,
-      // In a real checkout flow a payment_method / confirm step would
-      // happen client-side (Stripe Elements). For this backend-only pass
-      // we assume the client has already attached & confirmed a payment
-      // method, or a test PaymentMethod is used out-of-band.
     });
-    return { id: intent.id, status: intent.status };
+    return { id: intent.id, status: intent.status, client_secret: intent.client_secret };
   }
 
   async capturePaymentIntent(paymentIntentId) {

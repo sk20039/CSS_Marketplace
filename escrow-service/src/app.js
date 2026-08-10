@@ -96,6 +96,22 @@ function buildApp() {
     }
   });
 
+  // Returns the Stripe PaymentIntent client_secret for the buyer to confirm card payment.
+  // Gated to buyer only; only available while order is CREATED (not yet captured).
+  app.get('/orders/:id/client-secret', requireAuth, (req, res, next) => {
+    try {
+      const order = db.prepare('SELECT id, status, buyer_id, stripe_client_secret FROM orders WHERE id = ?').get(req.params.id);
+      if (!order) throw new OrderError('Order not found', 404);
+      if (req.user.role !== 'admin' && String(req.user.id) !== String(order.buyer_id)) {
+        throw new OrderError('Forbidden', 403);
+      }
+      if (order.status !== 'CREATED') {
+        throw new OrderError('Payment has already been submitted for this order', 400);
+      }
+      res.json({ client_secret: order.stripe_client_secret });
+    } catch (err) { next(err); }
+  });
+
   app.post('/orders/:id/capture', requireAuth, async (req, res, next) => {
     try {
       const order = orderService.getOrderWithTimeline(req.params.id);

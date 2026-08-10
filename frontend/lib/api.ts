@@ -171,6 +171,12 @@ export async function createOrder(body: { listing_id: number }) {
   return escrowFetch('/orders', { method: 'POST', body: JSON.stringify(body) });
 }
 
+export async function getOrderClientSecret(id: string | number) {
+  const res = await escrowFetch(`/orders/${id}/client-secret`);
+  if (!res.ok) return null;
+  return res.json() as Promise<{ client_secret: string }>;
+}
+
 export async function captureOrder(id: string | number) {
   return escrowFetch(`/orders/${id}/capture`, { method: 'POST' });
 }

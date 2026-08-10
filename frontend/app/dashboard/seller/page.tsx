@@ -43,7 +43,7 @@ function SellerContent() {
       setConnectStatus(status);
       if (isReturn && status.stripe_account_id && accessToken) {
         const fullUser = await authMe(accessToken);
-        if (fullUser) syncUserToEscrow(fullUser).catch(() => {});
+        if (fullUser) syncUserToEscrow({ ...fullUser, stripe_account_id: fullUser.stripe_account_id ?? undefined }).catch(() => {});
       }
     }).catch(() => {});
   }, [user, accessToken, searchParams]);

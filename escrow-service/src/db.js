@@ -125,6 +125,15 @@ CREATE TABLE IF NOT EXISTS reviews (
   }
 }
 
+// Migration: add stripe_client_secret column (simple ALTER TABLE — safe to add columns in SQLite)
+{
+  const info = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='orders'").get();
+  if (info && !info.sql.includes('stripe_client_secret')) {
+    db.exec('ALTER TABLE orders ADD COLUMN stripe_client_secret TEXT');
+    console.log('[db] Migrated orders table: added stripe_client_secret column');
+  }
+}
+
 function seed() {
   const userCount = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
   if (userCount > 0) return; // already seeded

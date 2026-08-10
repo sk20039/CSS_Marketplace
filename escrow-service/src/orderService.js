@@ -198,8 +198,8 @@ async function createOrder({ listingId, buyerId }) {
     .prepare(
       `INSERT INTO orders (
         listing_id, buyer_id, seller_id, amount_cents, platform_fee_cents, seller_payout_cents,
-        status, stripe_payment_intent_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'CREATED', ?, ?, ?)`
+        status, stripe_payment_intent_id, stripe_client_secret, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'CREATED', ?, ?, ?, ?)`
     )
     .run(
       normalizedListingId,
@@ -209,6 +209,7 @@ async function createOrder({ listingId, buyerId }) {
       platformFeeCents,
       sellerPayoutCents,
       intent.id,
+      intent.client_secret || null,
       ts,
       ts
     );
