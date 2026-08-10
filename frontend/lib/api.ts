@@ -147,6 +147,10 @@ export async function captureOrder(id: string | number) {
   return escrowFetch(`/orders/${id}/capture`, { method: 'POST' });
 }
 
+export async function cancelOrder(id: string | number) {
+  return escrowFetch(`/orders/${id}/cancel`, { method: 'POST' });
+}
+
 export async function shipOrder(id: string | number) {
   return escrowFetch(`/orders/${id}/ship`, { method: 'POST' });
 }

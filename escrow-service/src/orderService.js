@@ -38,6 +38,23 @@ async function fetchAuthoritativeListing(listingId) {
   return res.json();
 }
 
+// Tells listing-service to flip a listing back to 'active' after a pre-shipment
+// cancellation so it can be purchased again. Best-effort: a failure here is
+// logged but never surfaces to the caller — the refund has already succeeded.
+async function markListingActive(listingId) {
+  try {
+    const res = await fetch(`${LISTING_SERVICE_URL}/listings/${listingId}/mark-active`, {
+      method: 'PATCH',
+      headers: { 'x-internal-secret': process.env.JWT_SECRET || 'change-me' },
+    });
+    if (!res.ok) throw new Error(`listing-service returned ${res.status}`);
+    return true;
+  } catch (err) {
+    console.error(`[orderService] markListingActive(${listingId}) failed:`, err.message);
+    return false;
+  }
+}
+
 // Tells listing-service to flip a listing to 'sold' once its payment has
 // actually been captured (funds in escrow) - not at order creation, since an
 // order can still fail to capture and get abandoned. This is a best-effort
@@ -433,6 +450,56 @@ async function performRefund(orderId, { triggeredBy, fromStatus }) {
   return getOrderWithTimeline(orderId);
 }
 
+// ---- POST /orders/:id/cancel ----
+// Pre-shipment cancellation: HELD -> CANCELLING -> CANCELLED + full refund.
+// Available to both buyer and seller (caller enforced in app.js).
+// Follows the same reserve -> Stripe -> finalize pattern as performRefund so
+// a concurrent ship/capture can never race past the atomic reservation UPDATE.
+async function cancelOrder(id, { cancelledBy }) {
+  if (!reserveTransition(id, 'HELD', 'CANCELLING')) {
+    throw reservationConflictError(id, 'HELD', 'cancelled');
+  }
+
+  const order = getOrder(id);
+
+  let refund;
+  try {
+    refund = await stripeClient.createRefund({
+      paymentIntentId: order.stripe_payment_intent_id,
+      amountCents: order.amount_cents,
+    });
+  } catch (err) {
+    revertTransition(id, 'CANCELLING', 'HELD');
+    recordEvent(id, 'CANCEL_FAILED', { cancelledBy, error: err.message });
+    throw new OrderError(`Stripe refund failed for order ${id}: ${err.message}`, 502);
+  }
+
+  const ts = nowIso();
+  const finalized = db
+    .prepare(
+      `UPDATE orders SET status = 'CANCELLED', stripe_refund_id = ?, updated_at = ? WHERE id = ? AND status = 'CANCELLING'`
+    )
+    .run(refund.id, ts, id);
+
+  if (finalized.changes === 0) {
+    recordEvent(id, 'CANCEL_FINALIZE_CONFLICT', { cancelledBy, stripeRefundId: refund.id });
+    throw new OrderError(
+      `Order ${id} cancel finalize conflict - manual reconciliation required (Stripe refund ${refund.id} succeeded)`,
+      500
+    );
+  }
+
+  recordEvent(id, 'CANCELLED', { cancelledBy, stripeRefundId: refund.id, amountCents: order.amount_cents });
+
+  // Best-effort: re-activate listing so it can be bought again
+  const reactivated = await markListingActive(order.listing_id);
+  recordEvent(id, reactivated ? 'LISTING_REACTIVATED' : 'LISTING_REACTIVATE_FAILED', {
+    listingId: order.listing_id,
+  });
+
+  return getOrderWithTimeline(id);
+}
+
 // ---- POST /orders/:id/confirm ----
 async function confirmOrder(id) {
   return performRelease(id, { triggeredBy: 'buyer_confirm', fromStatus: 'DELIVERED' });
@@ -531,6 +598,7 @@ module.exports = {
   computeFee,
   createOrder,
   captureOrder,
+  cancelOrder,
   shipOrder,
   deliverOrder,
   confirmOrder,

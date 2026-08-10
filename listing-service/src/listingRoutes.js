@@ -163,6 +163,18 @@ router.patch('/:id/mark-sold', requireInternalSecret, (req, res) => {
   res.json(withPhotos(updated));
 });
 
+// PATCH /listings/:id/mark-active — internal, service-to-service only.
+// Called by escrow-service when a HELD order is cancelled before shipment,
+// so the listing goes back on sale immediately rather than staying stuck as
+// 'sold' after the buyer's refund completes.
+router.patch('/:id/mark-active', requireInternalSecret, (req, res) => {
+  const listing = db.prepare('SELECT * FROM listings WHERE id = ?').get(req.params.id);
+  if (!listing) return res.status(404).json({ error: 'Listing not found' });
+  db.prepare("UPDATE listings SET status = 'active', updated_at = datetime('now') WHERE id = ?").run(listing.id);
+  const updated = db.prepare('SELECT * FROM listings WHERE id = ?').get(listing.id);
+  res.json(withPhotos(updated));
+});
+
 // DELETE /listings/:id — soft delete
 router.delete('/:id', requireAuth, (req, res) => {
   const listing = db.prepare('SELECT * FROM listings WHERE id = ?').get(req.params.id);

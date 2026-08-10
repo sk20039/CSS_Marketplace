@@ -3,7 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const db = require('./db');
 const orderService = require('./orderService');
-const { runReleaseCheck } = require('./orderService');
+const { runReleaseCheck, cancelOrder } = require('./orderService');
 const { OrderError } = orderService;
 const requireAuth = require('./middleware/requireAuth');
 const { requireAdmin } = requireAuth;
@@ -142,6 +142,19 @@ function buildApp() {
     } catch (err) {
       next(err);
     }
+  });
+
+  app.post('/orders/:id/cancel', requireAuth, async (req, res, next) => {
+    try {
+      const order = orderService.getOrderWithTimeline(req.params.id);
+      const isBuyer = String(req.user.id) === String(order.buyer_id);
+      const isSeller = String(req.user.id) === String(order.seller_id);
+      if (req.user.role !== 'admin' && !isBuyer && !isSeller) {
+        throw new OrderError('Forbidden: only the buyer or seller can cancel this order', 403);
+      }
+      const cancelledBy = req.user.role === 'admin' ? 'admin' : isBuyer ? 'buyer' : 'seller';
+      res.json(await cancelOrder(req.params.id, { cancelledBy }));
+    } catch (err) { next(err); }
   });
 
   app.post('/orders/:id/dispute', requireAuth, (req, res, next) => {

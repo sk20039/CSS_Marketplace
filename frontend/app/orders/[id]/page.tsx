@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams } from 'next/navigation';
 import AuthGuard from '@/components/AuthGuard';
 import OrderTimeline from '@/components/OrderTimeline';
-import { getOrder, shipOrder, deliverOrder, confirmOrder, disputeOrder, getMessages, sendMessage, submitReview, getOrderReview } from '@/lib/api';
+import { getOrder, cancelOrder, shipOrder, deliverOrder, confirmOrder, disputeOrder, getMessages, sendMessage, submitReview, getOrderReview } from '@/lib/api';
 import { useUser } from '@/lib/auth';
 
 interface Order {
@@ -22,12 +22,14 @@ const STATUS_LABELS: Record<string, string> = {
   SHIPPED: 'Shipped', DELIVERED: 'Delivered', DISPUTED: 'Under dispute',
   RELEASING: 'Releasing funds', REFUNDING: 'Processing refund',
   RELEASED: 'Funds released to seller', REFUNDED: 'Refunded to buyer',
+  CANCELLING: 'Cancelling', CANCELLED: 'Cancelled',
 };
 
 const STATUS_COLOR: Record<string, string> = {
   HELD: 'bg-blue-100 text-blue-800', SHIPPED: 'bg-yellow-100 text-yellow-800',
   DELIVERED: 'bg-orange-100 text-orange-800', DISPUTED: 'bg-red-100 text-red-800',
   RELEASED: 'bg-green-100 text-green-800', REFUNDED: 'bg-gray-100 text-gray-800',
+  CANCELLING: 'bg-gray-100 text-gray-600', CANCELLED: 'bg-gray-100 text-gray-500',
 };
 
 export default function OrderPage() {
@@ -187,6 +189,12 @@ function OrderContent() {
           <button onClick={() => act(() => deliverOrder(id))} disabled={acting}
             className="bg-orange-500 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-orange-600 disabled:opacity-50">
             Mark as Delivered
+          </button>
+        )}
+        {(isBuyer || isSeller) && order.status === 'HELD' && (
+          <button onClick={() => act(() => cancelOrder(id))} disabled={acting}
+            className="bg-gray-500 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-600 disabled:opacity-50">
+            Cancel Order
           </button>
         )}
         {isBuyer && order.status === 'DELIVERED' && (

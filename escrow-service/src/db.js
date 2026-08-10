@@ -85,6 +85,46 @@ CREATE TABLE IF NOT EXISTS reviews (
 );
 `);
 
+// Migration: add CANCELLING and CANCELLED to orders.status CHECK constraint.
+// SQLite doesn't allow ALTER COLUMN, so we use the standard 12-step rename+recreate.
+{
+  const info = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='orders'").get();
+  if (info && !info.sql.includes('CANCELLING')) {
+    db.pragma('foreign_keys = OFF');
+    db.exec(`
+      CREATE TABLE orders_v2 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        listing_id INTEGER NOT NULL REFERENCES listings(id),
+        buyer_id INTEGER NOT NULL REFERENCES users(id),
+        seller_id INTEGER NOT NULL REFERENCES users(id),
+        amount_cents INTEGER NOT NULL,
+        platform_fee_cents INTEGER NOT NULL,
+        seller_payout_cents INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK(status IN (
+          'CREATED','CAPTURING','HELD','SHIPPED','DELIVERED','DISPUTED',
+          'RELEASING','REFUNDING','RELEASED','REFUNDED','CANCELLING','CANCELLED'
+        )),
+        stripe_payment_intent_id TEXT,
+        stripe_transfer_id TEXT,
+        stripe_refund_id TEXT,
+        shipped_at TEXT,
+        delivered_at TEXT,
+        window_expires_at TEXT,
+        dispute_reason_text TEXT,
+        dispute_category TEXT CHECK(dispute_category IN ('valid','invalid','uncategorized') OR dispute_category IS NULL),
+        dispute_resolution TEXT CHECK(dispute_resolution IN ('release','refund') OR dispute_resolution IS NULL),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO orders_v2 SELECT * FROM orders;
+      DROP TABLE orders;
+      ALTER TABLE orders_v2 RENAME TO orders;
+    `);
+    db.pragma('foreign_keys = ON');
+    console.log('[db] Migrated orders table: added CANCELLING/CANCELLED statuses');
+  }
+}
+
 function seed() {
   const userCount = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
   if (userCount > 0) return; // already seeded
