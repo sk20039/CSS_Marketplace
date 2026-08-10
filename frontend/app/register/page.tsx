@@ -1,21 +1,18 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { authRegister } from '@/lib/api';
-import { useAuth } from '@/lib/auth';
-import { syncUserToEscrow } from '@/lib/api';
 
 export default function RegisterPage() {
-  const { login } = useAuth();
-  const router = useRouter();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState<'buyer' | 'seller'>('buyer');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [registered, setRegistered] = useState(false);
+  const [registeredEmail, setRegisteredEmail] = useState('');
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -28,15 +25,33 @@ export default function RegisterPage() {
         setError(data.error || 'Registration failed');
         return;
       }
-      login(data.access_token, data.user);
-      // Sync new user to escrow-service
-      syncUserToEscrow(data.user).catch(() => {});
-      router.push(role === 'seller' ? '/dashboard/seller' : '/dashboard/buyer');
+      setRegisteredEmail(email);
+      setRegistered(true);
     } catch {
       setError('Network error. Is the auth service running?');
     } finally {
       setLoading(false);
     }
+  }
+
+  if (registered) {
+    return (
+      <div className="max-w-md mx-auto mt-12 text-center">
+        <div className="bg-white rounded-xl border border-gray-200 p-8">
+          <div className="text-4xl mb-4">📧</div>
+          <h1 className="text-2xl font-bold text-gray-900 mb-2">Check your email</h1>
+          <p className="text-gray-600 mb-1">
+            We sent a verification link to <strong>{registeredEmail}</strong>.
+          </p>
+          <p className="text-gray-500 text-sm mb-6">
+            Click the link in the email to activate your account. The link expires in 24 hours.
+          </p>
+          <Link href="/login" className="text-green-600 hover:underline text-sm">
+            Back to sign in
+          </Link>
+        </div>
+      </div>
+    );
   }
 
   return (

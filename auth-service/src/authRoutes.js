@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const db = require('./db');
 const requireAuth = require('./middleware/requireAuth');
+const { sendVerificationEmail } = require('./emailer');
 
 const router = express.Router();
 
@@ -69,19 +70,46 @@ router.post('/register', async (req, res, next) => {
 
     const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
     const result = db.prepare(
-      "INSERT INTO users (name, email, password_hash, role, created_at) VALUES (?, ?, ?, ?, datetime('now'))"
+      "INSERT INTO users (name, email, password_hash, role, email_verified, created_at) VALUES (?, ?, ?, ?, 0, datetime('now'))"
     ).run(name, email, passwordHash, userRole);
 
-    const user = db.prepare('SELECT id, name, email, role, stripe_account_id, created_at FROM users WHERE id = ?').get(result.lastInsertRowid);
-    const raw = await storeRefreshToken(user.id);
-    setRefreshCookie(res, raw);
+    const user = db.prepare('SELECT id, name, email, role FROM users WHERE id = ?').get(result.lastInsertRowid);
+
+    // Generate and store verification token
+    const verifyToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(verifyToken).digest('hex');
+    const expiresAt = new Date(Date.now() + 24 * 3600000).toISOString();
+    db.prepare(
+      'INSERT INTO email_verification_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)'
+    ).run(user.id, tokenHash, expiresAt);
+
+    await sendVerificationEmail(user.email, verifyToken);
+
     res.status(201).json({
-      access_token: issueAccessToken(user),
+      message: 'Registration successful. Please check your email to verify your account before signing in.',
       user: { id: user.id, name: user.name, email: user.email, role: user.role },
     });
   } catch (err) {
     next(err);
   }
+});
+
+// GET /auth/verify-email?token=...
+router.get('/verify-email', (req, res) => {
+  const { token } = req.query;
+  if (!token) return res.status(400).json({ error: 'token is required' });
+
+  const tokenHash = crypto.createHash('sha256').update(String(token)).digest('hex');
+  const row = db.prepare(
+    "SELECT * FROM email_verification_tokens WHERE token_hash = ? AND expires_at > datetime('now')"
+  ).get(tokenHash);
+
+  if (!row) return res.status(400).json({ error: 'Invalid or expired verification link' });
+
+  db.prepare('UPDATE users SET email_verified = 1 WHERE id = ?').run(row.user_id);
+  db.prepare('DELETE FROM email_verification_tokens WHERE id = ?').run(row.id);
+
+  res.json({ message: 'Email verified. You can now sign in.' });
 });
 
 // POST /auth/login
@@ -93,6 +121,9 @@ router.post('/login', async (req, res, next) => {
     const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
     if (!user || !(await bcrypt.compare(password, user.password_hash))) {
       return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    if (!user.email_verified) {
+      return res.status(403).json({ error: 'Please verify your email address before signing in. Check your inbox for the verification link.' });
     }
 
     const raw = await storeRefreshToken(user.id);

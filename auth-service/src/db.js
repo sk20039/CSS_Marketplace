@@ -32,12 +32,29 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
   expires_at TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS email_verification_tokens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `);
 
-// Seed admin user (idempotent)
+// Add email_verified column to existing DBs (idempotent).
+// On first run: marks all pre-existing users as verified so they aren't locked out.
+try {
+  db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0');
+  db.exec('UPDATE users SET email_verified = 1');
+} catch {
+  // column already exists — no-op
+}
+
+// Seed admin user (idempotent — email_verified=1 so admin can always log in)
 const adminHash = bcrypt.hashSync('Admin1234!', 12);
 db.prepare(
-  "INSERT OR IGNORE INTO users (name, email, password_hash, role, created_at) VALUES (?, ?, ?, 'admin', datetime('now'))"
+  "INSERT OR IGNORE INTO users (name, email, password_hash, role, email_verified, created_at) VALUES (?, ?, ?, 'admin', 1, datetime('now'))"
 ).run('Admin', 'admin@cricket.test', adminHash);
 
 module.exports = db;
