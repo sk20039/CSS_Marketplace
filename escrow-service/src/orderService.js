@@ -10,6 +10,7 @@
 const db = require('./db');
 const { stripeClient } = require('./stripeClient');
 const { categorizeDispute } = require('./disputeCategorizer');
+const notifications = require('./notifications');
 
 const DELIVERY_WINDOW_MS =
   Number(process.env.DELIVERY_WINDOW_HOURS || 48) * 60 * 60 * 1000;
@@ -283,6 +284,8 @@ async function captureOrder(id) {
     listingId: order.listing_id,
   });
 
+  notifications.notifyOrderCaptured(order).catch(() => {});
+
   return getOrderWithTimeline(id);
 }
 
@@ -296,6 +299,7 @@ function shipOrder(id) {
     `UPDATE orders SET status = 'SHIPPED', shipped_at = ?, updated_at = ? WHERE id = ?`
   ).run(ts, ts, id);
   recordEvent(id, 'SHIPPED', { shippedAt: ts });
+  notifications.notifyShipped(order).catch(() => {});
 
   return getOrderWithTimeline(id);
 }
@@ -311,6 +315,7 @@ function deliverOrder(id) {
     `UPDATE orders SET status = 'DELIVERED', delivered_at = ?, window_expires_at = ?, updated_at = ? WHERE id = ?`
   ).run(ts, windowExpiresAt, ts, id);
   recordEvent(id, 'DELIVERED', { deliveredAt: ts, windowExpiresAt });
+  notifications.notifyDelivered(order).catch(() => {});
 
   return getOrderWithTimeline(id);
 }
@@ -404,6 +409,7 @@ async function performRelease(orderId, { triggeredBy, fromStatus }) {
     sellerPayoutCents: order.seller_payout_cents,
     platformFeeCents: order.platform_fee_cents,
   });
+  notifications.notifyReleased(order, { triggeredBy }).catch(() => {});
 
   return getOrderWithTimeline(orderId);
 }
@@ -446,6 +452,7 @@ async function performRefund(orderId, { triggeredBy, fromStatus }) {
   }
 
   recordEvent(orderId, 'REFUNDED', { triggeredBy, stripeRefundId: refund.id });
+  notifications.notifyRefunded(order, { triggeredBy }).catch(() => {});
 
   return getOrderWithTimeline(orderId);
 }
@@ -490,6 +497,7 @@ async function cancelOrder(id, { cancelledBy }) {
   }
 
   recordEvent(id, 'CANCELLED', { cancelledBy, stripeRefundId: refund.id, amountCents: order.amount_cents });
+  notifications.notifyCancelled(order, { cancelledBy }).catch(() => {});
 
   // Best-effort: re-activate listing so it can be bought again
   const reactivated = await markListingActive(order.listing_id);
@@ -533,6 +541,7 @@ function disputeOrder(id, reasonText) {
   }
 
   recordEvent(id, 'DISPUTED', { reasonText, category, matchedPattern });
+  notifications.notifyDisputed(getOrder(id)).catch(() => {});
 
   return getOrderWithTimeline(id);
 }
