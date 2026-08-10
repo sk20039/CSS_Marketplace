@@ -4,6 +4,11 @@
 <meta charset="UTF-8" />
 <title>Admin - Escrow Demo</title>
 <link rel="stylesheet" href="css/style.css" />
+<style>
+  #loginSection { max-width: 360px; margin: 2rem auto; }
+  #loginSection input { display: block; width: 100%; margin: 0.5rem 0; padding: 0.5rem; box-sizing: border-box; }
+  #adminSection { display: none; }
+</style>
 </head>
 <body>
 <header>
@@ -14,39 +19,131 @@
   </nav>
 </header>
 <main>
-  <div class="card">
-    <h2>Admin: Disputed &amp; Pending Orders</h2>
-    <p class="muted">
-      Disputed orders need a manual release/refund decision. Delivered orders are shown so you can
-      watch them auto-release once their 48h window passes (or trigger the sweep manually below).
-    </p>
-    <button class="secondary" id="refreshBtn">Refresh</button>
-    <button class="warn" id="sweepBtn">Run Release Check Now</button>
-    <div id="notice" class="notice"></div>
-    <div id="error" class="error"></div>
+  <!-- Login form (shown when not authenticated) -->
+  <div id="loginSection" class="card">
+    <h2>Admin Login</h2>
+    <div id="loginError" class="error"></div>
+    <form id="loginForm">
+      <label>Email
+        <input type="email" id="loginEmail" value="admin@cricket.test" required />
+      </label>
+      <label>Password
+        <input type="password" id="loginPassword" value="Admin1234!" required />
+      </label>
+      <button type="submit" class="primary" style="margin-top:0.75rem">Login</button>
+    </form>
   </div>
 
-  <div class="card">
-    <h3>Disputed orders</h3>
-    <table>
-      <thead><tr><th>Order</th><th>Reason</th><th>Category</th><th>Amount</th><th>Actions</th></tr></thead>
-      <tbody id="disputedBody"></tbody>
-    </table>
-  </div>
+  <!-- Admin panel (shown when authenticated) -->
+  <div id="adminSection">
+    <div class="card">
+      <h2>Admin: Disputed &amp; Pending Orders</h2>
+      <p class="muted">
+        Disputed orders need a manual release/refund decision. Delivered orders are shown so you can
+        watch them auto-release once their 48h window passes (or trigger the sweep manually below).
+      </p>
+      <button class="secondary" id="refreshBtn">Refresh</button>
+      <button class="warn" id="sweepBtn">Run Release Check Now</button>
+      <button class="secondary" id="logoutBtn" style="float:right">Logout</button>
+      <div id="notice" class="notice"></div>
+      <div id="error" class="error"></div>
+    </div>
 
-  <div class="card">
-    <h3>Delivered orders (awaiting confirm / auto-release)</h3>
-    <table>
-      <thead><tr><th>Order</th><th>Delivered at</th><th>Window expires</th><th>Amount</th><th></th></tr></thead>
-      <tbody id="deliveredBody"></tbody>
-    </table>
+    <div class="card">
+      <h3>Disputed orders</h3>
+      <table>
+        <thead><tr><th>Order</th><th>Reason</th><th>Category</th><th>Amount</th><th>Actions</th></tr></thead>
+        <tbody id="disputedBody"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Delivered orders (awaiting confirm / auto-release)</h3>
+      <table>
+        <thead><tr><th>Order</th><th>Delivered at</th><th>Window expires</th><th>Amount</th><th></th></tr></thead>
+        <tbody id="deliveredBody"></tbody>
+      </table>
+    </div>
   </div>
 </main>
 
 <script src="js/api.js"></script>
 <script>
+// ---- auth helpers ----
+function getToken() { return sessionStorage.getItem('admin_token'); }
+function setToken(t) { sessionStorage.setItem('admin_token', t); }
+function clearToken() { sessionStorage.removeItem('admin_token'); }
+
+function authHeaders() {
+  const t = getToken();
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
+
+async function adminApi(method, url, body) {
+  const opts = { method, headers: { ...authHeaders() } };
+  if (body !== undefined) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(url, opts);
+  let data = null;
+  try { data = await res.json(); } catch (e) { /* no body */ }
+  if (res.status === 401 || res.status === 403) {
+    clearToken();
+    showLogin();
+    throw new Error(data?.error || `Access denied (${res.status})`);
+  }
+  if (!res.ok) {
+    const err = new Error((data && data.error) || `Request failed (${res.status})`);
+    err.status = res.status;
+    throw err;
+  }
+  return data;
+}
+
+function showLogin() {
+  document.getElementById('loginSection').style.display = '';
+  document.getElementById('adminSection').style.display = 'none';
+}
+
+function showAdmin() {
+  document.getElementById('loginSection').style.display = 'none';
+  document.getElementById('adminSection').style.display = '';
+}
+
+// ---- login form ----
+document.getElementById('loginForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  document.getElementById('loginError').textContent = '';
+  const email = document.getElementById('loginEmail').value;
+  const password = document.getElementById('loginPassword').value;
+  try {
+    const res = await fetch('http://localhost:3001/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Login failed');
+    if (data.user.role !== 'admin') {
+      throw new Error('This account does not have admin privileges');
+    }
+    setToken(data.access_token);
+    showAdmin();
+    refreshAll();
+  } catch (err) {
+    document.getElementById('loginError').textContent = err.message;
+  }
+});
+
+document.getElementById('logoutBtn').addEventListener('click', () => {
+  clearToken();
+  showLogin();
+});
+
+// ---- admin functions ----
 async function loadDisputed() {
-  const orders = await api('GET', '/orders?status=DISPUTED');
+  const orders = await adminApi('GET', '/orders?status=DISPUTED');
   const tbody = document.getElementById('disputedBody');
   tbody.innerHTML = '';
   if (orders.length === 0) {
@@ -73,7 +170,7 @@ async function loadDisputed() {
 }
 
 async function loadDelivered() {
-  const orders = await api('GET', '/orders?status=DELIVERED');
+  const orders = await adminApi('GET', '/orders?status=DELIVERED');
   const tbody = document.getElementById('deliveredBody');
   tbody.innerHTML = '';
   if (orders.length === 0) {
@@ -96,7 +193,7 @@ async function resolve(id, action) {
   document.getElementById('error').textContent = '';
   document.getElementById('notice').textContent = '';
   try {
-    await api('POST', `/admin/orders/${id}/resolve`, { action });
+    await adminApi('POST', `/admin/orders/${id}/resolve`, { action });
     document.getElementById('notice').textContent = `Order #${id} resolved (${action}).`;
     await refreshAll();
   } catch (err) {
@@ -117,7 +214,7 @@ document.getElementById('refreshBtn').addEventListener('click', refreshAll);
 document.getElementById('sweepBtn').addEventListener('click', async () => {
   document.getElementById('error').textContent = '';
   try {
-    const result = await api('POST', '/admin/run-release-check');
+    const result = await adminApi('POST', '/admin/run-release-check');
     document.getElementById('notice').textContent =
       `Sweep checked ${result.candidateCount} candidate(s), released [${result.releasedOrderIds.join(', ') || 'none'}].`;
     await refreshAll();
@@ -126,7 +223,13 @@ document.getElementById('sweepBtn').addEventListener('click', async () => {
   }
 });
 
-refreshAll();
+// ---- init ----
+if (getToken()) {
+  showAdmin();
+  refreshAll();
+} else {
+  showLogin();
+}
 </script>
 </body>
 </html>

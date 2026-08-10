@@ -1,6 +1,7 @@
 const path = require('path');
 const fs = require('fs');
 const Database = require('better-sqlite3');
+const bcrypt = require('bcryptjs');
 
 const DB_PATH = process.env.DB_PATH
   ? path.resolve(process.env.DB_PATH)
@@ -32,5 +33,11 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 `);
+
+// Seed admin user (idempotent)
+const adminHash = bcrypt.hashSync('Admin1234!', 12);
+db.prepare(
+  "INSERT OR IGNORE INTO users (name, email, password_hash, role, created_at) VALUES (?, ?, ?, 'admin', datetime('now'))"
+).run('Admin', 'admin@cricket.test', adminHash);
 
 module.exports = db;
