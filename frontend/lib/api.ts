@@ -167,6 +167,16 @@ export async function resolveDispute(id: string | number, action: 'release' | 'r
   return escrowFetch(`/admin/orders/${id}/resolve`, { method: 'POST', body: JSON.stringify({ action }) });
 }
 
+export async function getMessages(orderId: string | number) {
+  const res = await escrowFetch(`/orders/${orderId}/messages`);
+  if (!res.ok) throw new Error('Failed to fetch messages');
+  return res.json() as Promise<{ id: number; sender_id: number; sender_name: string; body: string; created_at: string }[]>;
+}
+
+export async function sendMessage(orderId: string | number, body: string) {
+  return escrowFetch(`/orders/${orderId}/messages`, { method: 'POST', body: JSON.stringify({ body }) });
+}
+
 export async function getAllListingsFromEscrow() {
   const res = await escrowFetch('/api/listings');
   if (!res.ok) throw new Error('Failed');

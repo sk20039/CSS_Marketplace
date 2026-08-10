@@ -191,6 +191,37 @@ function buildApp() {
     res.json({ ok: true });
   });
 
+  // ---- messages ----
+  app.get('/orders/:id/messages', requireAuth, (req, res, next) => {
+    try {
+      const order = orderService.getOrderWithTimeline(req.params.id);
+      if (!isParty(req.user, order)) throw new OrderError('Forbidden', 403);
+      const messages = db.prepare(
+        `SELECT m.id, m.order_id, m.sender_id, u.name AS sender_name, m.body, m.created_at
+         FROM messages m JOIN users u ON u.id = m.sender_id
+         WHERE m.order_id = ? ORDER BY m.created_at ASC`
+      ).all(order.id);
+      res.json(messages);
+    } catch (err) { next(err); }
+  });
+
+  app.post('/orders/:id/messages', requireAuth, (req, res, next) => {
+    try {
+      const order = orderService.getOrderWithTimeline(req.params.id);
+      if (!isParty(req.user, order)) throw new OrderError('Forbidden', 403);
+      const { body } = req.body;
+      if (!body || !String(body).trim()) throw new OrderError('body is required', 400);
+      const result = db.prepare(
+        "INSERT INTO messages (order_id, sender_id, body, created_at) VALUES (?, ?, ?, datetime('now'))"
+      ).run(order.id, req.user.id, String(body).trim());
+      const message = db.prepare(
+        `SELECT m.id, m.order_id, m.sender_id, u.name AS sender_name, m.body, m.created_at
+         FROM messages m JOIN users u ON u.id = m.sender_id WHERE m.id = ?`
+      ).get(result.lastInsertRowid);
+      res.status(201).json(message);
+    } catch (err) { next(err); }
+  });
+
   // ---- admin ----
   app.post('/admin/orders/:id/resolve', requireAuth, requireAdmin, async (req, res, next) => {
     try {

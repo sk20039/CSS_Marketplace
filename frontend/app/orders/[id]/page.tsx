@@ -1,16 +1,20 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams } from 'next/navigation';
 import AuthGuard from '@/components/AuthGuard';
 import OrderTimeline from '@/components/OrderTimeline';
-import { getOrder, shipOrder, deliverOrder, confirmOrder, disputeOrder } from '@/lib/api';
+import { getOrder, shipOrder, deliverOrder, confirmOrder, disputeOrder, getMessages, sendMessage } from '@/lib/api';
 import { useUser } from '@/lib/auth';
 
 interface Order {
   id: number; status: string; amount_cents: number;
   listing_id: number; buyer_id: number; seller_id: number;
   events: { id: number; event_type: string; payload_json: string | null; created_at: string }[];
+}
+
+interface Message {
+  id: number; sender_id: number; sender_name: string; body: string; created_at: string;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -45,11 +49,33 @@ function OrderContent() {
   const [disputeReason, setDisputeReason] = useState('');
   const [showDispute, setShowDispute] = useState(false);
 
+  // Messaging state
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [msgInput, setMsgInput] = useState('');
+  const [sending, setSending] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
   const refresh = useCallback(() => {
     getOrder(id).then(setOrder).catch(() => setError('Order not found')).finally(() => setLoading(false));
   }, [id]);
 
+  const refreshMessages = useCallback(() => {
+    getMessages(id).then(setMessages).catch(() => {});
+  }, [id]);
+
   useEffect(() => { refresh(); }, [refresh]);
+
+  // Poll messages every 5s
+  useEffect(() => {
+    refreshMessages();
+    const interval = setInterval(refreshMessages, 5000);
+    return () => clearInterval(interval);
+  }, [refreshMessages]);
+
+  // Scroll to bottom when new messages arrive
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   async function act(fn: () => Promise<Response>) {
     setActing(true);
@@ -72,6 +98,22 @@ function OrderContent() {
     await act(() => disputeOrder(id, disputeReason));
     setShowDispute(false);
     setDisputeReason('');
+  }
+
+  async function handleSendMessage(e: React.FormEvent) {
+    e.preventDefault();
+    if (!msgInput.trim() || sending) return;
+    setSending(true);
+    try {
+      const res = await sendMessage(id, msgInput.trim());
+      if (res.ok) {
+        const msg = await res.json();
+        setMessages((prev) => [...prev, msg]);
+        setMsgInput('');
+      }
+    } finally {
+      setSending(false);
+    }
   }
 
   if (loading) return <div className="text-center py-20 text-gray-400">Loading...</div>;
@@ -157,6 +199,49 @@ function OrderContent() {
       <div className="bg-white rounded-xl border border-gray-200 p-5">
         <h2 className="text-sm font-semibold text-gray-700 mb-4">Order Timeline</h2>
         <OrderTimeline events={order.events || []} />
+      </div>
+
+      {/* Messages */}
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <h2 className="text-sm font-semibold text-gray-700 mb-4">Messages</h2>
+        <div className="space-y-3 max-h-80 overflow-y-auto mb-4 pr-1">
+          {messages.length === 0 ? (
+            <p className="text-gray-400 text-sm text-center py-4">No messages yet. Start the conversation.</p>
+          ) : (
+            messages.map((m) => {
+              const isOwn = user && String(m.sender_id) === String(user.id);
+              return (
+                <div key={m.id} className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'}`}>
+                  <span className="text-xs text-gray-400 mb-1">
+                    {isOwn ? 'You' : m.sender_name} · {new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                  <div className={`px-3 py-2 rounded-2xl text-sm max-w-xs break-words ${
+                    isOwn ? 'bg-green-600 text-white rounded-tr-sm' : 'bg-gray-100 text-gray-900 rounded-tl-sm'
+                  }`}>
+                    {m.body}
+                  </div>
+                </div>
+              );
+            })
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+        <form onSubmit={handleSendMessage} className="flex gap-2">
+          <input
+            type="text"
+            value={msgInput}
+            onChange={(e) => setMsgInput(e.target.value)}
+            placeholder="Type a message…"
+            className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+          />
+          <button
+            type="submit"
+            disabled={sending || !msgInput.trim()}
+            className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50"
+          >
+            Send
+          </button>
+        </form>
       </div>
     </div>
   );
