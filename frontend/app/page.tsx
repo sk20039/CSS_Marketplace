@@ -15,6 +15,107 @@ interface Listing {
   photos: { id: number; filename: string; display_order: number }[];
 }
 
+const CATEGORIES = [
+  {
+    value: 'bat',
+    label: 'Cricket Bats',
+    description: 'Kashmir willow, English willow & more',
+    icon: (
+      <svg viewBox="0 0 64 64" className="w-10 h-10" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M12 52L44 8l8 8L20 52z" strokeLinejoin="round" />
+        <circle cx="14" cy="50" r="4" />
+      </svg>
+    ),
+  },
+  {
+    value: 'helmet',
+    label: 'Helmets',
+    description: 'Masuri, Shrey & protective gear',
+    icon: (
+      <svg viewBox="0 0 64 64" className="w-10 h-10" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M12 32a20 20 0 0140 0v6H12v-6z" strokeLinejoin="round" />
+        <path d="M12 38h40M20 38v8M44 38v8" strokeLinecap="round" />
+      </svg>
+    ),
+  },
+  {
+    value: 'pads',
+    label: 'Batting Pads',
+    description: 'Front leg, thigh & shin protection',
+    icon: (
+      <svg viewBox="0 0 64 64" className="w-10 h-10" fill="none" stroke="currentColor" strokeWidth="2">
+        <rect x="20" y="8" width="24" height="48" rx="6" />
+        <line x1="20" y1="24" x2="44" y2="24" />
+        <line x1="20" y1="36" x2="44" y2="36" />
+      </svg>
+    ),
+  },
+  {
+    value: 'gloves',
+    label: 'Gloves',
+    description: 'Batting & wicket keeping gloves',
+    icon: (
+      <svg viewBox="0 0 64 64" className="w-10 h-10" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M16 40V22a4 4 0 018 0v-4a4 4 0 018 0v-2a4 4 0 018 0v4a4 4 0 018 0v20c0 8-6 14-14 14h-4c-8 0-14-6-14-14z" strokeLinejoin="round" />
+      </svg>
+    ),
+  },
+  {
+    value: 'kit-bag',
+    label: 'Kit Bags',
+    description: 'Duffle, wheelie & backpack styles',
+    icon: (
+      <svg viewBox="0 0 64 64" className="w-10 h-10" fill="none" stroke="currentColor" strokeWidth="2">
+        <rect x="8" y="20" width="48" height="34" rx="4" />
+        <path d="M22 20v-6a10 10 0 0120 0v6" />
+        <line x1="8" y1="34" x2="56" y2="34" />
+      </svg>
+    ),
+  },
+  {
+    value: 'other',
+    label: 'Accessories',
+    description: 'Balls, grips, guards & more',
+    icon: (
+      <svg viewBox="0 0 64 64" className="w-10 h-10" fill="none" stroke="currentColor" strokeWidth="2">
+        <circle cx="32" cy="32" r="20" />
+        <path d="M14 26c4 2 8 3 18 3s14-1 18-3M14 38c4-2 8-3 18-3s14 1 18 3" />
+        <line x1="32" y1="12" x2="32" y2="52" />
+      </svg>
+    ),
+  },
+];
+
+const TRUST_BADGES = [
+  {
+    icon: (
+      <svg className="w-7 h-7 text-brand-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+      </svg>
+    ),
+    title: 'Secure Escrow',
+    text: 'Payment held safely until you confirm delivery',
+  },
+  {
+    icon: (
+      <svg className="w-7 h-7 text-brand-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+      </svg>
+    ),
+    title: 'Verified Listings',
+    text: 'Every listing reviewed before going live',
+  },
+  {
+    icon: (
+      <svg className="w-7 h-7 text-brand-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
+      </svg>
+    ),
+    title: 'Buyer Protection',
+    text: 'Dispute resolution and full refunds if item not as described',
+  },
+];
+
 export default function HomePage() {
   const [listings, setListings] = useState<Listing[]>([]);
   const [loading, setLoading] = useState(true);
@@ -27,34 +128,125 @@ export default function HomePage() {
   }, []);
 
   return (
-    <div className="space-y-10">
+    <div className="space-y-14">
       {/* Hero */}
-      <section className="bg-green-700 text-white rounded-2xl px-8 py-12 text-center">
-        <h1 className="text-4xl font-bold mb-3">USA Cricket Equipment Marketplace</h1>
-        <p className="text-green-100 text-lg mb-6">Buy and sell quality cricket gear — bats, helmets, pads, gloves & more.</p>
-        <Link href="/listings" className="bg-white text-green-700 font-semibold px-6 py-3 rounded-xl hover:bg-green-50 inline-block">
-          Browse All Listings
-        </Link>
+      <section className="-mx-4 sm:-mx-6 lg:-mx-8 -mt-8 bg-gray-900 relative overflow-hidden">
+        <div className="absolute inset-0 bg-gradient-to-br from-gray-900 via-gray-900 to-brand-900 opacity-90" />
+        <div className="absolute inset-0 opacity-5" style={{
+          backgroundImage: 'radial-gradient(circle at 20% 50%, #22c55e 0%, transparent 50%), radial-gradient(circle at 80% 20%, #16a34a 0%, transparent 40%)',
+        }} />
+        <div className="relative max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-20 text-center">
+          <div className="inline-flex items-center gap-2 bg-brand-700/20 border border-brand-700/30 text-brand-400 text-sm font-medium px-4 py-1.5 rounded-full mb-6">
+            <span className="w-2 h-2 rounded-full bg-brand-500 animate-pulse" />
+            USA&apos;s #1 Cricket Equipment Marketplace
+          </div>
+          <h1 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold text-white leading-tight mb-5">
+            Buy & Sell Premium<br />
+            <span className="text-brand-500">Cricket Equipment</span>
+          </h1>
+          <p className="text-gray-400 text-lg sm:text-xl max-w-2xl mx-auto mb-8">
+            From Kashmir willow bats to Masuri helmets — find quality used gear at unbeatable prices, with secure escrow protection.
+          </p>
+          <div className="flex flex-wrap items-center justify-center gap-4">
+            <Link
+              href="/listings"
+              className="bg-brand-700 text-white font-bold px-8 py-3.5 rounded-lg hover:bg-brand-800 transition-colors text-base"
+            >
+              Browse All Gear
+            </Link>
+            <Link
+              href="/register"
+              className="bg-white/10 backdrop-blur text-white font-semibold px-8 py-3.5 rounded-lg border border-white/20 hover:bg-white/20 transition-colors text-base"
+            >
+              Start Selling
+            </Link>
+          </div>
+        </div>
+      </section>
+
+      {/* Trust badges */}
+      <section>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          {TRUST_BADGES.map((b) => (
+            <div key={b.title} className="bg-white rounded-xl border border-gray-200 p-5 flex items-start gap-4">
+              <div className="shrink-0 w-12 h-12 bg-brand-50 rounded-lg flex items-center justify-center">
+                {b.icon}
+              </div>
+              <div>
+                <p className="font-semibold text-gray-900">{b.title}</p>
+                <p className="text-sm text-gray-500 mt-0.5">{b.text}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Shop by category */}
+      <section>
+        <div className="flex items-end justify-between mb-5">
+          <div>
+            <p className="text-brand-700 text-sm font-semibold uppercase tracking-wider mb-1">Browse by</p>
+            <h2 className="text-2xl font-bold text-gray-900">Shop by Category</h2>
+          </div>
+          <Link href="/listings" className="text-sm text-brand-700 font-medium hover:underline">
+            View all &rarr;
+          </Link>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          {CATEGORIES.map((cat) => (
+            <Link
+              key={cat.value}
+              href={`/listings?category=${cat.value}`}
+              className="group bg-white border border-gray-200 rounded-xl p-4 text-center hover:border-brand-500 hover:shadow-md transition-all duration-200"
+            >
+              <div className="flex justify-center text-gray-400 group-hover:text-brand-700 transition-colors mb-3">
+                {cat.icon}
+              </div>
+              <p className="text-sm font-semibold text-gray-900 group-hover:text-brand-700 transition-colors">
+                {cat.label}
+              </p>
+              <p className="text-xs text-gray-400 mt-0.5 hidden lg:block leading-tight">
+                {cat.description}
+              </p>
+            </Link>
+          ))}
+        </div>
       </section>
 
       {/* Featured Listings */}
       <section>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-bold text-gray-900">Featured Listings</h2>
-          <Link href="/listings" className="text-green-600 text-sm hover:underline">View all →</Link>
+        <div className="flex items-end justify-between mb-5">
+          <div>
+            <p className="text-brand-700 text-sm font-semibold uppercase tracking-wider mb-1">Just listed</p>
+            <h2 className="text-2xl font-bold text-gray-900">Featured Listings</h2>
+          </div>
+          <Link href="/listings" className="text-sm text-brand-700 font-medium hover:underline">
+            View all &rarr;
+          </Link>
         </div>
 
         {loading ? (
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
             {Array.from({ length: 8 }).map((_, i) => (
-              <div key={i} className="bg-gray-200 rounded-xl aspect-square animate-pulse" />
+              <div key={i} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                <div className="aspect-square bg-gray-100 animate-pulse" />
+                <div className="p-3 space-y-2">
+                  <div className="h-4 bg-gray-100 rounded animate-pulse" />
+                  <div className="h-5 bg-gray-100 rounded w-1/2 animate-pulse" />
+                </div>
+              </div>
             ))}
           </div>
         ) : listings.length === 0 ? (
-          <div className="text-center py-16 bg-white rounded-xl border border-gray-200">
-            <p className="text-gray-400 text-lg">No listings yet.</p>
-            <Link href="/register" className="mt-4 inline-block text-green-600 hover:underline">
-              Be the first to sell!
+          <div className="text-center py-20 bg-white rounded-xl border border-gray-200">
+            <div className="text-5xl mb-4 text-gray-300">
+              <svg className="w-16 h-16 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+              </svg>
+            </div>
+            <p className="text-gray-500 font-medium">No listings yet</p>
+            <Link href="/register" className="mt-4 inline-block text-brand-700 font-semibold hover:underline text-sm">
+              Be the first to sell gear &rarr;
             </Link>
           </div>
         ) : (
@@ -64,26 +256,37 @@ export default function HomePage() {
         )}
       </section>
 
-      {/* Categories */}
-      <section>
-        <h2 className="text-xl font-bold text-gray-900 mb-4">Shop by Category</h2>
-        <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
+      {/* How it works */}
+      <section className="bg-white rounded-2xl border border-gray-200 px-6 py-10">
+        <div className="text-center mb-8">
+          <p className="text-brand-700 text-sm font-semibold uppercase tracking-wider mb-1">Simple & safe</p>
+          <h2 className="text-2xl font-bold text-gray-900">How Cricket Market Works</h2>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-8">
           {[
-            { value: 'bat', label: 'Bats', emoji: '🏏' },
-            { value: 'helmet', label: 'Helmets', emoji: '⛑️' },
-            { value: 'pads', label: 'Pads', emoji: '🦵' },
-            { value: 'gloves', label: 'Gloves', emoji: '🧤' },
-            { value: 'kit-bag', label: 'Kit Bags', emoji: '🎒' },
-            { value: 'other', label: 'Other', emoji: '📦' },
-          ].map((cat) => (
-            <Link
-              key={cat.value}
-              href={`/listings?category=${cat.value}`}
-              className="bg-white border border-gray-200 rounded-xl p-4 text-center hover:border-green-400 hover:shadow-sm transition-all"
-            >
-              <div className="text-3xl mb-1">{cat.emoji}</div>
-              <p className="text-xs font-medium text-gray-700">{cat.label}</p>
-            </Link>
+            {
+              step: '01',
+              title: 'Find Your Gear',
+              text: 'Browse hundreds of listings or search by category, condition, and price range.',
+            },
+            {
+              step: '02',
+              title: 'Pay Securely',
+              text: 'Your payment is held in escrow — never released until you confirm the item arrived as described.',
+            },
+            {
+              step: '03',
+              title: 'Play Cricket',
+              text: 'Receive your gear, confirm delivery, and funds are released to the seller. Simple.',
+            },
+          ].map((item) => (
+            <div key={item.step} className="text-center">
+              <div className="w-12 h-12 bg-brand-700 text-white rounded-xl text-lg font-extrabold flex items-center justify-center mx-auto mb-4">
+                {item.step}
+              </div>
+              <h3 className="font-bold text-gray-900 text-lg mb-2">{item.title}</h3>
+              <p className="text-gray-500 text-sm leading-relaxed">{item.text}</p>
+            </div>
           ))}
         </div>
       </section>
