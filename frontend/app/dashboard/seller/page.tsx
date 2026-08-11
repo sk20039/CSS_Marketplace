@@ -15,6 +15,21 @@ interface Order {
   id: number; status: string; amount_cents: number; listing_id: number; buyer_id: number;
 }
 
+type ConnectStatus = { connected: boolean; charges_enabled: boolean; details_submitted: boolean; stub?: boolean } | null;
+
+const STATUS_STYLE: Record<string, { label: string; cls: string }> = {
+  CREATED:   { label: 'Created',   cls: 'bg-purple-100 text-purple-700' },
+  CAPTURING: { label: 'Capturing', cls: 'bg-gray-100 text-gray-600' },
+  HELD:      { label: 'Payment Held', cls: 'bg-blue-100 text-blue-700' },
+  SHIPPED:   { label: 'Shipped',   cls: 'bg-amber-100 text-amber-700' },
+  DELIVERED: { label: 'Delivered', cls: 'bg-orange-100 text-orange-700' },
+  DISPUTED:  { label: 'Disputed',  cls: 'bg-red-100 text-red-700' },
+  RELEASING: { label: 'Releasing', cls: 'bg-gray-100 text-gray-600' },
+  RELEASED:  { label: 'Released',  cls: 'bg-brand-100 text-brand-800' },
+  REFUNDING: { label: 'Refunding', cls: 'bg-gray-100 text-gray-600' },
+  REFUNDED:  { label: 'Refunded',  cls: 'bg-gray-100 text-gray-500' },
+};
+
 export default function SellerDashboard() {
   return (
     <AuthGuard allowedRoles={['seller', 'admin']}>
@@ -22,8 +37,6 @@ export default function SellerDashboard() {
     </AuthGuard>
   );
 }
-
-type ConnectStatus = { connected: boolean; charges_enabled: boolean; details_submitted: boolean; stub?: boolean } | null;
 
 function SellerContent() {
   const { user, accessToken } = useAuth();
@@ -35,7 +48,6 @@ function SellerContent() {
   const [connecting, setConnecting] = useState(false);
   const [connectError, setConnectError] = useState('');
 
-  // Fetch connect status; on stripe_return also sync the new stripe_account_id to escrow
   useEffect(() => {
     if (!user) return;
     const isReturn = searchParams.get('stripe_return') === '1';
@@ -51,9 +63,7 @@ function SellerContent() {
   useEffect(() => {
     if (!user) return;
     Promise.all([
-      listingFetch(`/listings/mine`).then((r) => r.json()).then((d) => {
-        setListings(d.listings || []);
-      }),
+      listingFetch(`/listings/mine`).then((r) => r.json()).then((d) => setListings(d.listings || [])),
       getOrders({ seller_id: String(user.id) }).then(setOrders),
     ]).finally(() => setLoading(false));
   }, [user]);
@@ -64,7 +74,7 @@ function SellerContent() {
     try {
       const data = await connectSellerStripe();
       if (data.stub) {
-        setConnectError('Stripe is not configured on this server. Add STRIPE_SECRET_KEY to your escrow-service .env to enable real payouts.');
+        setConnectError('Stripe is not configured. Add STRIPE_SECRET_KEY to escrow-service/.env to enable real payouts.');
         return;
       }
       if (data.url) {
@@ -79,78 +89,148 @@ function SellerContent() {
     }
   }
 
-  if (loading) return <div className="text-center py-20 text-gray-400">Loading...</div>;
-
-  const myListings = listings; // /listings/mine already scopes to the current seller, any status
-
   const activeOrders = orders.filter((o) => !['RELEASED', 'REFUNDED'].includes(o.status));
   const completedOrders = orders.filter((o) => ['RELEASED', 'REFUNDED'].includes(o.status));
+  const totalEarned = completedOrders.filter((o) => o.status === 'RELEASED').reduce((s, o) => s + o.amount_cents, 0);
+  const activeListings = listings.filter((l) => l.status === 'active');
+
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <div className="h-8 bg-gray-200 rounded w-48 animate-pulse" />
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="bg-white rounded-xl border border-gray-200 p-5 h-24 animate-pulse" />
+          ))}
+        </div>
+        <div className="space-y-2">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="bg-white rounded-xl border border-gray-200 h-16 animate-pulse" />
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8">
+      {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gray-900">Seller Dashboard</h1>
-        <Link href="/listings/new" className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700">
-          + New Listing
+        <div>
+          <p className="text-brand-700 text-sm font-semibold uppercase tracking-wider mb-1">Dashboard</p>
+          <h1 className="text-2xl font-bold text-gray-900">Seller Dashboard</h1>
+        </div>
+        <Link
+          href="/listings/new"
+          className="inline-flex items-center gap-2 bg-brand-700 text-white text-sm font-semibold px-4 py-2.5 rounded-lg hover:bg-brand-800 transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+          </svg>
+          New Listing
         </Link>
       </div>
 
-      {/* Stripe Connect */}
+      {/* Stripe Connect banner */}
       {connectStatus && (
-        <div className={`rounded-xl border p-4 ${
-          connectStatus.charges_enabled ? 'bg-green-50 border-green-200' :
-          connectStatus.stub ? 'bg-gray-50 border-gray-200' :
-          'bg-amber-50 border-amber-200'
+        <div className={`rounded-xl border p-5 ${
+          connectStatus.charges_enabled
+            ? 'bg-brand-50 border-brand-200'
+            : connectStatus.stub
+            ? 'bg-gray-50 border-gray-200'
+            : 'bg-amber-50 border-amber-200'
         }`}>
           {connectStatus.charges_enabled ? (
-            <div className="flex items-center gap-2 text-green-800">
-              <span className="text-lg">✓</span>
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 bg-brand-700 rounded-full flex items-center justify-center shrink-0">
+                <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
               <div>
-                <p className="font-semibold text-sm">Stripe Connected</p>
-                <p className="text-xs text-green-700">You will receive payouts when orders are released.</p>
+                <p className="font-semibold text-brand-900 text-sm">Stripe Connected</p>
+                <p className="text-xs text-brand-700 mt-0.5">You will receive payouts when orders are released.</p>
               </div>
             </div>
           ) : connectStatus.stub ? (
-            <div className="text-gray-600 text-sm">
-              <p className="font-semibold">Stripe not configured</p>
-              <p className="text-xs mt-0.5">Running in stub mode — set <code className="bg-gray-100 px-1 rounded">STRIPE_SECRET_KEY</code> in <code className="bg-gray-100 px-1 rounded">escrow-service/.env</code> and <code className="bg-gray-100 px-1 rounded">auth-service/.env</code> to enable real payouts.</p>
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 bg-gray-200 rounded-full flex items-center justify-center shrink-0 mt-0.5">
+                <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <div>
+                <p className="font-semibold text-gray-700 text-sm">Stripe not configured</p>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Running in stub mode. Set <code className="bg-gray-100 px-1 py-0.5 rounded font-mono">STRIPE_SECRET_KEY</code> in{' '}
+                  <code className="bg-gray-100 px-1 py-0.5 rounded font-mono">escrow-service/.env</code> to enable real payouts.
+                </p>
+              </div>
             </div>
           ) : (
-            <div className="flex items-center justify-between gap-4">
-              <div className="text-amber-800">
-                <p className="font-semibold text-sm">
-                  {connectStatus.details_submitted ? 'Stripe: Pending Approval' : 'Connect Stripe to receive payouts'}
-                </p>
-                <p className="text-xs text-amber-700 mt-0.5">
-                  {connectStatus.details_submitted
-                    ? 'Stripe is reviewing your account. This usually takes 1–2 business days.'
-                    : 'Complete onboarding to receive funds when buyers confirm receipt.'}
-                </p>
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-start gap-3">
+                <div className="w-9 h-9 bg-amber-200 rounded-full flex items-center justify-center shrink-0 mt-0.5">
+                  <svg className="w-5 h-5 text-amber-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                </div>
+                <div>
+                  <p className="font-semibold text-amber-900 text-sm">
+                    {connectStatus.details_submitted ? 'Stripe: Pending Approval' : 'Connect Stripe to receive payouts'}
+                  </p>
+                  <p className="text-xs text-amber-700 mt-0.5">
+                    {connectStatus.details_submitted
+                      ? 'Stripe is reviewing your account. This usually takes 1–2 business days.'
+                      : 'Complete onboarding to receive funds when buyers confirm receipt.'}
+                  </p>
+                </div>
               </div>
               <button
                 onClick={handleConnect}
                 disabled={connecting}
-                className="shrink-0 bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50"
+                className="shrink-0 bg-amber-600 text-white text-sm font-semibold px-4 py-2 rounded-lg hover:bg-amber-700 disabled:opacity-50 transition-colors"
               >
                 {connecting ? 'Redirecting…' : connectStatus.details_submitted ? 'Complete Onboarding' : 'Connect Stripe'}
               </button>
             </div>
           )}
-          {connectError && <p className="text-red-600 text-xs mt-2">{connectError}</p>}
+          {connectError && (
+            <p className="text-red-600 text-xs mt-3 bg-red-50 border border-red-100 rounded px-3 py-2">{connectError}</p>
+          )}
         </div>
       )}
 
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         {[
-          { label: 'Active Listings', value: myListings.filter((l) => l.status === 'active').length },
-          { label: 'Total Listings', value: myListings.length },
-          { label: 'Active Orders', value: activeOrders.length },
-          { label: 'Completed Sales', value: completedOrders.length },
+          {
+            label: 'Active Listings', value: activeListings.length,
+            icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />,
+          },
+          {
+            label: 'Total Listings', value: listings.length,
+            icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />,
+          },
+          {
+            label: 'Active Orders', value: activeOrders.length,
+            icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />,
+          },
+          {
+            label: 'Total Earned', value: `$${(totalEarned / 100).toFixed(2)}`,
+            icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />,
+          },
         ].map((s) => (
-          <div key={s.label} className="bg-white rounded-xl border border-gray-200 p-4 text-center">
-            <p className="text-2xl font-bold text-green-700">{s.value}</p>
-            <p className="text-xs text-gray-500 mt-0.5">{s.label}</p>
+          <div key={s.label} className="bg-white rounded-xl border border-gray-200 p-5">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{s.label}</p>
+              <div className="w-8 h-8 bg-brand-50 rounded-lg flex items-center justify-center">
+                <svg className="w-4 h-4 text-brand-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  {s.icon}
+                </svg>
+              </div>
+            </div>
+            <p className="text-2xl font-bold text-gray-900">{s.value}</p>
           </div>
         ))}
       </div>
@@ -158,48 +238,107 @@ function SellerContent() {
       {/* Active Orders */}
       {activeOrders.length > 0 && (
         <section>
-          <h2 className="text-lg font-semibold text-gray-800 mb-3">Active Orders</h2>
+          <h2 className="text-lg font-semibold text-gray-900 mb-3">Active Orders</h2>
           <div className="space-y-2">
-            {activeOrders.map((o) => (
-              <Link key={o.id} href={`/orders/${o.id}`}
-                className="flex items-center justify-between bg-white rounded-xl border border-gray-200 px-4 py-3 hover:shadow-sm transition-shadow">
-                <span className="text-sm font-medium text-gray-800">Order #{o.id} — Listing #{o.listing_id}</span>
-                <div className="flex items-center gap-3">
-                  <span className="text-sm font-semibold text-green-700">${(o.amount_cents / 100).toFixed(2)}</span>
-                  <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">{o.status}</span>
-                </div>
-              </Link>
-            ))}
+            {activeOrders.map((o) => <OrderRow key={o.id} order={o} />)}
           </div>
         </section>
       )}
 
       {/* My Listings */}
       <section>
-        <h2 className="text-lg font-semibold text-gray-800 mb-3">My Listings</h2>
-        {myListings.length === 0 ? (
-          <div className="text-center py-12 bg-white rounded-xl border border-gray-200">
-            <p className="text-gray-400">No listings yet.</p>
-            <Link href="/listings/new" className="text-green-600 hover:underline text-sm mt-2 block">Create your first listing →</Link>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-lg font-semibold text-gray-900">My Listings</h2>
+          <Link href="/listings/new" className="text-sm text-brand-700 font-medium hover:underline">
+            + Add new
+          </Link>
+        </div>
+        {listings.length === 0 ? (
+          <div className="text-center py-20 bg-white rounded-xl border border-gray-200">
+            <svg className="w-14 h-14 text-gray-200 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+            </svg>
+            <p className="text-gray-500 font-medium">No listings yet</p>
+            <Link href="/listings/new" className="mt-3 inline-flex items-center gap-1 text-brand-700 text-sm font-medium hover:underline">
+              Create your first listing &rarr;
+            </Link>
           </div>
         ) : (
           <div className="space-y-2">
-            {myListings.map((l) => (
-              <Link key={l.id} href={`/listings/${l.id}`}
-                className="flex items-center justify-between bg-white rounded-xl border border-gray-200 px-4 py-3 hover:shadow-sm transition-shadow">
-                <span className="text-sm font-medium text-gray-800 truncate max-w-sm">{l.title}</span>
-                <div className="flex items-center gap-3">
-                  <span className="text-sm font-semibold text-green-700">${(l.price_cents / 100).toFixed(2)}</span>
-                  <span className={`text-xs px-2 py-0.5 rounded-full ${
-                    l.status === 'active' ? 'bg-green-100 text-green-700' :
-                    l.status === 'sold' ? 'bg-gray-200 text-gray-600' : 'bg-yellow-100 text-yellow-700'
-                  }`}>{l.status}</span>
-                </div>
-              </Link>
-            ))}
+            {listings.map((l) => <ListingRow key={l.id} listing={l} />)}
           </div>
         )}
       </section>
     </div>
+  );
+}
+
+function OrderRow({ order: o }: { order: Order }) {
+  const s = STATUS_STYLE[o.status] ?? { label: o.status, cls: 'bg-gray-100 text-gray-600' };
+  return (
+    <Link
+      href={`/orders/${o.id}`}
+      className="flex items-center justify-between bg-white rounded-xl border border-gray-200 px-5 py-4 hover:shadow-md hover:border-brand-200 transition-all group"
+    >
+      <div className="flex items-center gap-4">
+        <div className="w-10 h-10 bg-gray-100 rounded-lg flex items-center justify-center text-gray-400 group-hover:bg-brand-50 transition-colors">
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+          </svg>
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-gray-900">Order #{o.id}</p>
+          <p className="text-xs text-gray-400">Listing #{o.listing_id}</p>
+        </div>
+      </div>
+      <div className="flex items-center gap-3">
+        <p className="text-sm font-bold text-gray-900">${(o.amount_cents / 100).toFixed(2)}</p>
+        <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${s.cls}`}>{s.label}</span>
+        <svg className="w-4 h-4 text-gray-300 group-hover:text-brand-600 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+      </div>
+    </Link>
+  );
+}
+
+function ListingRow({ listing: l }: { listing: Listing }) {
+  const photo = l.photos?.[0];
+  const imgUrl = photo ? `${process.env.NEXT_PUBLIC_LISTING_URL}/photos/${photo.filename}` : null;
+
+  return (
+    <Link
+      href={`/listings/${l.id}`}
+      className="flex items-center justify-between bg-white rounded-xl border border-gray-200 px-5 py-3.5 hover:shadow-md hover:border-brand-200 transition-all group"
+    >
+      <div className="flex items-center gap-4">
+        <div className="w-12 h-12 rounded-lg overflow-hidden bg-gray-100 shrink-0">
+          {imgUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={imgUrl} alt={l.title} className="w-full h-full object-cover" />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center text-gray-300">
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+            </div>
+          )}
+        </div>
+        <p className="text-sm font-semibold text-gray-900 truncate max-w-xs">{l.title}</p>
+      </div>
+      <div className="flex items-center gap-3">
+        <p className="text-sm font-bold text-gray-900">${(l.price_cents / 100).toFixed(2)}</p>
+        <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${
+          l.status === 'active' ? 'bg-brand-100 text-brand-800' :
+          l.status === 'sold'   ? 'bg-gray-100 text-gray-500' :
+                                  'bg-amber-100 text-amber-700'
+        }`}>
+          {l.status.charAt(0).toUpperCase() + l.status.slice(1)}
+        </span>
+        <svg className="w-4 h-4 text-gray-300 group-hover:text-brand-600 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+      </div>
+    </Link>
   );
 }
