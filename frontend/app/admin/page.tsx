@@ -4,22 +4,14 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import AuthGuard from '@/components/AuthGuard';
 import { getOrders } from '@/lib/api';
+import { ORDER_STATUS_STYLE } from '@/lib/constants';
+import ErrorAlert from '@/components/ErrorAlert';
 
 interface Order {
   id: number; status: string; amount_cents: number;
   listing_id: number; buyer_id: number; seller_id: number;
   dispute_reason_text?: string; dispute_category?: string;
 }
-
-const STATUS_META: Record<string, { cls: string; label: string }> = {
-  DISPUTED:  { cls: 'bg-red-100 text-red-700',    label: 'Disputed' },
-  HELD:      { cls: 'bg-blue-100 text-blue-700',   label: 'Held' },
-  SHIPPED:   { cls: 'bg-amber-100 text-amber-700', label: 'Shipped' },
-  DELIVERED: { cls: 'bg-orange-100 text-orange-700', label: 'Delivered' },
-  RELEASED:  { cls: 'bg-brand-100 text-brand-800', label: 'Released' },
-  REFUNDED:  { cls: 'bg-gray-100 text-gray-600',   label: 'Refunded' },
-  CANCELLED: { cls: 'bg-gray-100 text-gray-500',   label: 'Cancelled' },
-};
 
 const DISPUTE_CATEGORY_META: Record<string, { cls: string }> = {
   valid:     { cls: 'bg-red-50 border border-red-200 text-red-700' },
@@ -65,14 +57,7 @@ function AdminContent() {
   }
 
   if (loadError) {
-    return (
-      <div className="flex items-center gap-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded-xl px-5 py-4 mt-8">
-        <svg className="w-5 h-5 shrink-0" fill="currentColor" viewBox="0 0 20 20">
-          <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-        </svg>
-        {loadError}
-      </div>
-    );
+    return <div className="mt-8"><ErrorAlert message={loadError} /></div>;
   }
 
   return (
@@ -141,7 +126,7 @@ function AdminContent() {
       ) : (
         <div className="space-y-2">
           {filtered.map((o) => {
-            const sm = STATUS_META[o.status] ?? { cls: 'bg-gray-100 text-gray-600', label: o.status };
+            const sm = ORDER_STATUS_STYLE[o.status] ?? { cls: 'bg-gray-100 text-gray-600', label: o.status };
             const dcm = o.dispute_category ? DISPUTE_CATEGORY_META[o.dispute_category] : null;
             return (
               <div key={o.id} className="bg-white rounded-xl border border-gray-200 px-5 py-4 hover:shadow-sm transition-shadow">

@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { CONDITION_LABELS, CATEGORY_LABELS } from '@/lib/constants';
 
 interface Photo {
   id: number;
@@ -16,28 +17,13 @@ interface Listing {
   photos: Photo[];
 }
 
-const CONDITION_LABELS: Record<string, { label: string; color: string }> = {
-  new:       { label: 'New',       color: 'bg-brand-700 text-white' },
-  used_good: { label: 'Used – Good', color: 'bg-blue-600 text-white' },
-  used_fair: { label: 'Used – Fair', color: 'bg-amber-500 text-white' },
-};
-
-const CATEGORY_LABELS: Record<string, string> = {
-  bat:     'Bat',
-  helmet:  'Helmet',
-  pads:    'Pads',
-  gloves:  'Gloves',
-  'kit-bag': 'Kit Bag',
-  other:   'Other',
-};
-
 export default function ListingCard({ listing }: { listing: Listing }) {
   const photo = listing.photos?.[0];
   const imgUrl = photo
     ? `${process.env.NEXT_PUBLIC_LISTING_URL}/photos/${photo.filename}`
     : null;
 
-  const condition = CONDITION_LABELS[listing.condition] ?? { label: listing.condition, color: 'bg-gray-600 text-white' };
+  const condition = CONDITION_LABELS[listing.condition] ?? { label: listing.condition, cls: 'bg-gray-600 text-white' };
 
   return (
     <Link
@@ -63,7 +49,7 @@ export default function ListingCard({ listing }: { listing: Listing }) {
         )}
 
         {/* Condition badge */}
-        <span className={`absolute top-2 left-2 text-xs font-semibold px-2 py-0.5 rounded-md ${condition.color}`}>
+        <span className={`absolute top-2 left-2 text-xs font-semibold px-2 py-0.5 rounded-md ${condition.cls}`}>
           {condition.label}
         </span>
 

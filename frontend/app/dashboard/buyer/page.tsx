@@ -5,23 +5,11 @@ import Link from 'next/link';
 import AuthGuard from '@/components/AuthGuard';
 import { getOrders } from '@/lib/api';
 import { useUser } from '@/lib/auth';
+import { ORDER_STATUS_STYLE } from '@/lib/constants';
 
 interface Order {
   id: number; status: string; amount_cents: number; listing_id: number; seller_id: number;
 }
-
-const STATUS_STYLE: Record<string, { label: string; cls: string }> = {
-  CREATED:   { label: 'Created',   cls: 'bg-purple-100 text-purple-700' },
-  CAPTURING: { label: 'Capturing', cls: 'bg-gray-100 text-gray-600' },
-  HELD:      { label: 'Payment Held', cls: 'bg-blue-100 text-blue-700' },
-  SHIPPED:   { label: 'Shipped',   cls: 'bg-amber-100 text-amber-700' },
-  DELIVERED: { label: 'Delivered', cls: 'bg-orange-100 text-orange-700' },
-  DISPUTED:  { label: 'Disputed',  cls: 'bg-red-100 text-red-700' },
-  RELEASING: { label: 'Releasing', cls: 'bg-gray-100 text-gray-600' },
-  RELEASED:  { label: 'Released',  cls: 'bg-brand-100 text-brand-800' },
-  REFUNDING: { label: 'Refunding', cls: 'bg-gray-100 text-gray-600' },
-  REFUNDED:  { label: 'Refunded',  cls: 'bg-gray-100 text-gray-500' },
-};
 
 export default function BuyerDashboard() {
   return (
@@ -155,7 +143,7 @@ function BuyerContent() {
 }
 
 function OrderRow({ order: o }: { order: Order }) {
-  const s = STATUS_STYLE[o.status] ?? { label: o.status, cls: 'bg-gray-100 text-gray-600' };
+  const s = ORDER_STATUS_STYLE[o.status] ?? { label: o.status, cls: 'bg-gray-100 text-gray-600' };
   return (
     <Link
       href={`/orders/${o.id}`}

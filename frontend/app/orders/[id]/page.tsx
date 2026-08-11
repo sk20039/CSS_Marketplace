@@ -7,6 +7,7 @@ import AuthGuard from '@/components/AuthGuard';
 import OrderTimeline from '@/components/OrderTimeline';
 import { getOrder, cancelOrder, shipOrder, deliverOrder, confirmOrder, disputeOrder, getMessages, sendMessage, submitReview, getOrderReview } from '@/lib/api';
 import { useUser } from '@/lib/auth';
+import ErrorAlert from '@/components/ErrorAlert';
 
 interface Order {
   id: number; status: string; amount_cents: number;
@@ -213,14 +214,7 @@ function OrderContent() {
       </div>
 
       {/* Action buttons */}
-      {actionError && (
-        <div className="flex items-center gap-2 bg-red-50 border border-red-200 text-red-700 text-sm rounded-xl px-4 py-3">
-          <svg className="w-4 h-4 shrink-0" fill="currentColor" viewBox="0 0 20 20">
-            <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-          </svg>
-          {actionError}
-        </div>
-      )}
+      <ErrorAlert message={actionError} />
 
       {(isSeller && ['HELD', 'SHIPPED'].includes(order.status)) ||
        (isBuyer && ['DELIVERED', 'HELD'].includes(order.status)) ? (
@@ -389,6 +383,7 @@ function OrderContent() {
                     {[1,2,3,4,5].map((s) => (
                       <button
                         key={s} type="button"
+                        aria-label={`Rate ${s} star${s !== 1 ? 's' : ''}`}
                         onClick={() => setReviewRating(s)}
                         className="transition-transform hover:scale-110"
                       >

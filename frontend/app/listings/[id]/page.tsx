@@ -5,6 +5,8 @@ import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { getListing, createOrder, getUserReviews } from '@/lib/api';
 import { useUser } from '@/lib/auth';
+import { CONDITION_LABELS, CATEGORY_LABELS } from '@/lib/constants';
+import ErrorAlert from '@/components/ErrorAlert';
 
 interface Photo { id: number; filename: string; display_order: number; }
 interface Listing {
@@ -12,17 +14,6 @@ interface Listing {
   price_cents: number; category: string; condition: string; status: string;
   photos: Photo[]; created_at: string;
 }
-
-const CONDITION_LABELS: Record<string, { label: string; cls: string }> = {
-  new:       { label: 'New',         cls: 'bg-brand-700 text-white' },
-  used_good: { label: 'Used – Good', cls: 'bg-blue-600 text-white' },
-  used_fair: { label: 'Used – Fair', cls: 'bg-amber-500 text-white' },
-};
-
-const CATEGORY_LABELS: Record<string, string> = {
-  bat: 'Cricket Bat', helmet: 'Helmet', pads: 'Batting Pads',
-  gloves: 'Gloves', 'kit-bag': 'Kit Bag', other: 'Accessories',
-};
 
 function StarRating({ rating, count }: { rating: number; count: number }) {
   const full = Math.round(rating);
@@ -197,7 +188,10 @@ export default function ListingDetailPage() {
 
           <h1 className="text-2xl font-bold text-gray-900 leading-snug">{listing.title}</h1>
 
-          <p className="text-4xl font-extrabold text-brand-700">${(listing.price_cents / 100).toFixed(2)}</p>
+          <div>
+            <p className="text-4xl font-extrabold text-brand-700">${(listing.price_cents / 100).toFixed(2)}</p>
+            <p className="text-xs text-gray-400 mt-1">+ 3% platform fee applies at checkout</p>
+          </div>
 
           {/* Seller rating */}
           {sellerRating && sellerRating.count > 0 && sellerRating.average_rating != null && (
@@ -215,15 +209,7 @@ export default function ListingDetailPage() {
             </div>
           )}
 
-          {/* Error */}
-          {error && (
-            <div className="flex items-center gap-2 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">
-              <svg className="w-4 h-4 shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-              </svg>
-              {error}
-            </div>
-          )}
+          <ErrorAlert message={error} />
 
           {/* CTA */}
           {listing.status === 'active' && !isSeller && (
