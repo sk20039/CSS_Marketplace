@@ -37,8 +37,16 @@ function CheckoutContent() {
       .then(async (o: Order) => {
         setOrder(o);
         if (STRIPE_PUB_KEY && o.status === 'CREATED') {
-          const d = await getOrderClientSecret(o.id);
-          if (d?.client_secret) setClientSecret(d.client_secret);
+          try {
+            const d = await getOrderClientSecret(o.id);
+            if (d?.client_secret) {
+              setClientSecret(d.client_secret);
+            } else {
+              setError('Could not load payment form. Please refresh and try again.');
+            }
+          } catch {
+            setError('Could not load payment form. Please refresh and try again.');
+          }
         }
       })
       .catch(() => setError('Order not found'))
@@ -92,8 +100,9 @@ function CheckoutContent() {
     );
   }
 
-  const subtotal = (order.amount_cents / 100).toFixed(2);
+  const total = (order.amount_cents / 100).toFixed(2);
   const fee = (order.platform_fee_cents / 100).toFixed(2);
+  const itemPrice = ((order.amount_cents - order.platform_fee_cents) / 100).toFixed(2);
 
   return (
     <div className="max-w-lg mx-auto">
@@ -123,7 +132,7 @@ function CheckoutContent() {
             </div>
             <div className="flex justify-between items-center text-sm">
               <span className="text-gray-600">Item price</span>
-              <span className="font-medium">${subtotal}</span>
+              <span className="font-medium">${itemPrice}</span>
             </div>
             <div className="flex justify-between items-center text-xs text-gray-400">
               <span>Platform fee (3%)</span>
@@ -131,7 +140,7 @@ function CheckoutContent() {
             </div>
             <div className="border-t border-gray-100 pt-3 flex justify-between items-center">
               <span className="font-semibold text-gray-900">Total charged</span>
-              <span className="text-xl font-bold text-brand-700">${subtotal}</span>
+              <span className="text-xl font-bold text-brand-700">${total}</span>
             </div>
           </div>
         </div>
@@ -177,7 +186,7 @@ function CheckoutContent() {
                     onSuccess={() => router.push(`/orders/${order.id}`)}
                   />
                 </Elements>
-              ) : (
+              ) : !error ? (
                 <div className="text-center text-gray-400 text-sm py-6">
                   <svg className="animate-spin w-5 h-5 mx-auto mb-2 text-gray-300" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
@@ -185,7 +194,7 @@ function CheckoutContent() {
                   </svg>
                   Loading payment form…
                 </div>
-              )
+              ) : null
             ) : (
               <StubPayButton
                 order={order}

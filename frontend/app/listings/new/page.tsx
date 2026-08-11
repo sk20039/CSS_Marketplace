@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import AuthGuard from '@/components/AuthGuard';
 import { createListing, uploadPhoto, syncListingToEscrow } from '@/lib/api';
@@ -67,10 +67,20 @@ function NewListingForm() {
     }
   }
 
+  useEffect(() => {
+    return () => {
+      previews.forEach((url) => URL.revokeObjectURL(url));
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previews]);
+
   function handleFiles(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files || []).slice(0, 5);
     setPhotos(files);
-    setPreviews(files.map((f) => URL.createObjectURL(f)));
+    setPreviews((prev) => {
+      prev.forEach((url) => URL.revokeObjectURL(url));
+      return files.map((f) => URL.createObjectURL(f));
+    });
   }
 
   return (

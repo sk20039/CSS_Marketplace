@@ -49,8 +49,11 @@ export default function RegisterPage() {
               We sent a verification link to
             </p>
             <p className="font-semibold text-gray-900 mb-4">{registeredEmail}</p>
-            <p className="text-gray-400 text-sm mb-8">
+            <p className="text-gray-400 text-sm mb-2">
               Click the link in the email to activate your account. The link expires in 24 hours.
+            </p>
+            <p className="text-gray-400 text-xs mb-8">
+              Can&apos;t find it? Check your spam or junk folder.
             </p>
             <Link
               href="/login"

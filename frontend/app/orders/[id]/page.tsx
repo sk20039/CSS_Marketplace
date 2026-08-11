@@ -51,6 +51,7 @@ function OrderContent() {
   const [acting, setActing] = useState(false);
   const [disputeReason, setDisputeReason] = useState('');
   const [showDispute, setShowDispute] = useState(false);
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [msgInput, setMsgInput] = useState('');
   const [sending, setSending] = useState(false);
@@ -163,15 +164,18 @@ function OrderContent() {
 
   const isSeller = user && String(user.id) === String(order.seller_id);
   const isBuyer = user && String(user.id) === String(order.buyer_id);
+  const isAdmin = user?.role === 'admin';
   const statusMeta = STATUS_META[order.status] ?? { label: order.status, cls: 'bg-gray-100 text-gray-600' };
+  const dashboardHref = isAdmin ? '/admin' : isSeller ? '/dashboard/seller' : '/dashboard/buyer';
+  const dashboardLabel = isAdmin ? 'Admin' : 'Dashboard';
 
   return (
     <div className="max-w-2xl mx-auto space-y-5">
       {/* Header */}
       <div>
         <nav className="flex items-center gap-2 text-sm text-gray-400 mb-3">
-          <Link href={isSeller ? '/dashboard/seller' : '/dashboard/buyer'} className="hover:text-gray-700 transition-colors">
-            Dashboard
+          <Link href={dashboardHref} className="hover:text-gray-700 transition-colors">
+            {dashboardLabel}
           </Link>
           <span>/</span>
           <span className="text-gray-600 font-medium">Order #{order.id}</span>
@@ -252,9 +256,9 @@ function OrderContent() {
                 label="Confirm Receipt"
               />
             )}
-            {(isBuyer || isSeller) && order.status === 'HELD' && (
+            {(isBuyer || isSeller) && order.status === 'HELD' && !showCancelConfirm && (
               <ActionButton
-                onClick={() => act(() => cancelOrder(id))}
+                onClick={() => setShowCancelConfirm(true)}
                 disabled={acting}
                 color="gray"
                 icon="M6 18L18 6M6 6l12 12"
@@ -275,6 +279,36 @@ function OrderContent() {
           </div>
         </div>
       ) : null}
+
+      {/* Cancel confirmation */}
+      {showCancelConfirm && (
+        <div className="bg-gray-50 border border-gray-200 rounded-2xl overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-200 flex items-center gap-2">
+            <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            <p className="text-sm font-semibold text-gray-700">Cancel this order?</p>
+          </div>
+          <div className="px-6 py-4 space-y-3">
+            <p className="text-sm text-gray-600">The payment hold will be voided and both parties will be notified. This cannot be undone.</p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => { act(() => cancelOrder(id)); setShowCancelConfirm(false); }}
+                disabled={acting}
+                className="bg-gray-700 text-white text-sm font-semibold px-5 py-2.5 rounded-lg hover:bg-gray-800 disabled:opacity-50 transition-colors"
+              >
+                Yes, cancel order
+              </button>
+              <button
+                onClick={() => setShowCancelConfirm(false)}
+                className="border border-gray-200 text-gray-600 text-sm px-5 py-2.5 rounded-lg hover:bg-white transition-colors"
+              >
+                Keep order
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Dispute form */}
       {showDispute && (
