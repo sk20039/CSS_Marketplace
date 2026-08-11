@@ -2,14 +2,13 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import Link from 'next/link';
 import AuthGuard from '@/components/AuthGuard';
 import { getOrder, captureOrder, getOrderClientSecret } from '@/lib/api';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
 
 const STRIPE_PUB_KEY = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY || '';
-
-// Instantiated once at module level so Stripe.js is only loaded once per page load.
 const stripePromise = STRIPE_PUB_KEY ? loadStripe(STRIPE_PUB_KEY) : null;
 
 interface Order {
@@ -46,14 +45,49 @@ function CheckoutContent() {
       .finally(() => setLoading(false));
   }, [orderId]);
 
-  if (loading) return <div className="text-center py-20 text-gray-400">Loading...</div>;
-  if (!order) return <div className="text-center py-20 text-red-500">{error || 'Order not found'}</div>;
+  if (loading) {
+    return (
+      <div className="max-w-lg mx-auto space-y-4 mt-8">
+        <div className="h-7 bg-gray-200 rounded w-32 animate-pulse" />
+        <div className="bg-white rounded-2xl border border-gray-200 p-6 space-y-3">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="h-4 bg-gray-100 rounded animate-pulse" />
+          ))}
+        </div>
+        <div className="bg-white rounded-2xl border border-gray-200 h-24 animate-pulse" />
+      </div>
+    );
+  }
+
+  if (!order) {
+    return (
+      <div className="text-center py-24">
+        <p className="text-gray-500 font-medium">{error || 'Order not found'}</p>
+        <Link href="/listings" className="mt-3 inline-block text-brand-700 text-sm font-medium hover:underline">
+          &larr; Back to listings
+        </Link>
+      </div>
+    );
+  }
 
   if (order.status !== 'CREATED') {
     return (
-      <div className="max-w-md mx-auto mt-12 text-center">
-        <p className="text-gray-600">This order is already in status <strong>{order.status}</strong>.</p>
-        <a href={`/orders/${order.id}`} className="text-green-600 hover:underline block mt-2">View order →</a>
+      <div className="max-w-lg mx-auto mt-16 text-center">
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-10">
+          <svg className="w-12 h-12 text-gray-300 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <p className="text-gray-700 font-medium mb-1">Order already processed</p>
+          <p className="text-gray-500 text-sm mb-6">
+            This order is currently in <span className="font-semibold text-gray-700">{order.status}</span> status.
+          </p>
+          <Link
+            href={`/orders/${order.id}`}
+            className="inline-flex items-center gap-2 bg-brand-700 text-white font-semibold px-5 py-2.5 rounded-lg hover:bg-brand-800 transition-colors text-sm"
+          >
+            View Order &rarr;
+          </Link>
+        </div>
       </div>
     );
   }
@@ -62,63 +96,114 @@ function CheckoutContent() {
   const fee = (order.platform_fee_cents / 100).toFixed(2);
 
   return (
-    <div className="max-w-md mx-auto mt-8">
+    <div className="max-w-lg mx-auto">
+      {/* Breadcrumb */}
+      <nav className="flex items-center gap-2 text-sm text-gray-400 mb-6">
+        <Link href="/listings" className="hover:text-gray-700 transition-colors">Listings</Link>
+        <span>/</span>
+        <Link href={`/listings/${order.listing_id}`} className="hover:text-gray-700 transition-colors">Listing #{order.listing_id}</Link>
+        <span>/</span>
+        <span className="text-gray-600 font-medium">Checkout</span>
+      </nav>
+
       <h1 className="text-2xl font-bold text-gray-900 mb-6">Checkout</h1>
-      <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
-        <div className="space-y-2 text-sm">
-          <div className="flex justify-between">
-            <span className="text-gray-600">Order #{order.id}</span>
+
+      <div className="space-y-4">
+        {/* Order summary */}
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-100">
+            <p className="text-sm font-semibold text-gray-700">Order Summary</p>
           </div>
-          <div className="flex justify-between">
-            <span className="text-gray-600">Item price</span>
-            <span>${subtotal}</span>
-          </div>
-          <div className="flex justify-between text-gray-500 text-xs">
-            <span>Platform fee (3%)</span>
-            <span>${fee}</span>
-          </div>
-          <div className="border-t pt-2 flex justify-between font-bold text-base">
-            <span>Total</span>
-            <span className="text-green-700">${subtotal}</span>
+          <div className="px-6 py-4 space-y-3">
+            <div className="flex justify-between items-center text-sm">
+              <span className="text-gray-500">Order</span>
+              <Link href={`/listings/${order.listing_id}`} className="text-brand-700 font-medium hover:underline text-xs">
+                Listing #{order.listing_id}
+              </Link>
+            </div>
+            <div className="flex justify-between items-center text-sm">
+              <span className="text-gray-600">Item price</span>
+              <span className="font-medium">${subtotal}</span>
+            </div>
+            <div className="flex justify-between items-center text-xs text-gray-400">
+              <span>Platform fee (3%)</span>
+              <span>${fee}</span>
+            </div>
+            <div className="border-t border-gray-100 pt-3 flex justify-between items-center">
+              <span className="font-semibold text-gray-900">Total charged</span>
+              <span className="text-xl font-bold text-brand-700">${subtotal}</span>
+            </div>
           </div>
         </div>
 
-        <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-800">
-          <strong>Secure escrow payment.</strong> Funds are held until you confirm receipt of the item.
+        {/* Escrow banner */}
+        <div className="bg-brand-50 border border-brand-200 rounded-xl p-4 flex items-start gap-3">
+          <div className="w-8 h-8 bg-brand-700 rounded-full flex items-center justify-center shrink-0 mt-0.5">
+            <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+            </svg>
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-brand-900">Secure Escrow Payment</p>
+            <p className="text-xs text-brand-700 mt-0.5">
+              Funds are held safely in escrow and only released to the seller after you confirm receipt of the item.
+            </p>
+          </div>
         </div>
 
-        {error && <p className="text-red-600 text-sm bg-red-50 rounded p-2">{error}</p>}
+        {/* Error */}
+        {error && (
+          <div className="flex items-center gap-2 bg-red-50 border border-red-200 text-red-700 text-sm rounded-xl px-4 py-3">
+            <svg className="w-4 h-4 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+            </svg>
+            {error}
+          </div>
+        )}
 
-        {STRIPE_PUB_KEY ? (
-          clientSecret ? (
-            <Elements stripe={stripePromise}>
-              <CardPaymentForm
+        {/* Payment form */}
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-100">
+            <p className="text-sm font-semibold text-gray-700">Payment Details</p>
+          </div>
+          <div className="px-6 py-5">
+            {STRIPE_PUB_KEY ? (
+              clientSecret ? (
+                <Elements stripe={stripePromise}>
+                  <CardPaymentForm
+                    order={order}
+                    clientSecret={clientSecret}
+                    onError={setError}
+                    onSuccess={() => router.push(`/orders/${order.id}`)}
+                  />
+                </Elements>
+              ) : (
+                <div className="text-center text-gray-400 text-sm py-6">
+                  <svg className="animate-spin w-5 h-5 mx-auto mb-2 text-gray-300" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                  </svg>
+                  Loading payment form…
+                </div>
+              )
+            ) : (
+              <StubPayButton
                 order={order}
-                clientSecret={clientSecret}
                 onError={setError}
                 onSuccess={() => router.push(`/orders/${order.id}`)}
               />
-            </Elements>
-          ) : (
-            <div className="text-center text-gray-400 text-sm py-4">Loading payment form…</div>
-          )
-        ) : (
-          <StubPayButton
-            order={order}
-            onError={setError}
-            onSuccess={() => router.push(`/orders/${order.id}`)}
-          />
-        )}
+            )}
+          </div>
+        </div>
 
-        <p className="text-xs text-gray-400 text-center">
-          Payment is held in escrow and released to the seller only after you confirm receipt.
+        <p className="text-xs text-gray-400 text-center pb-4">
+          By completing this purchase you agree to our escrow terms. Funds are held until you confirm delivery.
         </p>
       </div>
     </div>
   );
 }
 
-// Real Stripe card form — only rendered when NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY is set
 function CardPaymentForm({ order, clientSecret, onError, onSuccess }: {
   order: Order; clientSecret: string; onError: (e: string) => void; onSuccess: () => void;
 }) {
@@ -135,8 +220,6 @@ function CardPaymentForm({ order, clientSecret, onError, onSuccess }: {
     const cardElement = elements.getElement(CardElement);
     if (!cardElement) { setSubmitting(false); return; }
 
-    // Authorize the card — with capture_method:'manual' this puts the
-    // PaymentIntent into requires_capture (funds authorized, not yet moved).
     const { error: stripeError, paymentIntent } = await stripe.confirmCardPayment(clientSecret, {
       payment_method: { card: cardElement },
     });
@@ -153,7 +236,6 @@ function CardPaymentForm({ order, clientSecret, onError, onSuccess }: {
       return;
     }
 
-    // Card authorized — tell the escrow service to capture the hold
     try {
       const res = await captureOrder(order.id);
       const data = await res.json();
@@ -165,15 +247,13 @@ function CardPaymentForm({ order, clientSecret, onError, onSuccess }: {
     }
   }
 
-  const subtotal = (order.amount_cents / 100).toFixed(2);
-
   return (
-    <form onSubmit={handleSubmit} className="space-y-3">
-      <div className="border border-gray-300 rounded-lg p-3 bg-white">
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div className="border-2 border-gray-200 rounded-xl p-4 focus-within:border-brand-600 transition-colors">
         <CardElement
           options={{
             style: {
-              base: { fontSize: '16px', color: '#374151', '::placeholder': { color: '#9ca3af' } },
+              base: { fontSize: '16px', color: '#111827', fontFamily: 'Inter, system-ui, sans-serif', '::placeholder': { color: '#9ca3af' } },
               invalid: { color: '#dc2626' },
             },
           }}
@@ -182,15 +262,29 @@ function CardPaymentForm({ order, clientSecret, onError, onSuccess }: {
       <button
         type="submit"
         disabled={!stripe || submitting}
-        className="w-full bg-green-600 text-white py-3 rounded-xl font-semibold text-lg hover:bg-green-700 disabled:opacity-50"
+        className="w-full bg-brand-700 text-white py-3.5 rounded-xl font-bold text-base hover:bg-brand-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
       >
-        {submitting ? 'Processing payment...' : `Pay $${subtotal} — Secure Escrow`}
+        {submitting ? (
+          <>
+            <svg className="animate-spin w-5 h-5" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+            </svg>
+            Processing payment…
+          </>
+        ) : (
+          <>
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+            Pay ${(order.amount_cents / 100).toFixed(2)} — Secure Escrow
+          </>
+        )}
       </button>
     </form>
   );
 }
 
-// Stub mode — no Stripe key configured; capture directly without card collection
 function StubPayButton({ order, onError, onSuccess }: {
   order: Order; onError: (e: string) => void; onSuccess: () => void;
 }) {
@@ -212,12 +306,37 @@ function StubPayButton({ order, onError, onSuccess }: {
   }
 
   return (
-    <button
-      onClick={handleCapture}
-      disabled={capturing}
-      className="w-full bg-green-600 text-white py-3 rounded-xl font-semibold text-lg hover:bg-green-700 disabled:opacity-50"
-    >
-      {capturing ? 'Processing payment...' : `Pay $${(order.amount_cents / 100).toFixed(2)} — Secure Escrow`}
-    </button>
+    <div className="space-y-3">
+      <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5">
+        <svg className="w-4 h-4 text-amber-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <p className="text-xs text-amber-800">
+          <span className="font-semibold">Stub mode</span> — no real card required. Stripe key not configured.
+        </p>
+      </div>
+      <button
+        onClick={handleCapture}
+        disabled={capturing}
+        className="w-full bg-brand-700 text-white py-3.5 rounded-xl font-bold text-base hover:bg-brand-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+      >
+        {capturing ? (
+          <>
+            <svg className="animate-spin w-5 h-5" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+            </svg>
+            Processing…
+          </>
+        ) : (
+          <>
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+            Pay ${(order.amount_cents / 100).toFixed(2)} — Secure Escrow
+          </>
+        )}
+      </button>
+    </div>
   );
 }
