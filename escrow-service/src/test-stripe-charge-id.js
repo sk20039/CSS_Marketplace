@@ -108,10 +108,12 @@ async function run() {
   );
 
   // ----------------------------------------------------------------
-  // [4] Old-order fallback: an order without stripe_charge_id should still
-  //     release (falling back to stripe_payment_intent_id) rather than crash.
+  // [4] Safety: an order without stripe_charge_id must fail safely — it must
+  //     NOT pass stripe_payment_intent_id (pi_...) to Stripe as source_transaction
+  //     because Stripe requires a Charge ID (ch_...). The order must revert to
+  //     its pre-release status so it can be manually reconciled, not get stuck.
   // ----------------------------------------------------------------
-  console.log('\n[4] Fallback: release works for pre-migration order (no stripe_charge_id)');
+  console.log('\n[4] Safety check: release fails safely for pre-migration order (no stripe_charge_id)');
   const intent2 = await stripeClient.createPaymentIntent({ amountCents: 5000, currency: 'usd' });
   const ts2 = new Date().toISOString();
   const r2 = db.prepare(`
@@ -135,8 +137,15 @@ async function run() {
     fallbackError = err;
   }
   const afterFallback = db.prepare('SELECT status FROM orders WHERE id = ?').get(orderId2);
-  assert(!fallbackError, `no error thrown for pre-migration order (got: ${fallbackError && fallbackError.message})`);
-  assert(afterFallback.status === 'RELEASED', 'pre-migration order reaches RELEASED via fallback');
+  assert(!!fallbackError, 'release throws an error when stripe_charge_id is missing');
+  assert(
+    fallbackError && fallbackError.message.includes('stripe_charge_id is not set'),
+    `error message names the missing field (got: ${fallbackError && fallbackError.message})`
+  );
+  assert(
+    afterFallback.status === 'DELIVERED',
+    `order reverts to DELIVERED after safe failure (got: ${afterFallback.status})`
+  );
 
   // ----------------------------------------------------------------
   // Cleanup

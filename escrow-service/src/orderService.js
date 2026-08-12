@@ -371,20 +371,29 @@ async function performRelease(orderId, { triggeredBy, fromStatus }) {
   try {
     const seller = db.prepare('SELECT * FROM users WHERE id = ?').get(order.seller_id);
     const destination = (seller && seller.stripe_account_id) || 'acct_stub_unknown';
-    // source_transaction must be the Charge ID (ch_...), not the PaymentIntent ID (pi_...).
-    // stripe_charge_id is written by captureOrder for all orders going forward.
-    // Fall back to stripe_payment_intent_id only for orders captured before this migration
-    // (stub mode only — in real Stripe mode those orders predate any production traffic).
-    const sourceTransactionId = order.stripe_charge_id || order.stripe_payment_intent_id;
+    // source_transaction must be the Charge ID (ch_...) — Stripe rejects a PaymentIntent ID (pi_...).
+    // stripe_charge_id is written by captureOrder for all orders captured after the db migration.
+    // If it is missing, revert and fail safely rather than send Stripe an invalid object ID.
     if (!order.stripe_charge_id) {
-      console.warn(`[orderService] Order ${orderId}: stripe_charge_id not set, falling back to stripe_payment_intent_id for source_transaction`);
+      revertTransition(orderId, 'RELEASING', fromStatus);
+      recordEvent(orderId, 'RELEASE_FAILED', {
+        triggeredBy,
+        error: 'stripe_charge_id is not set — manual reconciliation required',
+      });
+      throw new OrderError(
+        `Order ${orderId} cannot be released: stripe_charge_id is not set. ` +
+        `Look up the Charge ID (ch_...) for PaymentIntent ${order.stripe_payment_intent_id} ` +
+        `in the Stripe dashboard, then run: ` +
+        `UPDATE orders SET stripe_charge_id = 'ch_...' WHERE id = ${orderId}`,
+        500
+      );
     }
     transfer = await stripeClient.createTransfer({
       amountCents: order.seller_payout_cents,
       currency: 'usd',
       destination,
       metadata: { orderId: String(order.id) },
-      sourceTransactionId,
+      sourceTransactionId: order.stripe_charge_id,
     });
   } catch (err) {
     // Stripe call failed - revert the reservation so the order is retryable
