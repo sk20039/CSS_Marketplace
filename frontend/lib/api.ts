@@ -1,4 +1,5 @@
 import { getAccessToken, setAccessToken } from './auth';
+import type { SeoAuditResult, SeoFields } from './types';
 
 const AUTH_URL = process.env.NEXT_PUBLIC_AUTH_URL!;
 const LISTING_URL = process.env.NEXT_PUBLIC_LISTING_URL!;
@@ -239,5 +240,39 @@ export async function sendMessage(orderId: string | number, body: string) {
 export async function getAllListingsFromEscrow() {
   const res = await escrowFetch('/api/listings');
   if (!res.ok) throw new Error('Failed');
+  return res.json();
+}
+
+// ---- SEO / quality ----
+export async function auditListing(id: number): Promise<SeoAuditResult> {
+  const res = await listingFetch(`/listings/${id}/seo/audit`, { method: 'POST' });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error((data as { error?: string }).error || 'Failed to audit listing');
+  }
+  return res.json() as Promise<SeoAuditResult>;
+}
+
+export async function applySeoSuggestions(id: number, fields: SeoFields): Promise<any> {
+  const res = await listingFetch(`/listings/${id}/seo/apply`, {
+    method: 'POST',
+    body: JSON.stringify(fields),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error((data as { error?: string }).error || 'Failed to apply suggestions');
+  }
+  return res.json();
+}
+
+export async function patchListing(id: number, body: { title?: string; description?: string }): Promise<any> {
+  const res = await listingFetch(`/listings/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error((data as { error?: string }).error || 'Failed to update listing');
+  }
   return res.json();
 }

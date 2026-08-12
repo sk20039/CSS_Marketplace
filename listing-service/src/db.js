@@ -39,4 +39,17 @@ CREATE TABLE IF NOT EXISTS listing_photos (
 );
 `);
 
+// Migrations — add SEO/quality columns introduced after initial schema.
+// SQLite does not support "ADD COLUMN IF NOT EXISTS", so each ALTER is wrapped
+// in a try/catch and the SQLITE_ERROR for duplicate column is silently ignored.
+const seoMigrations = [
+  "ALTER TABLE listings ADD COLUMN meta_title TEXT",
+  "ALTER TABLE listings ADD COLUMN meta_description TEXT",
+  "ALTER TABLE listings ADD COLUMN tags TEXT",
+  "ALTER TABLE listings ADD COLUMN quality_score INTEGER",
+];
+for (const sql of seoMigrations) {
+  try { db.exec(sql); } catch { /* column already exists — safe to ignore */ }
+}
+
 module.exports = db;

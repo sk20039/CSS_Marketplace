@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const listingRoutes = require('./listingRoutes');
 const { photoRouter } = require('./photoRoutes');
+const seoRoutes = require('./seoRoutes');
 
 function buildApp() {
   const app = express();
@@ -13,6 +14,7 @@ function buildApp() {
 
   app.use('/listings', listingRoutes);
   app.use('/', photoRouter); // handles POST /listings/:id/photos and GET /photos/:filename
+  app.use('/listings', seoRoutes);
 
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, next) => {
