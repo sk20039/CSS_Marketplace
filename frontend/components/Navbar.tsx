@@ -34,7 +34,7 @@ export default function Navbar() {
     <header className="sticky top-0 z-50 w-full">
       {/* Announcement bar */}
       <div className="bg-brand-800 text-white text-xs text-center py-2 px-4 font-medium tracking-wide">
-        Secure escrow on every order &mdash; buy with total confidence
+        Secure payments on every order &mdash; buy with total confidence
       </div>
 
       {/* Main bar */}

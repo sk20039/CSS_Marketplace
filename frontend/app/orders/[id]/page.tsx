@@ -22,7 +22,7 @@ interface Message {
 const STATUS_META: Record<string, { label: string; cls: string }> = {
   CREATED:   { label: 'Created',                  cls: 'bg-purple-100 text-purple-700' },
   CAPTURING: { label: 'Capturing payment',         cls: 'bg-gray-100 text-gray-600' },
-  HELD:      { label: 'Payment held in escrow',    cls: 'bg-blue-100 text-blue-700' },
+  HELD:      { label: 'Payment held securely',    cls: 'bg-blue-100 text-blue-700' },
   SHIPPED:   { label: 'Shipped',                   cls: 'bg-amber-100 text-amber-700' },
   DELIVERED: { label: 'Delivered',                 cls: 'bg-orange-100 text-orange-700' },
   DISPUTED:  { label: 'Under dispute',             cls: 'bg-red-100 text-red-700' },

@@ -93,7 +93,7 @@ const TRUST_BADGES = [
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
       </svg>
     ),
-    title: 'Secure Escrow',
+    title: 'Secure Payments',
     text: 'Payment held safely until you confirm delivery',
   },
   {
@@ -145,7 +145,7 @@ export default function HomePage() {
             <span className="text-brand-500">Cricket Equipment</span>
           </h1>
           <p className="text-gray-400 text-lg sm:text-xl max-w-2xl mx-auto mb-8">
-            From Kashmir willow bats to Masuri helmets — find quality used gear at unbeatable prices, with secure escrow protection.
+            From Kashmir willow bats to Masuri helmets — find quality used gear at unbeatable prices, with secure buyer protection.
           </p>
           <div className="flex flex-wrap items-center justify-center gap-4">
             <Link
@@ -272,7 +272,7 @@ export default function HomePage() {
             {
               step: '02',
               title: 'Pay Securely',
-              text: 'Your payment is held in escrow — never released until you confirm the item arrived as described.',
+              text: 'Your payment is held securely — never released until you confirm the item arrived as described.',
             },
             {
               step: '03',
