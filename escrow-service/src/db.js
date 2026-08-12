@@ -145,6 +145,18 @@ CREATE TABLE IF NOT EXISTS reviews (
   }
 }
 
+// Migration: add stripe_charge_id column.
+// Nullable so pre-existing orders (captured before this migration) remain valid.
+// After this migration, captureOrder writes the ch_... charge ID here so
+// performRelease can use it as source_transaction on the seller transfer.
+{
+  const columns = db.prepare("PRAGMA table_info(orders)").all();
+  if (!columns.some(col => col.name === 'stripe_charge_id')) {
+    db.exec('ALTER TABLE orders ADD COLUMN stripe_charge_id TEXT');
+    console.log('[db] Migrated orders table: added stripe_charge_id column');
+  }
+}
+
 function seed() {
   const userCount = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
   if (userCount > 0) return; // already seeded

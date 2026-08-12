@@ -260,9 +260,9 @@ async function captureOrder(id) {
   const ts = nowIso();
   const finalized = db
     .prepare(
-      `UPDATE orders SET status = 'HELD', stripe_payment_intent_id = ?, updated_at = ? WHERE id = ? AND status = 'CAPTURING'`
+      `UPDATE orders SET status = 'HELD', stripe_payment_intent_id = ?, stripe_charge_id = ?, updated_at = ? WHERE id = ? AND status = 'CAPTURING'`
     )
-    .run(captured.id, ts, id);
+    .run(captured.id, captured.chargeId || null, ts, id);
 
   if (finalized.changes === 0) {
     // Defensive only - we hold CAPTURING exclusively between reserve and
@@ -371,12 +371,20 @@ async function performRelease(orderId, { triggeredBy, fromStatus }) {
   try {
     const seller = db.prepare('SELECT * FROM users WHERE id = ?').get(order.seller_id);
     const destination = (seller && seller.stripe_account_id) || 'acct_stub_unknown';
+    // source_transaction must be the Charge ID (ch_...), not the PaymentIntent ID (pi_...).
+    // stripe_charge_id is written by captureOrder for all orders going forward.
+    // Fall back to stripe_payment_intent_id only for orders captured before this migration
+    // (stub mode only — in real Stripe mode those orders predate any production traffic).
+    const sourceTransactionId = order.stripe_charge_id || order.stripe_payment_intent_id;
+    if (!order.stripe_charge_id) {
+      console.warn(`[orderService] Order ${orderId}: stripe_charge_id not set, falling back to stripe_payment_intent_id for source_transaction`);
+    }
     transfer = await stripeClient.createTransfer({
       amountCents: order.seller_payout_cents,
       currency: 'usd',
       destination,
       metadata: { orderId: String(order.id) },
-      sourceTransactionId: order.stripe_payment_intent_id,
+      sourceTransactionId,
     });
   } catch (err) {
     // Stripe call failed - revert the reservation so the order is retryable

@@ -28,12 +28,60 @@ const refreshLimiter = rateLimit({
   message: { error: 'Too many token refresh attempts, please try again in 15 minutes' },
 });
 
+// Stripe Connect webhook handler.
+// Must be defined before buildApp() mounts express.json() so the raw request
+// body is preserved — Stripe signature verification requires the exact bytes
+// Stripe sent, which express.json() would replace with a parsed JS object.
+async function handleStripeWebhook(req, res) {
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  const stripeKey = process.env.STRIPE_SECRET_KEY;
+
+  // Stub mode: no keys configured — acknowledge without verification so the
+  // endpoint can be smoke-tested locally before real Stripe credentials are set.
+  if (!webhookSecret || !stripeKey) {
+    return res.json({ received: true, stub: true });
+  }
+
+  const sig = req.headers['stripe-signature'];
+  if (!sig) return res.status(400).json({ error: 'Missing stripe-signature header' });
+
+  let event;
+  try {
+    const Stripe = require('stripe');
+    const stripe = new Stripe(stripeKey, { apiVersion: '2024-06-20' });
+    event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+  } catch (err) {
+    console.error('[webhook] Signature verification failed:', err.message);
+    return res.status(400).json({ error: `Webhook signature error: ${err.message}` });
+  }
+
+  if (event.type === 'account.updated') {
+    const account = event.data.object;
+    const db = require('./db');
+    const user = db.prepare('SELECT id, email FROM users WHERE stripe_account_id = ?').get(account.id);
+    if (user) {
+      console.log(
+        `[webhook] account.updated: seller ${user.email} (id=${user.id}) ` +
+        `charges_enabled=${account.charges_enabled} payouts_enabled=${account.payouts_enabled}`
+      );
+    } else {
+      console.warn(`[webhook] account.updated for unrecognised account ${account.id}`);
+    }
+  }
+
+  res.json({ received: true });
+}
+
 function buildApp() {
   const app = express();
   app.use(cors({
     origin: process.env.FRONTEND_ORIGIN || 'http://localhost:3003',
     credentials: true,
   }));
+
+  // Webhook route registered BEFORE express.json() — raw body required for Stripe signature check.
+  app.post('/webhooks/stripe', express.raw({ type: 'application/json' }), handleStripeWebhook);
+
   app.use(express.json());
   app.use(cookieParser());
 
