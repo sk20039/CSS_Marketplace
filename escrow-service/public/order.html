@@ -70,6 +70,12 @@ function renderActions(order) {
   }
   if (order.status === 'HELD') {
     addButton('Mark Shipped (seller)', 'primary', () => runAction(`/orders/${order.id}/ship`));
+    addButton('Cancel Order', 'danger', () => {
+      if (!window.confirm('Cancel this order? The payment will be refunded minus the 3% platform fee.')) return;
+      const reason = window.prompt('Reason for cancellation (optional):', '');
+      if (reason === null) return; // user dismissed the prompt — abort
+      runAction(`/orders/${order.id}/cancel`, { reason });
+    });
   }
   if (order.status === 'SHIPPED') {
     addButton('Mark Delivered', 'primary', () => runAction(`/orders/${order.id}/deliver`));

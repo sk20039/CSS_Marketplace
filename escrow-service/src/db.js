@@ -134,6 +134,17 @@ CREATE TABLE IF NOT EXISTS reviews (
   }
 }
 
+// Migration: add cancellation_reason column. SQLite does not support
+// ALTER TABLE ... ADD COLUMN IF NOT EXISTS, so we check pragma table_info first.
+{
+  const columns = db.prepare("PRAGMA table_info(orders)").all();
+  const hasCancellationReason = columns.some(col => col.name === 'cancellation_reason');
+  if (!hasCancellationReason) {
+    db.exec('ALTER TABLE orders ADD COLUMN cancellation_reason TEXT');
+    console.log('[db] Migrated orders table: added cancellation_reason column');
+  }
+}
+
 function seed() {
   const userCount = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
   if (userCount > 0) return; // already seeded

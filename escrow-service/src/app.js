@@ -164,12 +164,13 @@ function buildApp() {
     try {
       const order = orderService.getOrderWithTimeline(req.params.id);
       const isBuyer = String(req.user.id) === String(order.buyer_id);
-      const isSeller = String(req.user.id) === String(order.seller_id);
-      if (req.user.role !== 'admin' && !isBuyer && !isSeller) {
-        throw new OrderError('Forbidden: only the buyer or seller can cancel this order', 403);
+      const isAdmin = req.user.role === 'admin';
+      if (!isAdmin && !isBuyer) {
+        throw new OrderError('Forbidden: only the buyer or an admin can cancel this order', 403);
       }
-      const cancelledBy = req.user.role === 'admin' ? 'admin' : isBuyer ? 'buyer' : 'seller';
-      res.json(await cancelOrder(req.params.id, { cancelledBy }));
+      const { reason } = req.body;
+      const cancelledBy = isAdmin ? 'admin' : 'buyer';
+      res.json(await cancelOrder(req.params.id, { cancelledBy, reason }));
     } catch (err) { next(err); }
   });
 

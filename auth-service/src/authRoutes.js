@@ -17,10 +17,18 @@ function jwtSecret() {
   return process.env.JWT_SECRET || 'change-me';
 }
 
+function adminJwtSecret() {
+  // If ADMIN_JWT_SECRET is set, admin tokens are signed with it so they cannot
+  // be accepted by endpoints that only verify against JWT_SECRET, and vice versa.
+  // Falls back to JWT_SECRET when ADMIN_JWT_SECRET is not configured (backwards compatible).
+  return process.env.ADMIN_JWT_SECRET || jwtSecret();
+}
+
 function issueAccessToken(user) {
+  const secret = user.role === 'admin' ? adminJwtSecret() : jwtSecret();
   return jwt.sign(
     { sub: user.id, email: user.email, role: user.role },
-    jwtSecret(),
+    secret,
     { expiresIn: ACCESS_EXPIRES }
   );
 }

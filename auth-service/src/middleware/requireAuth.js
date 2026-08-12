@@ -7,7 +7,17 @@ function requireAuth(req, res, next) {
   }
   const token = authHeader.slice(7);
   try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET || 'change-me');
+    let payload;
+    try {
+      payload = jwt.verify(token, process.env.JWT_SECRET || 'change-me');
+    } catch {
+      // Admin tokens may be signed with ADMIN_JWT_SECRET — try that as fallback.
+      if (process.env.ADMIN_JWT_SECRET && process.env.ADMIN_JWT_SECRET !== (process.env.JWT_SECRET || 'change-me')) {
+        payload = jwt.verify(token, process.env.ADMIN_JWT_SECRET);
+      } else {
+        throw new Error('token invalid');
+      }
+    }
     req.user = { id: payload.sub, email: payload.email, role: payload.role };
     next();
   } catch {

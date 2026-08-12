@@ -459,22 +459,33 @@ async function performRefund(orderId, { triggeredBy, fromStatus }) {
 }
 
 // ---- POST /orders/:id/cancel ----
-// Pre-shipment cancellation: HELD -> CANCELLING -> CANCELLED + full refund.
-// Available to both buyer and seller (caller enforced in app.js).
+// Pre-shipment cancellation: HELD -> CANCELLING -> CANCELLED + partial refund
+// (buyer gets back amount_cents minus platform_fee_cents; platform keeps fee).
+// Available to buyers and admins only (sellers cannot cancel — enforced in app.js).
 // Follows the same reserve -> Stripe -> finalize pattern as performRefund so
 // a concurrent ship/capture can never race past the atomic reservation UPDATE.
-async function cancelOrder(id, { cancelledBy }) {
+async function cancelOrder(id, { cancelledBy, reason }) {
+  // Coerce reason to a string to prevent SQLite bind errors from unexpected types.
+  const normalizedReason = reason != null ? String(reason).trim() || null : null;
+
   if (!reserveTransition(id, 'HELD', 'CANCELLING')) {
     throw reservationConflictError(id, 'HELD', 'cancelled');
   }
 
   const order = getOrder(id);
 
+  // Refund buyer their amount minus the platform fee (platform keeps the fee).
+  if (order.platform_fee_cents == null || !Number.isFinite(order.amount_cents - order.platform_fee_cents)) {
+    revertTransition(id, 'CANCELLING', 'HELD');
+    throw new OrderError(`Order ${id} has invalid fee data; cannot compute refund amount`, 500);
+  }
+  const refundAmountCents = order.amount_cents - order.platform_fee_cents;
+
   let refund;
   try {
     refund = await stripeClient.createRefund({
       paymentIntentId: order.stripe_payment_intent_id,
-      amountCents: order.amount_cents,
+      amountCents: refundAmountCents,
     });
   } catch (err) {
     revertTransition(id, 'CANCELLING', 'HELD');
@@ -485,9 +496,9 @@ async function cancelOrder(id, { cancelledBy }) {
   const ts = nowIso();
   const finalized = db
     .prepare(
-      `UPDATE orders SET status = 'CANCELLED', stripe_refund_id = ?, updated_at = ? WHERE id = ? AND status = 'CANCELLING'`
+      `UPDATE orders SET status = 'CANCELLED', stripe_refund_id = ?, cancellation_reason = ?, updated_at = ? WHERE id = ? AND status = 'CANCELLING'`
     )
-    .run(refund.id, ts, id);
+    .run(refund.id, normalizedReason, ts, id);
 
   if (finalized.changes === 0) {
     recordEvent(id, 'CANCEL_FINALIZE_CONFLICT', { cancelledBy, stripeRefundId: refund.id });
@@ -497,7 +508,13 @@ async function cancelOrder(id, { cancelledBy }) {
     );
   }
 
-  recordEvent(id, 'CANCELLED', { cancelledBy, stripeRefundId: refund.id, amountCents: order.amount_cents });
+  recordEvent(id, 'CANCELLED', {
+    cancelledBy,
+    stripeRefundId: refund.id,
+    refundAmountCents,
+    platformFeeKeptCents: order.platform_fee_cents,
+    reason: normalizedReason,
+  });
   notifications.notifyCancelled(order, { cancelledBy }).catch(() => {});
 
   // Best-effort: re-activate listing so it can be bought again
