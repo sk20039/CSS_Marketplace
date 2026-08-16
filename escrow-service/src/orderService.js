@@ -370,7 +370,18 @@ async function performRelease(orderId, { triggeredBy, fromStatus }) {
   let transfer;
   try {
     const seller = db.prepare('SELECT * FROM users WHERE id = ?').get(order.seller_id);
-    const destination = (seller && seller.stripe_account_id) || 'acct_stub_unknown';
+    if (!seller || !seller.stripe_account_id) {
+      revertTransition(orderId, 'RELEASING', fromStatus);
+      recordEvent(orderId, 'RELEASE_FAILED', {
+        triggeredBy,
+        error: `seller ${order.seller_id} has no connected Stripe account`,
+      });
+      throw new OrderError(
+        `Order ${orderId} cannot be released: seller ${order.seller_id} has no connected Stripe account`,
+        502
+      );
+    }
+    const destination = seller.stripe_account_id;
     // source_transaction must be the Charge ID (ch_...) — Stripe rejects a PaymentIntent ID (pi_...).
     // stripe_charge_id is written by captureOrder for all orders captured after the db migration.
     // If it is missing, revert and fail safely rather than send Stripe an invalid object ID.

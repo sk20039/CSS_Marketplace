@@ -199,7 +199,12 @@ function buildApp() {
       return res.status(403).json({ error: 'Forbidden: can only sync your own user record' });
     }
     db.prepare(
-      'INSERT OR REPLACE INTO users (id, name, email, role, stripe_account_id) VALUES (?, ?, ?, ?, ?)'
+      `INSERT INTO users (id, name, email, role, stripe_account_id) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         name = excluded.name,
+         email = excluded.email,
+         role = excluded.role,
+         stripe_account_id = COALESCE(excluded.stripe_account_id, stripe_account_id)`
     ).run(id, name, email, role, stripe_account_id || null);
     res.json({ ok: true });
   });
