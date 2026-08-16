@@ -250,7 +250,7 @@ function OrderContent() {
                 label="Confirm Receipt"
               />
             )}
-            {(isBuyer || isSeller) && order.status === 'HELD' && !showCancelConfirm && (
+            {isBuyer && order.status === 'HELD' && !showCancelConfirm && (
               <ActionButton
                 onClick={() => setShowCancelConfirm(true)}
                 disabled={acting}
