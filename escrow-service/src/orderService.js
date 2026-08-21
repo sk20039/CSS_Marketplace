@@ -244,7 +244,9 @@ async function captureOrder(id) {
 
   let captured;
   try {
-    captured = await stripeClient.capturePaymentIntent(order.stripe_payment_intent_id);
+    captured = await stripeClient.capturePaymentIntent(order.stripe_payment_intent_id, {
+      idempotencyKey: `capture_order_${id}`,
+    });
     if (captured.status !== 'succeeded') {
       throw new Error(`Stripe capture did not succeed (status=${captured.status})`);
     }
@@ -403,8 +405,9 @@ async function performRelease(orderId, { triggeredBy, fromStatus }) {
       amountCents: order.seller_payout_cents,
       currency: 'usd',
       destination,
-      metadata: { orderId: String(order.id) },
+      metadata: { orderId: String(order.id), operationType: 'release' },
       sourceTransactionId: order.stripe_charge_id,
+      idempotencyKey: `release_order_${orderId}`,
     });
   } catch (err) {
     // Stripe call failed - revert the reservation so the order is retryable
@@ -458,6 +461,8 @@ async function performRefund(orderId, { triggeredBy, fromStatus }) {
     refund = await stripeClient.createRefund({
       paymentIntentId: order.stripe_payment_intent_id,
       amountCents: order.amount_cents,
+      metadata: { orderId: String(orderId), operationType: 'refund_dispute' },
+      idempotencyKey: `refund_dispute_order_${orderId}`,
     });
   } catch (err) {
     revertTransition(orderId, 'REFUNDING', fromStatus);
@@ -514,6 +519,8 @@ async function cancelOrder(id, { cancelledBy, reason }) {
     refund = await stripeClient.createRefund({
       paymentIntentId: order.stripe_payment_intent_id,
       amountCents: refundAmountCents,
+      metadata: { orderId: String(id), operationType: 'cancel' },
+      idempotencyKey: `cancel_order_${id}`,
     });
   } catch (err) {
     revertTransition(id, 'CANCELLING', 'HELD');
