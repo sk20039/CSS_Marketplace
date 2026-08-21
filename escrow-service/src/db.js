@@ -157,6 +157,89 @@ CREATE TABLE IF NOT EXISTS reviews (
   }
 }
 
+// Migration: add recovery tracking columns for Phase 2 stale-transition recovery.
+// All nullable/with defaults so existing orders are unaffected.
+// prior_status   — status before entering a transient state (RELEASING can
+//                  come from DELIVERED or DISPUTED; recovery must know which).
+// transition_started_at — when the order entered the current transient status;
+//                  distinct from updated_at which may be written by other fields.
+// recovery_claimed_at   — when a recovery sweep last claimed this order;
+//                  prevents two concurrent sweeps from both acting on it.
+// recovery_attempts     — how many times recovery has claimed this order.
+// last_recovery_error   — last error message from a recovery attempt.
+{
+  const columns = db.prepare("PRAGMA table_info(orders)").all();
+  const names = new Set(columns.map(c => c.name));
+  if (!names.has('prior_status')) {
+    db.exec('ALTER TABLE orders ADD COLUMN prior_status TEXT');
+    console.log('[db] Migrated orders table: added prior_status column');
+  }
+  if (!names.has('transition_started_at')) {
+    db.exec('ALTER TABLE orders ADD COLUMN transition_started_at TEXT');
+    console.log('[db] Migrated orders table: added transition_started_at column');
+  }
+  if (!names.has('recovery_claimed_at')) {
+    db.exec('ALTER TABLE orders ADD COLUMN recovery_claimed_at TEXT');
+    console.log('[db] Migrated orders table: added recovery_claimed_at column');
+  }
+  if (!names.has('recovery_attempts')) {
+    db.exec('ALTER TABLE orders ADD COLUMN recovery_attempts INTEGER DEFAULT 0');
+    console.log('[db] Migrated orders table: added recovery_attempts column');
+  }
+  if (!names.has('last_recovery_error')) {
+    db.exec('ALTER TABLE orders ADD COLUMN last_recovery_error TEXT');
+    console.log('[db] Migrated orders table: added last_recovery_error column');
+  }
+  // Backfill any orders that were already in a transient status when these
+  // columns were added (i.e., orders stuck mid-transition on an older schema).
+  runMigrationBackfill();
+}
+
+// Backfills transition_started_at and prior_status for any existing orders in a
+// transient status that do not yet have these fields set. Safe to call multiple
+// times — each UPDATE is a no-op when all qualifying rows already have values.
+// Exported so tests can call it after inserting pre-migration fixture rows.
+function runMigrationBackfill() {
+  // Backfill transition_started_at from updated_at (best available timestamp).
+  db.prepare(`
+    UPDATE orders
+    SET transition_started_at = updated_at
+    WHERE transition_started_at IS NULL
+      AND status IN ('CAPTURING', 'RELEASING', 'REFUNDING', 'CANCELLING')
+  `).run();
+
+  // Backfill prior_status for statuses with a single deterministic origin:
+  //   CAPTURING  always enters from CREATED
+  //   REFUNDING  always enters from DISPUTED
+  //   CANCELLING always enters from HELD
+  db.prepare(`
+    UPDATE orders
+    SET prior_status = CASE status
+      WHEN 'CAPTURING'  THEN 'CREATED'
+      WHEN 'REFUNDING'  THEN 'DISPUTED'
+      WHEN 'CANCELLING' THEN 'HELD'
+    END
+    WHERE prior_status IS NULL
+      AND status IN ('CAPTURING', 'REFUNDING', 'CANCELLING')
+  `).run();
+
+  // RELEASING: infer prior_status from the presence of a DISPUTE_FILED event.
+  // A dispute was always filed before an admin-triggered release from DISPUTED;
+  // without that event, the release came from DELIVERED (confirm or auto-release).
+  db.prepare(`
+    UPDATE orders
+    SET prior_status = CASE
+      WHEN EXISTS (
+        SELECT 1 FROM order_events
+        WHERE order_id = orders.id AND event_type = 'DISPUTE_FILED'
+      ) THEN 'DISPUTED'
+      ELSE 'DELIVERED'
+    END
+    WHERE prior_status IS NULL
+      AND status = 'RELEASING'
+  `).run();
+}
+
 function seed() {
   const userCount = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
   if (userCount > 0) return; // already seeded
@@ -195,3 +278,4 @@ function seed() {
 seed();
 
 module.exports = db;
+module.exports.runMigrationBackfill = runMigrationBackfill;

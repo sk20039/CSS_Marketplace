@@ -72,7 +72,9 @@ function stableFingerprint(value) {
 class StubStripeClient {
   constructor() {
     this.mode = 'stub';
-    this._intents = new Map(); // id -> { amountCents, status, chargeId }
+    this._intents = new Map();   // id -> { amountCents, status, chargeId, ... }
+    this._refunds = [];          // [{ id, paymentIntentId, amountCents, metadata, status }]
+    this._transfers = [];        // [{ id, sourceTransactionId, amountCents, destination, metadata, status }]
     this._idempotencyCache = new Map(); // key -> { fingerprint: string, result: object }
   }
 
@@ -143,15 +145,9 @@ class StubStripeClient {
     const fingerprint = stableFingerprint({ amountCents, currency, destination, sourceTransactionId, metadata });
     return this._checkIdempotency(idempotencyKey, fingerprint, () => {
       const id = fakeId('tr');
-      return {
-        id,
-        status: 'paid',
-        amountCents,
-        currency,
-        destination,
-        sourceTransactionId,
-        metadata,
-      };
+      const entry = { id, sourceTransactionId, amountCents, currency, destination, metadata, status: 'paid' };
+      this._transfers.push(entry);
+      return { id, status: 'paid', amountCents, currency, destination, sourceTransactionId, metadata };
     });
   }
 
@@ -167,8 +163,30 @@ class StubStripeClient {
     const fingerprint = stableFingerprint({ paymentIntentId, amountCents, metadata });
     return this._checkIdempotency(idempotencyKey, fingerprint, () => {
       const id = fakeId('re');
+      const entry = { id, paymentIntentId, amountCents, metadata, status: 'succeeded' };
+      this._refunds.push(entry);
       return { id, status: 'succeeded', amountCents, metadata };
     });
+  }
+
+  // ---- Read-only reconciliation methods (used by recoveryService) ----
+
+  async getPaymentIntent(piId) {
+    const intent = this._intents.get(piId);
+    if (!intent) throw new Error(`[stripe:stub] Unknown PaymentIntent ${piId}`);
+    return { id: intent.id, status: intent.status, chargeId: intent.chargeId };
+  }
+
+  // Returns all refunds created against a PaymentIntent. Used by recovery to
+  // check whether a Stripe refund already exists before re-issuing one.
+  async listRefundsForPaymentIntent(piId) {
+    return this._refunds.filter((r) => r.paymentIntentId === piId);
+  }
+
+  // Returns all transfers that reference a charge as their source_transaction.
+  // Used by recovery to check whether a Stripe transfer already exists.
+  async listTransfersForCharge(chargeId) {
+    return this._transfers.filter((t) => t.sourceTransactionId === chargeId);
   }
 }
 
@@ -227,6 +245,37 @@ class RealStripeClient {
       options
     );
     return { id: refund.id, status: refund.status };
+  }
+
+  // ---- Read-only reconciliation methods (used by recoveryService) ----
+
+  async getPaymentIntent(piId) {
+    const intent = await this._stripe.paymentIntents.retrieve(piId);
+    const chargeId = intent.latest_charge || null;
+    return { id: intent.id, status: intent.status, chargeId };
+  }
+
+  async listRefundsForPaymentIntent(piId) {
+    const result = await this._stripe.refunds.list({ payment_intent: piId, limit: 10 });
+    return result.data.map((r) => ({
+      id: r.id,
+      paymentIntentId: piId,
+      amountCents: r.amount,
+      metadata: r.metadata || {},
+      status: r.status,
+    }));
+  }
+
+  async listTransfersForCharge(chargeId) {
+    const result = await this._stripe.transfers.list({ source_transaction: chargeId, limit: 10 });
+    return result.data.map((t) => ({
+      id: t.id,
+      sourceTransactionId: chargeId,
+      amountCents: t.amount,
+      destination: typeof t.destination === 'string' ? t.destination : t.destination.id,
+      metadata: t.metadata || {},
+      status: 'paid',
+    }));
   }
 }
 

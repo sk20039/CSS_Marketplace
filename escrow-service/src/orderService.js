@@ -85,6 +85,20 @@ class OrderError extends Error {
   }
 }
 
+// Thrown by shared finalize functions when the conditional UPDATE finds the
+// order is no longer in the expected transient status — meaning a concurrent
+// path (another HTTP request or a recovery sweep) already finalized it.
+// Normal processing propagates this as a 500. Recovery catches it and treats
+// it as a success (the order reached its correct terminal state via the other path).
+class FinalizeConflictError extends Error {
+  constructor(orderId, operationType, stripeId) {
+    super(`Order ${orderId} ${operationType} finalize conflict (Stripe ID: ${stripeId}) — another path already finalized`);
+    this.name = 'FinalizeConflictError';
+    this.orderId = orderId;
+    this.stripeId = stripeId;
+  }
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -259,37 +273,42 @@ async function captureOrder(id) {
     throw new OrderError(`Stripe capture failed for order ${id}: ${err.message}`, 502);
   }
 
+  return finalizeCaptured(order, captured, { triggeredBy: 'capture_request' });
+}
+
+// Shared capture finalization — called by captureOrder and by recoveryService.
+// Writes HELD status + charge ID, records events, marks listing sold, fires
+// notification. Throws FinalizeConflictError if the order was already finalized
+// by a concurrent path (recovery catches this and treats it as success).
+async function finalizeCaptured(order, stripeCapture, { triggeredBy }) {
   const ts = nowIso();
   const finalized = db
     .prepare(
-      `UPDATE orders SET status = 'HELD', stripe_payment_intent_id = ?, stripe_charge_id = ?, updated_at = ? WHERE id = ? AND status = 'CAPTURING'`
+      `UPDATE orders SET status = 'HELD', stripe_payment_intent_id = ?, stripe_charge_id = ?,
+         updated_at = ?, transition_started_at = NULL, recovery_claimed_at = NULL
+         WHERE id = ? AND status = 'CAPTURING'`
     )
-    .run(captured.id, captured.chargeId || null, ts, id);
+    .run(stripeCapture.id, stripeCapture.chargeId || null, ts, order.id);
 
   if (finalized.changes === 0) {
-    // Defensive only - we hold CAPTURING exclusively between reserve and
-    // here, so this should be unreachable. Surface loudly if it ever isn't:
-    // Stripe already captured the funds, so this needs a human, not a silent drop.
-    recordEvent(id, 'CAPTURE_FINALIZE_CONFLICT', { stripePaymentIntentId: captured.id });
-    throw new OrderError(
-      `Order ${id} capture finalize conflict - manual reconciliation required (Stripe capture ${captured.id} succeeded)`,
-      500
-    );
+    recordEvent(order.id, 'CAPTURE_FINALIZE_CONFLICT', { triggeredBy, stripePaymentIntentId: stripeCapture.id });
+    throw new FinalizeConflictError(order.id, 'capture', stripeCapture.id);
   }
 
-  recordEvent(id, 'PAYMENT_CAPTURED', {
-    stripePaymentIntentId: captured.id,
-    chargeId: captured.chargeId || null,
+  recordEvent(order.id, 'PAYMENT_CAPTURED', {
+    triggeredBy,
+    stripePaymentIntentId: stripeCapture.id,
+    chargeId: stripeCapture.chargeId || null,
   });
 
   const markedSold = await markListingSold(order.listing_id);
-  recordEvent(id, markedSold ? 'LISTING_MARKED_SOLD' : 'LISTING_MARK_SOLD_FAILED', {
+  recordEvent(order.id, markedSold ? 'LISTING_MARKED_SOLD' : 'LISTING_MARK_SOLD_FAILED', {
     listingId: order.listing_id,
   });
 
   notifications.notifyOrderCaptured(order).catch(() => {});
 
-  return getOrderWithTimeline(id);
+  return getOrderWithTimeline(order.id);
 }
 
 // ---- POST /orders/:id/ship ----
@@ -331,9 +350,17 @@ function deliverOrder(id) {
 // conditional updates BEFORE calling Stripe, never after.
 function reserveTransition(orderId, fromStatus, toStatus) {
   const ts = nowIso();
+  // prior_status = status captures the OLD value of the status column before
+  // it is overwritten (SQL evaluates all RHS expressions from the original row).
+  // transition_started_at is the precise moment this transient state began,
+  // used by recovery to calculate staleness independently of updated_at.
   const result = db
-    .prepare(`UPDATE orders SET status = ?, updated_at = ? WHERE id = ? AND status = ?`)
-    .run(toStatus, ts, orderId, fromStatus);
+    .prepare(
+      `UPDATE orders
+       SET status = ?, updated_at = ?, prior_status = status, transition_started_at = ?
+       WHERE id = ? AND status = ?`
+    )
+    .run(toStatus, ts, ts, orderId, fromStatus);
   return result.changes > 0;
 }
 
@@ -417,33 +444,35 @@ async function performRelease(orderId, { triggeredBy, fromStatus }) {
     throw new OrderError(`Stripe transfer failed for order ${orderId}: ${err.message}`, 502);
   }
 
+  return finalizeReleased(order, transfer, { triggeredBy });
+}
+
+// Shared release finalization — called by performRelease and by recoveryService.
+// Throws FinalizeConflictError if the order was already finalized by a concurrent path.
+async function finalizeReleased(order, stripeTransfer, { triggeredBy }) {
   const ts = nowIso();
   const finalized = db
     .prepare(
-      `UPDATE orders SET status = 'RELEASED', stripe_transfer_id = ?, updated_at = ? WHERE id = ? AND status = 'RELEASING'`
+      `UPDATE orders SET status = 'RELEASED', stripe_transfer_id = ?,
+         updated_at = ?, transition_started_at = NULL, recovery_claimed_at = NULL
+         WHERE id = ? AND status = 'RELEASING'`
     )
-    .run(transfer.id, ts, orderId);
+    .run(stripeTransfer.id, ts, order.id);
 
   if (finalized.changes === 0) {
-    // Defensive only - we hold RELEASING exclusively between reserve and
-    // here, so this should be unreachable. Surface loudly if it ever isn't:
-    // Stripe already moved money, so this needs a human, not a silent drop.
-    recordEvent(orderId, 'RELEASE_FINALIZE_CONFLICT', { triggeredBy, stripeTransferId: transfer.id });
-    throw new OrderError(
-      `Order ${orderId} release finalize conflict - manual reconciliation required (Stripe transfer ${transfer.id} succeeded)`,
-      500
-    );
+    recordEvent(order.id, 'RELEASE_FINALIZE_CONFLICT', { triggeredBy, stripeTransferId: stripeTransfer.id });
+    throw new FinalizeConflictError(order.id, 'release', stripeTransfer.id);
   }
 
-  recordEvent(orderId, 'RELEASED', {
+  recordEvent(order.id, 'RELEASED', {
     triggeredBy,
-    stripeTransferId: transfer.id,
+    stripeTransferId: stripeTransfer.id,
     sellerPayoutCents: order.seller_payout_cents,
     platformFeeCents: order.platform_fee_cents,
   });
   notifications.notifyReleased(order, { triggeredBy }).catch(() => {});
 
-  return getOrderWithTimeline(orderId);
+  return getOrderWithTimeline(order.id);
 }
 
 // Shared refund implementation - same reserve -> Stripe -> finalize shape as
@@ -470,25 +499,30 @@ async function performRefund(orderId, { triggeredBy, fromStatus }) {
     throw new OrderError(`Stripe refund failed for order ${orderId}: ${err.message}`, 502);
   }
 
+  return finalizeRefunded(order, refund, { triggeredBy });
+}
+
+// Shared refund finalization — called by performRefund and by recoveryService.
+// Throws FinalizeConflictError if the order was already finalized by a concurrent path.
+async function finalizeRefunded(order, stripeRefund, { triggeredBy }) {
   const ts = nowIso();
   const finalized = db
     .prepare(
-      `UPDATE orders SET status = 'REFUNDED', stripe_refund_id = ?, updated_at = ? WHERE id = ? AND status = 'REFUNDING'`
+      `UPDATE orders SET status = 'REFUNDED', stripe_refund_id = ?,
+         updated_at = ?, transition_started_at = NULL, recovery_claimed_at = NULL
+         WHERE id = ? AND status = 'REFUNDING'`
     )
-    .run(refund.id, ts, orderId);
+    .run(stripeRefund.id, ts, order.id);
 
   if (finalized.changes === 0) {
-    recordEvent(orderId, 'REFUND_FINALIZE_CONFLICT', { triggeredBy, stripeRefundId: refund.id });
-    throw new OrderError(
-      `Order ${orderId} refund finalize conflict - manual reconciliation required (Stripe refund ${refund.id} succeeded)`,
-      500
-    );
+    recordEvent(order.id, 'REFUND_FINALIZE_CONFLICT', { triggeredBy, stripeRefundId: stripeRefund.id });
+    throw new FinalizeConflictError(order.id, 'refund', stripeRefund.id);
   }
 
-  recordEvent(orderId, 'REFUNDED', { triggeredBy, stripeRefundId: refund.id });
+  recordEvent(order.id, 'REFUNDED', { triggeredBy, stripeRefundId: stripeRefund.id });
   notifications.notifyRefunded(order, { triggeredBy }).catch(() => {});
 
-  return getOrderWithTimeline(orderId);
+  return getOrderWithTimeline(order.id);
 }
 
 // ---- POST /orders/:id/cancel ----
@@ -514,6 +548,11 @@ async function cancelOrder(id, { cancelledBy, reason }) {
   }
   const refundAmountCents = order.amount_cents - order.platform_fee_cents;
 
+  // Persist the cancellation reason before the Stripe call so recovery can
+  // read it from the CANCELLING row if the process crashes after this point.
+  db.prepare('UPDATE orders SET cancellation_reason = ? WHERE id = ? AND status = ?')
+    .run(normalizedReason, id, 'CANCELLING');
+
   let refund;
   try {
     refund = await stripeClient.createRefund({
@@ -528,37 +567,46 @@ async function cancelOrder(id, { cancelledBy, reason }) {
     throw new OrderError(`Stripe refund failed for order ${id}: ${err.message}`, 502);
   }
 
+  // Re-read the order to pick up cancellation_reason (written above).
+  return finalizeCancelled(getOrder(id), refund, { cancelledBy });
+}
+
+// Shared cancellation finalization — called by cancelOrder and by recoveryService.
+// Reads cancellation_reason from the order row (written before the Stripe call).
+// Throws FinalizeConflictError if the order was already finalized by a concurrent path.
+async function finalizeCancelled(order, stripeRefund, { cancelledBy }) {
+  const refundAmountCents = order.amount_cents - order.platform_fee_cents;
   const ts = nowIso();
   const finalized = db
     .prepare(
-      `UPDATE orders SET status = 'CANCELLED', stripe_refund_id = ?, cancellation_reason = ?, updated_at = ? WHERE id = ? AND status = 'CANCELLING'`
+      `UPDATE orders SET status = 'CANCELLED', stripe_refund_id = ?,
+         updated_at = ?, transition_started_at = NULL, recovery_claimed_at = NULL
+         WHERE id = ? AND status = 'CANCELLING'`
     )
-    .run(refund.id, normalizedReason, ts, id);
+    .run(stripeRefund.id, ts, order.id);
 
   if (finalized.changes === 0) {
-    recordEvent(id, 'CANCEL_FINALIZE_CONFLICT', { cancelledBy, stripeRefundId: refund.id });
-    throw new OrderError(
-      `Order ${id} cancel finalize conflict - manual reconciliation required (Stripe refund ${refund.id} succeeded)`,
-      500
-    );
+    recordEvent(order.id, 'CANCEL_FINALIZE_CONFLICT', { cancelledBy, stripeRefundId: stripeRefund.id });
+    throw new FinalizeConflictError(order.id, 'cancel', stripeRefund.id);
   }
 
-  recordEvent(id, 'CANCELLED', {
+  recordEvent(order.id, 'CANCELLED', {
     cancelledBy,
-    stripeRefundId: refund.id,
+    stripeRefundId: stripeRefund.id,
     refundAmountCents,
     platformFeeKeptCents: order.platform_fee_cents,
-    reason: normalizedReason,
+    reason: order.cancellation_reason,
   });
   notifications.notifyCancelled(order, { cancelledBy }).catch(() => {});
 
-  // Best-effort: re-activate listing so it can be bought again
+  // Best-effort: re-activate listing so it can be bought again.
+  // This runs only after Stripe confirms the refund — never before.
   const reactivated = await markListingActive(order.listing_id);
-  recordEvent(id, reactivated ? 'LISTING_REACTIVATED' : 'LISTING_REACTIVATE_FAILED', {
+  recordEvent(order.id, reactivated ? 'LISTING_REACTIVATED' : 'LISTING_REACTIVATE_FAILED', {
     listingId: order.listing_id,
   });
 
-  return getOrderWithTimeline(id);
+  return getOrderWithTimeline(order.id);
 }
 
 // ---- POST /orders/:id/confirm ----
@@ -657,6 +705,7 @@ async function runReleaseCheck() {
 
 module.exports = {
   OrderError,
+  FinalizeConflictError,
   computeFee,
   createOrder,
   captureOrder,
@@ -669,4 +718,9 @@ module.exports = {
   runReleaseCheck,
   getOrderWithTimeline,
   listOrders,
+  // Shared finalization functions — used by both normal processing and recoveryService.
+  finalizeCaptured,
+  finalizeReleased,
+  finalizeRefunded,
+  finalizeCancelled,
 };

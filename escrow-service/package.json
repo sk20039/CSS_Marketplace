@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node tests/idempotency.test.js"
+    "test": "node tests/idempotency.test.js && node tests/recovery.test.js"
   },
   "license": "UNLICENSED",
   "dependencies": {
