@@ -1,0 +1,21 @@
+version: '3.9'
+
+services:
+  listing-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: listing_user
+      POSTGRES_PASSWORD: listing_pass
+      POSTGRES_DB: listing_db
+    ports:
+      - '5432:5432'
+    volumes:
+      - listing_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U listing_user -d listing_db']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  listing_db_data:

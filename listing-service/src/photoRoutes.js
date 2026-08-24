@@ -2,7 +2,7 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
-const db = require('./db');
+const pool = require('./db');
 const requireAuth = require('./middleware/requireAuth');
 
 const router = express.Router();
@@ -40,35 +40,52 @@ const upload = multer({
 });
 
 // POST /listings/:id/photos
-router.post('/listings/:id/photos', requireAuth, (req, res, next) => {
-  const listing = db.prepare('SELECT * FROM listings WHERE id = ?').get(req.params.id);
-  if (!listing) return res.status(404).json({ error: 'Listing not found' });
-  if (String(listing.seller_id) !== String(req.user.id)) {
-    return res.status(403).json({ error: 'Forbidden: not your listing' });
-  }
+router.post('/listings/:id/photos', requireAuth, async (req, res, next) => {
+  try {
+    const { rows: listingRows } = await pool.query(
+      'SELECT * FROM listings WHERE id = $1',
+      [req.params.id]
+    );
+    const listing = listingRows[0];
+    if (!listing) return res.status(404).json({ error: 'Listing not found' });
+    if (String(listing.seller_id) !== String(req.user.id)) {
+      return res.status(403).json({ error: 'Forbidden: not your listing' });
+    }
 
-  const currentCount = db.prepare('SELECT COUNT(*) AS c FROM listing_photos WHERE listing_id = ?').get(listing.id).c;
-  if (currentCount >= MAX_PHOTOS) {
-    return res.status(400).json({ error: `Maximum ${MAX_PHOTOS} photos per listing` });
-  }
+    const { rows: countRows } = await pool.query(
+      'SELECT COUNT(*) AS c FROM listing_photos WHERE listing_id = $1',
+      [listing.id]
+    );
+    const currentCount = parseInt(countRows[0].c, 10);
+    if (currentCount >= MAX_PHOTOS) {
+      return res.status(400).json({ error: `Maximum ${MAX_PHOTOS} photos per listing` });
+    }
 
-  upload.single('photo')(req, res, (err) => {
-    if (err) return next(err);
+    await new Promise((resolve, reject) => {
+      upload.single('photo')(req, res, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
     const displayOrder = currentCount;
-    const result = db.prepare(
-      "INSERT INTO listing_photos (listing_id, filename, display_order, created_at) VALUES (?, ?, ?, datetime('now'))"
-    ).run(listing.id, req.file.filename, displayOrder);
+    const { rows: photoRows } = await pool.query(
+      'INSERT INTO listing_photos (listing_id, filename, display_order) VALUES ($1, $2, $3) RETURNING id',
+      [listing.id, req.file.filename, displayOrder]
+    );
 
     res.status(201).json({
-      id: result.lastInsertRowid,
+      id: photoRows[0].id,
       listing_id: listing.id,
       filename: req.file.filename,
       display_order: displayOrder,
       url: `/photos/${req.file.filename}`,
     });
-  });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // GET /photos/:filename

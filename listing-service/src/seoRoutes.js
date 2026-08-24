@@ -1,7 +1,7 @@
 'use strict';
 
 const express = require('express');
-const db = require('./db');
+const pool = require('./db');
 const requireAuth = require('./middleware/requireAuth');
 const { scoreListingQuality } = require('./seoScorer');
 const { generateSeoSuggestions } = require('./claudeClient');
@@ -9,11 +9,12 @@ const { generateSeoSuggestions } = require('./claudeClient');
 const router = express.Router();
 
 // Shared helper — same pattern as listingRoutes.js withPhotos
-function withPhotos(listing) {
-  const photos = db.prepare(
-    'SELECT id, filename, display_order FROM listing_photos WHERE listing_id = ? ORDER BY display_order, id'
-  ).all(listing.id);
-  return { ...listing, photos };
+async function withPhotos(listing) {
+  const { rows } = await pool.query(
+    'SELECT id, filename, display_order FROM listing_photos WHERE listing_id = $1 ORDER BY display_order, id',
+    [listing.id]
+  );
+  return { ...listing, photos: rows };
 }
 
 // ---------------------------------------------------------------------------
@@ -23,14 +24,15 @@ function withPhotos(listing) {
 // ---------------------------------------------------------------------------
 router.post('/:id/seo/audit', requireAuth, async (req, res, next) => {
   try {
-    const listing = db.prepare('SELECT * FROM listings WHERE id = ?').get(req.params.id);
+    const { rows } = await pool.query('SELECT * FROM listings WHERE id = $1', [req.params.id]);
+    const listing = rows[0];
     if (!listing) return res.status(404).json({ error: 'Listing not found' });
 
     if (String(listing.seller_id) !== String(req.user.id) && req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Forbidden: not your listing' });
     }
 
-    const listingWithPhotos = withPhotos(listing);
+    const listingWithPhotos = await withPhotos(listing);
     const { score, tier, breakdown, issues } = scoreListingQuality(listingWithPhotos);
     const suggestions = await generateSeoSuggestions(listingWithPhotos);
     const { claude_used, ...suggestionFields } = suggestions;
@@ -54,9 +56,10 @@ router.post('/:id/seo/audit', requireAuth, async (req, res, next) => {
 // Authenticated. Seller only. Applies SEO fields to the listing and
 // re-scores the quality_score column.
 // ---------------------------------------------------------------------------
-router.post('/:id/seo/apply', requireAuth, (req, res, next) => {
+router.post('/:id/seo/apply', requireAuth, async (req, res, next) => {
   try {
-    const listing = db.prepare('SELECT * FROM listings WHERE id = ?').get(req.params.id);
+    const { rows } = await pool.query('SELECT * FROM listings WHERE id = $1', [req.params.id]);
+    const listing = rows[0];
     if (!listing) return res.status(404).json({ error: 'Listing not found' });
     if (String(listing.seller_id) !== String(req.user.id)) {
       return res.status(403).json({ error: 'Forbidden: not your listing' });
@@ -101,18 +104,22 @@ router.post('/:id/seo/apply', requireAuth, (req, res, next) => {
       return res.status(400).json({ error: 'No valid SEO fields provided' });
     }
 
-    const setClauses = Object.keys(updates).map((k) => `${k} = ?`).join(', ');
+    let pIdx = 1;
+    const setClauses = Object.keys(updates).map((k) => `${k} = $${pIdx++}`).join(', ');
     const values = [...Object.values(updates), listing.id];
-    db.prepare(`UPDATE listings SET ${setClauses}, updated_at = datetime('now') WHERE id = ?`).run(...values);
+    await pool.query(
+      `UPDATE listings SET ${setClauses}, updated_at = NOW() WHERE id = $${pIdx}`,
+      values
+    );
 
     // Re-fetch and re-score so quality_score reflects the applied changes
-    const updated = db.prepare('SELECT * FROM listings WHERE id = ?').get(listing.id);
-    const updatedWithPhotos = withPhotos(updated);
+    const { rows: updatedRows } = await pool.query('SELECT * FROM listings WHERE id = $1', [listing.id]);
+    const updatedWithPhotos = await withPhotos(updatedRows[0]);
     const { score } = scoreListingQuality(updatedWithPhotos);
-    db.prepare('UPDATE listings SET quality_score = ? WHERE id = ?').run(score, listing.id);
+    await pool.query('UPDATE listings SET quality_score = $1 WHERE id = $2', [score, listing.id]);
 
-    const final = db.prepare('SELECT * FROM listings WHERE id = ?').get(listing.id);
-    return res.json(withPhotos(final));
+    const { rows: finalRows } = await pool.query('SELECT * FROM listings WHERE id = $1', [listing.id]);
+    return res.json(await withPhotos(finalRows[0]));
   } catch (err) {
     next(err);
   }
