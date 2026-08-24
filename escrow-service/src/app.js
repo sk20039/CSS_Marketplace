@@ -10,6 +10,7 @@ const { runRecovery } = require('./recoveryService');
 const { OrderError } = orderService;
 const requireAuth = require('./middleware/requireAuth');
 const { requireAdmin } = requireAuth;
+const { buildHealthRouter } = require('./healthRoutes');
 
 function isParty(user, order) {
   return (
@@ -23,6 +24,9 @@ function buildApp() {
   const app = express();
   app.use(cors({ origin: process.env.FRONTEND_ORIGIN || 'http://localhost:3003', credentials: true }));
   app.use(express.json());
+
+  // Health checks — no auth required.
+  app.use('/health', buildHealthRouter(pool, 'escrow-service'));
 
   // ---- static demo UI ----
   app.use(express.static(path.join(__dirname, '..', 'public')));

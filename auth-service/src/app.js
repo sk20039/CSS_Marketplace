@@ -3,6 +3,8 @@ const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 const authRoutes = require('./authRoutes');
+const pool = require('./db');
+const { buildHealthRouter } = require('./healthRoutes');
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -82,6 +84,9 @@ function buildApp() {
     origin: process.env.FRONTEND_ORIGIN || 'http://localhost:3003',
     credentials: true,
   }));
+
+  // Health checks — no auth, no raw body parsing required.
+  app.use('/health', buildHealthRouter(pool, 'auth-service'));
 
   // Webhook route registered BEFORE express.json() — raw body required for Stripe signature check.
   app.post('/webhooks/stripe', express.raw({ type: 'application/json' }), handleStripeWebhook);

@@ -8,9 +8,12 @@
     "dev": "node --watch src/server.js",
     "migrate": "node-pg-migrate -m migrations up",
     "migrate:down": "node-pg-migrate -m migrations down",
-    "test": "node tests/idempotency.test.js && node tests/recovery.test.js && node tests/admin.test.js && node tests/escrow.test.js"
+    "test": "node tests/idempotency.test.js && node tests/recovery.test.js && node tests/admin.test.js && node tests/escrow.test.js && node tests/health.test.js"
   },
   "license": "UNLICENSED",
+  "devDependencies": {
+    "supertest": "^7.0.0"
+  },
   "dependencies": {
     "better-sqlite3": "^13.0.1",
     "cors": "^2.8.5",

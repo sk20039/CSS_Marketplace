@@ -3,6 +3,8 @@ const cors = require('cors');
 const listingRoutes = require('./listingRoutes');
 const { photoRouter } = require('./photoRoutes');
 const seoRoutes = require('./seoRoutes');
+const pool = require('./db');
+const { buildHealthRouter } = require('./healthRoutes');
 
 function buildApp() {
   const app = express();
@@ -11,6 +13,9 @@ function buildApp() {
     credentials: true,
   }));
   app.use(express.json());
+
+  // Health checks — no auth required.
+  app.use('/health', buildHealthRouter(pool, 'listing-service'));
 
   app.use('/listings', listingRoutes);
   app.use('/', photoRouter); // handles POST /listings/:id/photos and GET /photos/:filename

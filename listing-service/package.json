@@ -8,7 +8,7 @@
     "dev": "node --watch src/server.js",
     "migrate": "node-pg-migrate -m migrations up",
     "migrate:down": "node-pg-migrate -m migrations down",
-    "test": "node tests/listings.test.js"
+    "test": "node tests/listings.test.js && node tests/health.test.js"
   },
   "license": "UNLICENSED",
   "dependencies": {
