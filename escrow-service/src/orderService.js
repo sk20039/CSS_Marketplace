@@ -434,6 +434,7 @@ async function performRelease(orderId, { triggeredBy, fromStatus }) {
       destination,
       metadata: { orderId: String(order.id), operationType: 'release' },
       sourceTransactionId: order.stripe_charge_id,
+      transferGroup: `order_${orderId}`,
       idempotencyKey: `release_order_${orderId}`,
     });
   } catch (err) {

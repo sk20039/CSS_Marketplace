@@ -230,6 +230,135 @@ async function runAdminRecoveryTests() {
     );
   });
 
+  // -------------------------------------------------------------------------
+  // RELEASING reconciliation — stub transfer-group lookup + fallback
+  // -------------------------------------------------------------------------
+
+  console.log('\nPOST /admin/run-recovery — RELEASING reconciliation (stub)');
+
+  // Give the demo seller a connected account so recovery can look up transfers.
+  const sellerRow = db.prepare("SELECT id FROM users WHERE email = 'seller@demo.test'").get();
+  const TEST_ACCT = 'acct_test_release_recovery';
+  db.prepare('UPDATE users SET stripe_account_id = ? WHERE id = ?').run(TEST_ACCT, sellerRow.id);
+
+  // Helper: capture a stub PI and insert a stale RELEASING order backed by it.
+  async function makeReleasingOrder() {
+    const pi = await stripeClient.createPaymentIntent({ amountCents: 500, currency: 'usd', metadata: {} });
+    const captured = await stripeClient.capturePaymentIntent(pi.id, {});
+    const buyer = db.prepare("SELECT id FROM users WHERE email = 'buyer@demo.test'").get();
+    const listing = db.prepare('SELECT id FROM listings LIMIT 1').get();
+    const staleTs = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+    const now = new Date().toISOString();
+    const result = db.prepare(`
+      INSERT INTO orders (
+        listing_id, buyer_id, seller_id, amount_cents, platform_fee_cents, seller_payout_cents,
+        status, stripe_payment_intent_id, stripe_charge_id, prior_status, transition_started_at,
+        recovery_claimed_at, recovery_attempts, created_at, updated_at
+      ) VALUES (?, ?, ?, 500, 15, 485, 'RELEASING', ?, ?, 'DELIVERED', ?, NULL, 0, ?, ?)
+    `).run(listing.id, buyer.id, sellerRow.id, pi.id, captured.chargeId, staleTs, now, now);
+    return { orderId: Number(result.lastInsertRowid), chargeId: captured.chargeId };
+  }
+
+  await test('RELEASING: transfer found by transfer_group → finalized, no new transfer created', async () => {
+    const { orderId, chargeId } = await makeReleasingOrder();
+    const tg = `order_${orderId}`;
+    const existing = {
+      id: `tr_group_${orderId}`,
+      transferGroup: tg,
+      sourceTransactionId: chargeId,
+      amountCents: 485,
+      currency: 'usd',
+      destination: TEST_ACCT,
+      metadata: { orderId: String(orderId), operationType: 'release' },
+      status: 'paid',
+    };
+    stripeClient._transfers.push(existing);
+    const countAfterSetup = stripeClient._transfers.length;
+
+    const res = await post(server, '/admin/run-recovery', TOKENS.admin);
+    assertEqual(res.status, 200, `expected 200, got ${res.status}`);
+    assert(res.body.recoveredOrderIds.includes(orderId), `order ${orderId} must appear in recoveredOrderIds`);
+    assertEqual(stripeClient._transfers.length, countAfterSetup, 'no new Stripe transfer must be created');
+
+    const row = db.prepare('SELECT status, stripe_transfer_id FROM orders WHERE id = ?').get(orderId);
+    assertEqual(row.status, 'RELEASED', 'order must be RELEASED');
+    assertEqual(row.stripe_transfer_id, existing.id, 'transfer id must match the pre-existing transfer');
+  });
+
+  await test('RELEASING: older transfer (no transfer_group) found via destination fallback → finalized', async () => {
+    const { orderId, chargeId } = await makeReleasingOrder();
+    const oldTransfer = {
+      id: `tr_old_${orderId}`,
+      transferGroup: null,           // no group — simulates a pre-fix transfer
+      sourceTransactionId: chargeId,
+      amountCents: 485,
+      currency: 'usd',
+      destination: TEST_ACCT,
+      metadata: { orderId: String(orderId), operationType: 'release' },
+      status: 'paid',
+    };
+    stripeClient._transfers.push(oldTransfer);
+    const countAfterSetup = stripeClient._transfers.length;
+
+    const res = await post(server, '/admin/run-recovery', TOKENS.admin);
+    assertEqual(res.status, 200, `expected 200, got ${res.status}`);
+    assert(res.body.recoveredOrderIds.includes(orderId), `order ${orderId} must appear in recoveredOrderIds`);
+    assertEqual(stripeClient._transfers.length, countAfterSetup, 'no new Stripe transfer must be created');
+
+    const row = db.prepare('SELECT status, stripe_transfer_id FROM orders WHERE id = ?').get(orderId);
+    assertEqual(row.status, 'RELEASED', 'order must be RELEASED');
+    assertEqual(row.stripe_transfer_id, oldTransfer.id, 'transfer id must match the old-style transfer');
+  });
+
+  await test('RELEASING: multiple matching transfers → ambiguous, order stays RELEASING', async () => {
+    const { orderId, chargeId } = await makeReleasingOrder();
+    const tg = `order_${orderId}`;
+    for (let i = 0; i < 2; i++) {
+      stripeClient._transfers.push({
+        id: `tr_dup${i}_${orderId}`,
+        transferGroup: tg,
+        sourceTransactionId: chargeId,
+        amountCents: 485,
+        currency: 'usd',
+        destination: TEST_ACCT,
+        metadata: { orderId: String(orderId), operationType: 'release' },
+        status: 'paid',
+      });
+    }
+
+    const res = await post(server, '/admin/run-recovery', TOKENS.admin);
+    assertEqual(res.status, 200, `expected 200, got ${res.status}`);
+    assert(
+      res.body.ambiguous.some((a) => a.orderId === orderId),
+      `order ${orderId} must appear in ambiguous`
+    );
+
+    const row = db.prepare('SELECT status FROM orders WHERE id = ?').get(orderId);
+    assertEqual(row.status, 'RELEASING', 'order must remain RELEASING when ambiguous');
+  });
+
+  await test('RELEASING: no existing transfer → new transfer issued via idempotent createTransfer', async () => {
+    const { orderId, chargeId } = await makeReleasingOrder();
+    const tg = `order_${orderId}`;
+    const countBefore = stripeClient._transfers.filter((t) => t.transferGroup === tg).length;
+    assertEqual(countBefore, 0, 'must start with no transfers for this order group');
+
+    const res = await post(server, '/admin/run-recovery', TOKENS.admin);
+    assertEqual(res.status, 200, `expected 200, got ${res.status}`);
+    assert(res.body.recoveredOrderIds.includes(orderId), `order ${orderId} must appear in recoveredOrderIds`);
+
+    const created = stripeClient._transfers.filter((t) => t.transferGroup === tg);
+    assertEqual(created.length, 1, 'exactly one transfer must be created');
+    assertEqual(created[0].amountCents, 485, 'transfer amount must be seller payout');
+    assertEqual(created[0].destination, TEST_ACCT, 'transfer must go to seller account');
+    assertEqual(created[0].metadata.orderId, String(orderId), 'transfer metadata must carry orderId');
+    assertEqual(created[0].metadata.operationType, 'release', 'transfer metadata must carry operationType');
+
+    const row = db.prepare('SELECT status, stripe_transfer_id FROM orders WHERE id = ?').get(orderId);
+    assertEqual(row.status, 'RELEASED', 'order must be RELEASED');
+    assertEqual(row.stripe_transfer_id, created[0].id, 'order must record the new transfer id');
+  });
+
   console.log('\nPOST /admin/run-release-check — confirm existing endpoint unchanged');
 
   await test('unauthenticated request to run-release-check is rejected with 401', async () => {

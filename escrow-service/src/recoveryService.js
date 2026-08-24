@@ -120,6 +120,8 @@ async function _sweep() {
 
     try {
       const result = await _recoverOrder(order);
+      // Clear any error recorded from a previous failed attempt.
+      db.prepare('UPDATE orders SET last_recovery_error = NULL WHERE id = ?').run(order.id);
       if (result.outcome === 'ambiguous') {
         ambiguous.push({ orderId: order.id, reason: result.reason });
       } else {
@@ -246,29 +248,46 @@ async function _reconcileReleasing(order) {
     return _ambiguous(order, 'stripe_charge_id missing — cannot look up transfers');
   }
 
-  const transfers = await stripeClient.listTransfersForCharge(order.stripe_charge_id);
-  const matching = transfers.filter(
+  const seller = db.prepare('SELECT * FROM users WHERE id = ?').get(order.seller_id);
+  if (!seller || !seller.stripe_account_id) {
+    return _ambiguous(order, `seller ${order.seller_id} has no connected Stripe account`);
+  }
+
+  const transferGroup = `order_${order.id}`;
+
+  // Fetch candidates: primary by transfer_group, fallback by destination account.
+  const candidates = await stripeClient.listTransfersForRelease({
+    transferGroup,
+    chargeId: order.stripe_charge_id,
+    destinationAccountId: seller.stripe_account_id,
+  });
+
+  // Full validation: all six fields must match to rule out unrelated transfers.
+  const matching = candidates.filter(
     (t) =>
       t.metadata &&
       t.metadata.orderId === String(order.id) &&
-      t.metadata.operationType === 'release'
+      t.metadata.operationType === 'release' &&
+      t.destination === seller.stripe_account_id &&
+      t.sourceTransactionId === order.stripe_charge_id &&
+      t.currency === 'usd' &&
+      t.amountCents === order.seller_payout_cents
   );
 
   let stripeTransfer;
   if (matching.length === 1) {
     stripeTransfer = matching[0];
   } else if (matching.length === 0) {
-    // No transfer found — re-issue with same idempotency key.
-    const seller = db.prepare('SELECT * FROM users WHERE id = ?').get(order.seller_id);
-    if (!seller || !seller.stripe_account_id) {
-      return _ambiguous(order, `seller ${order.seller_id} has no connected Stripe account`);
-    }
+    // No matching transfer found — re-issue with the same idempotency key so
+    // Stripe deduplicates if the original call went through but the response
+    // was lost before the process could write the transfer ID to the DB.
     stripeTransfer = await stripeClient.createTransfer({
       amountCents: order.seller_payout_cents,
       currency: 'usd',
       destination: seller.stripe_account_id,
       metadata: { orderId: String(order.id), operationType: 'release' },
       sourceTransactionId: order.stripe_charge_id,
+      transferGroup,
       idempotencyKey: `release_order_${order.id}`,
     });
   } else {

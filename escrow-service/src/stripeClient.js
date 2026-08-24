@@ -137,7 +137,9 @@ class StubStripeClient {
   // same key indicates a different intended operation (mirrors real Stripe
   // idempotency conflict semantics). Keys are sorted via stableFingerprint so
   // property insertion order never affects cache lookup.
-  async createTransfer({ amountCents, currency = 'usd', destination, metadata = {}, sourceTransactionId, idempotencyKey }) {
+  // transferGroup is intentionally excluded from the fingerprint: it is a
+  // routing annotation and does not alter the financial operation itself.
+  async createTransfer({ amountCents, currency = 'usd', destination, metadata = {}, sourceTransactionId, transferGroup, idempotencyKey }) {
     if (STUB_LATENCY_MS > 0) await sleep(STUB_LATENCY_MS);
     if (!destination) {
       throw new Error('[stripe:stub] createTransfer requires a destination connected account id');
@@ -145,9 +147,9 @@ class StubStripeClient {
     const fingerprint = stableFingerprint({ amountCents, currency, destination, sourceTransactionId, metadata });
     return this._checkIdempotency(idempotencyKey, fingerprint, () => {
       const id = fakeId('tr');
-      const entry = { id, sourceTransactionId, amountCents, currency, destination, metadata, status: 'paid' };
+      const entry = { id, sourceTransactionId, amountCents, currency, destination, metadata, status: 'paid', transferGroup: transferGroup || null };
       this._transfers.push(entry);
-      return { id, status: 'paid', amountCents, currency, destination, sourceTransactionId, metadata };
+      return { id, status: 'paid', amountCents, currency, destination, sourceTransactionId, metadata, transferGroup: transferGroup || null };
     });
   }
 
@@ -183,10 +185,25 @@ class StubStripeClient {
     return this._refunds.filter((r) => r.paymentIntentId === piId);
   }
 
-  // Returns all transfers that reference a charge as their source_transaction.
-  // Used by recovery to check whether a Stripe transfer already exists.
-  async listTransfersForCharge(chargeId) {
-    return this._transfers.filter((t) => t.sourceTransactionId === chargeId);
+  // Returns transfers for RELEASING reconciliation.
+  // Primary: by transfer_group (set on new-style transfers).
+  // Fallback: by destination account + source charge for older transfers that
+  // predate the transfer_group field (no group tag on the stored entry).
+  async listTransfersForRelease({ transferGroup, chargeId, destinationAccountId }) {
+    if (STUB_LATENCY_MS > 0) await sleep(STUB_LATENCY_MS);
+    if (transferGroup) {
+      const byGroup = this._transfers.filter((t) => t.transferGroup === transferGroup);
+      if (byGroup.length > 0) return byGroup;
+    }
+    if (destinationAccountId && chargeId) {
+      return this._transfers.filter(
+        (t) =>
+          !t.transferGroup &&
+          t.destination === destinationAccountId &&
+          t.sourceTransactionId === chargeId
+      );
+    }
+    return [];
   }
 }
 
@@ -219,7 +236,7 @@ class RealStripeClient {
     return { id: intent.id, status: intent.status, chargeId };
   }
 
-  async createTransfer({ amountCents, currency = 'usd', destination, metadata = {}, sourceTransactionId, idempotencyKey }) {
+  async createTransfer({ amountCents, currency = 'usd', destination, metadata = {}, sourceTransactionId, transferGroup, idempotencyKey }) {
     const options = idempotencyKey ? { idempotencyKey } : {};
     const transfer = await this._stripe.transfers.create(
       {
@@ -227,6 +244,7 @@ class RealStripeClient {
         currency,
         destination,
         source_transaction: sourceTransactionId || undefined,
+        transfer_group: transferGroup || undefined,
         metadata,
       },
       options
@@ -266,16 +284,60 @@ class RealStripeClient {
     }));
   }
 
-  async listTransfersForCharge(chargeId) {
-    const result = await this._stripe.transfers.list({ source_transaction: chargeId, limit: 10 });
-    return result.data.map((t) => ({
+  // Returns transfers for RELEASING reconciliation.
+  // Primary: paginated lookup by transfer_group (set on new-style transfers only).
+  //   Returns immediately if any results are found so we never fall through to
+  //   the fallback for a transfer that was already found by its group.
+  // Fallback: paginated destination-account lookup for older transfers that
+  //   predate the transfer_group field, filtered to those whose source_transaction
+  //   matches the original charge.
+  async listTransfersForRelease({ transferGroup, chargeId, destinationAccountId }) {
+    if (transferGroup) {
+      const byGroup = await this._paginateTransfers({ transfer_group: transferGroup });
+      if (byGroup.length > 0) return byGroup.map((t) => this._mapTransfer(t, chargeId));
+    }
+    if (destinationAccountId) {
+      const all = await this._paginateTransfers({ destination: destinationAccountId });
+      return all
+        .filter((t) => {
+          const src = typeof t.source_transaction === 'string'
+            ? t.source_transaction
+            : t.source_transaction?.id;
+          return src === chargeId;
+        })
+        .map((t) => this._mapTransfer(t, chargeId));
+    }
+    return [];
+  }
+
+  async _paginateTransfers(params) {
+    const all = [];
+    let page = await this._stripe.transfers.list({ ...params, limit: 100 });
+    all.push(...page.data);
+    while (page.has_more) {
+      page = await this._stripe.transfers.list({
+        ...params,
+        limit: 100,
+        starting_after: page.data[page.data.length - 1].id,
+      });
+      all.push(...page.data);
+    }
+    return all;
+  }
+
+  _mapTransfer(t, defaultSourceChargeId) {
+    const src = t.source_transaction
+      ? (typeof t.source_transaction === 'string' ? t.source_transaction : t.source_transaction.id)
+      : defaultSourceChargeId;
+    return {
       id: t.id,
-      sourceTransactionId: chargeId,
+      sourceTransactionId: src,
       amountCents: t.amount,
-      destination: typeof t.destination === 'string' ? t.destination : t.destination.id,
+      currency: t.currency,
+      destination: typeof t.destination === 'string' ? t.destination : t.destination?.id,
       metadata: t.metadata || {},
       status: 'paid',
-    }));
+    };
   }
 }
 
