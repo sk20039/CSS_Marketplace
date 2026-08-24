@@ -1,0 +1,380 @@
+// Auth-service integration tests against an isolated PostgreSQL database.
+//
+// Requires:
+//   1. PostgreSQL running (pg_isready on 127.0.0.1:5432)
+//   2. auth_db_test database created and schema migrated (or trust beforeAll)
+//   3. auth-service/data/auth.sqlite3 present (for imported-account tests)
+//   4. DATABASE_URL_TEST env var (default: postgres://auth_user:auth_pass@...)
+//
+// Run: node tests/auth.test.js
+'use strict';
+
+// Set DATABASE_URL before any app module is required so db.js creates its
+// pool against the test database.
+process.env.DATABASE_URL =
+  process.env.DATABASE_URL_TEST ||
+  'postgres://auth_user:auth_pass@127.0.0.1:5432/auth_db_test';
+process.env.JWT_SECRET = 'test-secret';
+// Clear Stripe keys so tests run in stub mode (no real API calls)
+delete process.env.STRIPE_SECRET_KEY;
+delete process.env.STRIPE_WEBHOOK_SECRET;
+delete process.env.ADMIN_JWT_SECRET;
+
+const request = require('supertest');
+const { Pool } = require('pg');
+const jwt = require('jsonwebtoken');
+const path = require('path');
+const Database = require('better-sqlite3');
+const { buildApp } = require('../src/app');
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const app = buildApp();
+
+// ── Minimal test runner ───────────────────────────────────────────────────────
+
+let passed = 0;
+let failed = 0;
+
+async function test(name, fn) {
+  try {
+    await fn();
+    console.log(`  ✓ ${name}`);
+    passed++;
+  } catch (err) {
+    console.error(`  ✗ ${name}`);
+    console.error(`    ${err.message}`);
+    failed++;
+  }
+}
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message || 'Assertion failed');
+}
+
+// ── Schema + import helpers ───────────────────────────────────────────────────
+
+const SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS users (
+    id                BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name              TEXT        NOT NULL,
+    email             TEXT        NOT NULL UNIQUE,
+    password_hash     TEXT        NOT NULL,
+    role              TEXT        NOT NULL DEFAULT 'buyer',
+    stripe_account_id TEXT,
+    email_verified    BOOLEAN     NOT NULL DEFAULT false,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT users_role_check CHECK (role IN ('buyer','seller','admin'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+
+  CREATE TABLE IF NOT EXISTS refresh_tokens (
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id     BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash  TEXT        NOT NULL,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+  CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id);
+  CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires ON refresh_tokens(expires_at);
+
+  CREATE TABLE IF NOT EXISTS email_verification_tokens (
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id     BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash  TEXT        NOT NULL UNIQUE,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+  CREATE INDEX IF NOT EXISTS idx_verification_tokens_user ON email_verification_tokens(user_id);
+`;
+
+async function importSqliteUsers(client) {
+  const sqlitePath = path.join(__dirname, '..', 'data', 'auth.sqlite3');
+  const sqlite = new Database(sqlitePath, { readonly: true });
+  try {
+    const users = sqlite.prepare('SELECT * FROM users').all();
+    const tokens = sqlite
+      .prepare("SELECT * FROM refresh_tokens WHERE expires_at > datetime('now')")
+      .all();
+
+    for (const row of users) {
+      await client.query(
+        `INSERT INTO users
+           (id, name, email, password_hash, role, stripe_account_id, email_verified, created_at)
+         OVERRIDING SYSTEM VALUE
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (id) DO NOTHING`,
+        [row.id, row.name, row.email, row.password_hash, row.role || 'buyer',
+         row.stripe_account_id || null, row.email_verified === 1, row.created_at]
+      );
+    }
+    for (const row of tokens) {
+      await client.query(
+        `INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, created_at)
+         OVERRIDING SYSTEM VALUE
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (id) DO NOTHING`,
+        [row.id, row.user_id, row.token_hash, row.expires_at, row.created_at]
+      );
+    }
+    await client.query(
+      `SELECT setval(pg_get_serial_sequence('users','id'), COALESCE((SELECT MAX(id) FROM users), 0))`
+    );
+    await client.query(
+      `SELECT setval(pg_get_serial_sequence('refresh_tokens','id'), COALESCE((SELECT MAX(id) FROM refresh_tokens), 0))`
+    );
+    return { users: users.length, tokens: tokens.length };
+  } finally {
+    sqlite.close();
+  }
+}
+
+// ── Unique email helper ───────────────────────────────────────────────────────
+
+let seq = 0;
+function uniqueEmail() {
+  return `test-${Date.now()}-${++seq}@example.com`;
+}
+
+// ── Test suite ────────────────────────────────────────────────────────────────
+
+async function run() {
+  console.log('Auth service — PostgreSQL integration tests\n');
+
+  // Setup: apply schema and import real SQLite data once
+  await pool.query('TRUNCATE TABLE email_verification_tokens, refresh_tokens, users RESTART IDENTITY CASCADE');
+  await pool.query(SCHEMA_SQL);
+  const client = await pool.connect();
+  let imported;
+  try {
+    imported = await importSqliteUsers(client);
+  } finally {
+    client.release();
+  }
+  console.log(`Setup: imported ${imported.users} user(s), ${imported.tokens} refresh token(s) from SQLite\n`);
+
+  // ── POST /auth/register ───────────────────────────────────────────────────
+  // NOTE: registerLimiter allows max 5 requests per IP per hour.
+  // All register tests combined must not exceed 5 calls.
+  console.log('POST /auth/register');
+
+  await test('returns 400 when required fields are missing', async () => {
+    // Counts toward rate limit (1/5)
+    const res = await request(app).post('/auth/register').send({ email: uniqueEmail() });
+    assert(res.status === 400, `expected 400, got ${res.status}`);
+  });
+
+  let registeredEmail;
+  await test('returns 201 with verification message for valid registration', async () => {
+    // (2/5)
+    registeredEmail = uniqueEmail();
+    const res = await request(app)
+      .post('/auth/register')
+      .send({ name: 'Test User', email: registeredEmail, password: 'ValidPass1!' });
+    assert(res.status === 201, `expected 201, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.message, 'should have a message');
+    assert(res.body.user && res.body.user.id > 0, 'should return user with id');
+    assert(res.body.user.role === 'buyer', 'default role should be buyer');
+  });
+
+  await test('returns 409 for duplicate email', async () => {
+    // Two calls: first creates user (3/5), second is duplicate (4/5)
+    const email = uniqueEmail();
+    await request(app).post('/auth/register').send({ name: 'A', email, password: 'Pass1234!' });
+    const res = await request(app).post('/auth/register').send({ name: 'B', email, password: 'Other1!' });
+    assert(res.status === 409, `expected 409, got ${res.status}`);
+    assert(res.body.error, 'should have error message');
+  });
+
+  // ── POST /auth/login — invalid credentials ────────────────────────────────
+  console.log('\nPOST /auth/login — invalid credentials');
+
+  await test('returns 401 for invalid password', async () => {
+    const res = await request(app).post('/auth/login')
+      .send({ email: 'buyer@cricket.test', password: 'WrongPassword!' });
+    assert(res.status === 401, `expected 401, got ${res.status}`);
+    assert(res.body.error === 'Invalid credentials', `unexpected error: ${res.body.error}`);
+  });
+
+  await test('returns 401 for non-existent email', async () => {
+    const res = await request(app).post('/auth/login')
+      .send({ email: 'nobody@nowhere.com', password: 'Whatever1!' });
+    assert(res.status === 401, `expected 401, got ${res.status}`);
+  });
+
+  await test('returns 403 for unverified account', async () => {
+    // Use the successfully registered (but unverified) user from the registration test above.
+    // This avoids a 6th /auth/register call which would hit the rate limiter (max 5/hr).
+    assert(registeredEmail, 'registeredEmail must be set from the registration test');
+    const res = await request(app).post('/auth/login').send({ email: registeredEmail, password: 'ValidPass1!' });
+    assert(res.status === 403, `expected 403, got ${res.status}: ${JSON.stringify(res.body)}`);
+  });
+
+  await test('returns 400 when fields are missing', async () => {
+    const res = await request(app).post('/auth/login').send({ email: 'a@b.com' });
+    assert(res.status === 400, `expected 400, got ${res.status}`);
+  });
+
+  // ── POST /auth/login — imported real accounts ─────────────────────────────
+  console.log('\nPOST /auth/login — imported accounts');
+
+  let buyerToken, sellerToken, adminToken;
+
+  await test('imported buyer (buyer@cricket.test) can log in', async () => {
+    const res = await request(app).post('/auth/login')
+      .send({ email: 'buyer@cricket.test', password: 'Buyer1234!' });
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.access_token, 'should return access_token');
+    assert(res.body.user.role === 'buyer', `expected buyer, got ${res.body.user.role}`);
+    buyerToken = res.body.access_token;
+  });
+
+  await test('imported seller (demo.seller@cricket.test) can log in', async () => {
+    const res = await request(app).post('/auth/login')
+      .send({ email: 'demo.seller@cricket.test', password: 'Demo1234!' });
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.access_token, 'should return access_token');
+    assert(res.body.user.role === 'seller', `expected seller, got ${res.body.user.role}`);
+    sellerToken = res.body.access_token;
+  });
+
+  await test('imported admin (admin@cricket.test) can log in', async () => {
+    const res = await request(app).post('/auth/login')
+      .send({ email: 'admin@cricket.test', password: 'Admin1234!' });
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.access_token, 'should return access_token');
+    assert(res.body.user.role === 'admin', `expected admin, got ${res.body.user.role}`);
+    adminToken = res.body.access_token;
+  });
+
+  // ── GET /auth/me — authorization ─────────────────────────────────────────
+  console.log('\nGET /auth/me — authorization');
+
+  await test('returns 401 with no token', async () => {
+    const res = await request(app).get('/auth/me');
+    assert(res.status === 401, `expected 401, got ${res.status}`);
+  });
+
+  await test('returns 401 with expired token', async () => {
+    const expired = jwt.sign({ sub: 4, email: 'buyer@cricket.test', role: 'buyer' }, 'test-secret', { expiresIn: '-1s' });
+    const res = await request(app).get('/auth/me').set('Authorization', `Bearer ${expired}`);
+    assert(res.status === 401, `expected 401, got ${res.status}`);
+  });
+
+  await test('buyer authorization — returns role=buyer and correct email', async () => {
+    assert(buyerToken, 'buyerToken must be set from login test');
+    const res = await request(app).get('/auth/me').set('Authorization', `Bearer ${buyerToken}`);
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.role === 'buyer', `expected buyer, got ${res.body.role}`);
+    assert(res.body.email === 'buyer@cricket.test', `email mismatch: ${res.body.email}`);
+  });
+
+  await test('seller authorization — returns role=seller and correct email', async () => {
+    assert(sellerToken, 'sellerToken must be set from login test');
+    const res = await request(app).get('/auth/me').set('Authorization', `Bearer ${sellerToken}`);
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.role === 'seller', `expected seller, got ${res.body.role}`);
+    assert(res.body.email === 'demo.seller@cricket.test', `email mismatch: ${res.body.email}`);
+  });
+
+  await test('admin authorization — returns role=admin and correct email', async () => {
+    assert(adminToken, 'adminToken must be set from login test');
+    const res = await request(app).get('/auth/me').set('Authorization', `Bearer ${adminToken}`);
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.role === 'admin', `expected admin, got ${res.body.role}`);
+    assert(res.body.email === 'admin@cricket.test', `email mismatch: ${res.body.email}`);
+  });
+
+  // ── Stripe account verification ───────────────────────────────────────────
+  console.log('\nStripe account synchronization');
+
+  await test('seller 3 stripe_account_id preserved as acct_1U590xBKfStkw42B', async () => {
+    const { rows } = await pool.query('SELECT stripe_account_id FROM users WHERE id = $1', [3]);
+    assert(rows[0], 'seller id=3 should exist');
+    assert(
+      rows[0].stripe_account_id === 'acct_1U590xBKfStkw42B',
+      `expected acct_1U590xBKfStkw42B, got ${rows[0].stripe_account_id}`
+    );
+  });
+
+  await test('GET /sellers/connect/status returns connected=false in stub mode (no STRIPE_SECRET_KEY)', async () => {
+    assert(sellerToken, 'sellerToken must be set');
+    const res = await request(app)
+      .get('/auth/sellers/connect/status')
+      .set('Authorization', `Bearer ${sellerToken}`);
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.stub === true, 'stub flag should be true when no STRIPE_SECRET_KEY');
+    assert(res.body.connected === false, 'connected should be false in stub mode');
+  });
+
+  await test('POST /sellers/connect returns 503 in stub mode (no STRIPE_SECRET_KEY)', async () => {
+    assert(sellerToken, 'sellerToken must be set');
+    const res = await request(app)
+      .post('/auth/sellers/connect')
+      .set('Authorization', `Bearer ${sellerToken}`);
+    assert(res.status === 503, `expected 503, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.stub === true, 'stub flag should be true');
+  });
+
+  // ── Webhook updates ───────────────────────────────────────────────────────
+  console.log('\nWebhook updates');
+
+  await test('POST /webhooks/stripe in stub mode returns { received: true, stub: true }', async () => {
+    const res = await request(app)
+      .post('/webhooks/stripe')
+      .set('Content-Type', 'application/json')
+      .send(JSON.stringify({ type: 'account.updated', data: { object: { id: 'acct_test' } } }));
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.received === true, 'received should be true');
+    assert(res.body.stub === true, 'stub should be true');
+  });
+
+  // ── Token refresh (rotation) ──────────────────────────────────────────────
+  console.log('\nToken refresh');
+
+  await test('login → refresh → new access token (cookie-based rotation)', async () => {
+    const login = await request(app).post('/auth/login')
+      .send({ email: 'buyer@cricket.test', password: 'Buyer1234!' });
+    assert(login.status === 200, `login failed: ${login.status}`);
+    const cookie = login.headers['set-cookie'];
+    assert(cookie && cookie.length > 0, 'should set refresh_token cookie');
+
+    const refresh = await request(app)
+      .post('/auth/refresh')
+      .set('Cookie', cookie);
+    assert(refresh.status === 200, `refresh failed: ${refresh.status}: ${JSON.stringify(refresh.body)}`);
+    assert(refresh.body.access_token, 'should return new access_token');
+
+    // New token should be different from original
+    assert(refresh.body.access_token !== login.body.access_token, 'new token should differ from original');
+  });
+
+  await test('refresh with no cookie returns 401', async () => {
+    const res = await request(app).post('/auth/refresh');
+    assert(res.status === 401, `expected 401, got ${res.status}`);
+  });
+
+  await test('POST /auth/logout clears refresh cookie', async () => {
+    const login = await request(app).post('/auth/login')
+      .send({ email: 'buyer@cricket.test', password: 'Buyer1234!' });
+    const cookie = login.headers['set-cookie'];
+    const res = await request(app).post('/auth/logout').set('Cookie', cookie);
+    assert(res.status === 200, `expected 200, got ${res.status}`);
+    assert(res.body.ok === true, 'should return ok:true');
+    // Subsequent refresh with the same (now deleted) cookie should fail
+    const retried = await request(app).post('/auth/refresh').set('Cookie', cookie);
+    assert(retried.status === 401, `expected 401 after logout, got ${retried.status}`);
+  });
+
+  // Teardown
+  await pool.end();
+
+  // Report
+  const total = passed + failed;
+  console.log(`\n${total} test(s): ${passed} passed, ${failed} failed`);
+  if (failed > 0) process.exit(1);
+}
+
+run().catch((err) => {
+  console.error('\nFatal test error:', err.message);
+  process.exit(1);
+});

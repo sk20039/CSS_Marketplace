@@ -2,7 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const db = require('./db');
+const pool = require('./db');
 const requireAuth = require('./middleware/requireAuth');
 const { sendVerificationEmail } = require('./emailer');
 
@@ -46,17 +46,18 @@ async function storeRefreshToken(userId) {
   const raw = crypto.randomBytes(REFRESH_BYTES).toString('hex');
   const hash = await bcrypt.hash(raw, 10);
   const expiresAt = new Date(Date.now() + REFRESH_DAYS * 86400000).toISOString();
-  db.prepare(
-    "INSERT INTO refresh_tokens (user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, datetime('now'))"
-  ).run(userId, hash, expiresAt);
+  await pool.query(
+    'INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)',
+    [userId, hash, expiresAt]
+  );
   return raw;
 }
 
 async function findAndDeleteRefreshToken(raw) {
-  const rows = db.prepare("SELECT * FROM refresh_tokens WHERE expires_at > datetime('now')").all();
+  const { rows } = await pool.query('SELECT * FROM refresh_tokens WHERE expires_at > NOW()');
   for (const row of rows) {
     if (await bcrypt.compare(raw, row.token_hash)) {
-      db.prepare('DELETE FROM refresh_tokens WHERE id = ?').run(row.id);
+      await pool.query('DELETE FROM refresh_tokens WHERE id = $1', [row.id]);
       return row;
     }
   }
@@ -72,24 +73,32 @@ router.post('/register', async (req, res, next) => {
     }
     const userRole = ['buyer', 'seller'].includes(role) ? role : 'buyer';
 
-    if (db.prepare('SELECT id FROM users WHERE email = ?').get(email)) {
+    const { rows: existing } = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
+    if (existing[0]) {
       return res.status(409).json({ error: 'Email already registered' });
     }
 
     const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
-    const result = db.prepare(
-      "INSERT INTO users (name, email, password_hash, role, email_verified, created_at) VALUES (?, ?, ?, ?, 0, datetime('now'))"
-    ).run(name, email, passwordHash, userRole);
+    const { rows: inserted } = await pool.query(
+      'INSERT INTO users (name, email, password_hash, role, email_verified) VALUES ($1, $2, $3, $4, false) RETURNING id',
+      [name, email, passwordHash, userRole]
+    );
+    const userId = inserted[0].id;
 
-    const user = db.prepare('SELECT id, name, email, role FROM users WHERE id = ?').get(result.lastInsertRowid);
+    const { rows: userRows } = await pool.query(
+      'SELECT id, name, email, role FROM users WHERE id = $1',
+      [userId]
+    );
+    const user = userRows[0];
 
     // Generate and store verification token
     const verifyToken = crypto.randomBytes(32).toString('hex');
     const tokenHash = crypto.createHash('sha256').update(verifyToken).digest('hex');
     const expiresAt = new Date(Date.now() + 24 * 3600000).toISOString();
-    db.prepare(
-      'INSERT INTO email_verification_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)'
-    ).run(user.id, tokenHash, expiresAt);
+    await pool.query(
+      'INSERT INTO email_verification_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)',
+      [user.id, tokenHash, expiresAt]
+    );
 
     await sendVerificationEmail(user.email, verifyToken);
 
@@ -103,21 +112,25 @@ router.post('/register', async (req, res, next) => {
 });
 
 // GET /auth/verify-email?token=...
-router.get('/verify-email', (req, res) => {
-  const { token } = req.query;
-  if (!token) return res.status(400).json({ error: 'token is required' });
+router.get('/verify-email', async (req, res, next) => {
+  try {
+    const { token } = req.query;
+    if (!token) return res.status(400).json({ error: 'token is required' });
 
-  const tokenHash = crypto.createHash('sha256').update(String(token)).digest('hex');
-  const row = db.prepare(
-    "SELECT * FROM email_verification_tokens WHERE token_hash = ? AND expires_at > datetime('now')"
-  ).get(tokenHash);
+    const tokenHash = crypto.createHash('sha256').update(String(token)).digest('hex');
+    const { rows } = await pool.query(
+      'SELECT * FROM email_verification_tokens WHERE token_hash = $1 AND expires_at > NOW()',
+      [tokenHash]
+    );
+    if (!rows[0]) return res.status(400).json({ error: 'Invalid or expired verification link' });
 
-  if (!row) return res.status(400).json({ error: 'Invalid or expired verification link' });
+    await pool.query('UPDATE users SET email_verified = true WHERE id = $1', [rows[0].user_id]);
+    await pool.query('DELETE FROM email_verification_tokens WHERE id = $1', [rows[0].id]);
 
-  db.prepare('UPDATE users SET email_verified = 1 WHERE id = ?').run(row.user_id);
-  db.prepare('DELETE FROM email_verification_tokens WHERE id = ?').run(row.id);
-
-  res.json({ message: 'Email verified. You can now sign in.' });
+    res.json({ message: 'Email verified. You can now sign in.' });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // POST /auth/login
@@ -126,7 +139,8 @@ router.post('/login', async (req, res, next) => {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'email and password are required' });
 
-    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+    const { rows } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    const user = rows[0];
     if (!user || !(await bcrypt.compare(password, user.password_hash))) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
@@ -166,7 +180,11 @@ router.post('/refresh', async (req, res, next) => {
     const matched = await findAndDeleteRefreshToken(raw);
     if (!matched) return res.status(401).json({ error: 'Invalid or expired refresh token' });
 
-    const user = db.prepare('SELECT id, name, email, role FROM users WHERE id = ?').get(matched.user_id);
+    const { rows } = await pool.query(
+      'SELECT id, name, email, role FROM users WHERE id = $1',
+      [matched.user_id]
+    );
+    const user = rows[0];
     if (!user) return res.status(401).json({ error: 'User not found' });
 
     // Rotate: issue new refresh token
@@ -179,10 +197,17 @@ router.post('/refresh', async (req, res, next) => {
 });
 
 // GET /auth/me
-router.get('/me', requireAuth, (req, res) => {
-  const user = db.prepare('SELECT id, name, email, role, stripe_account_id, created_at FROM users WHERE id = ?').get(req.user.id);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  res.json(user);
+router.get('/me', requireAuth, async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT id, name, email, role, stripe_account_id, created_at FROM users WHERE id = $1',
+      [req.user.id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'User not found' });
+    res.json(rows[0]);
+  } catch (err) {
+    next(err);
+  }
 });
 
 // POST /auth/sellers/connect
@@ -206,7 +231,11 @@ router.post('/sellers/connect', requireAuth, async (req, res, next) => {
     const stripe = new Stripe(key, { apiVersion: '2024-06-20' });
     const BASE_URL = process.env.APP_BASE_URL || 'http://localhost:3003';
 
-    const user = db.prepare('SELECT id, email, stripe_account_id FROM users WHERE id = ?').get(req.user.id);
+    const { rows: userRows } = await pool.query(
+      'SELECT id, email, stripe_account_id FROM users WHERE id = $1',
+      [req.user.id]
+    );
+    const user = userRows[0];
 
     // Get or create Express account
     let accountId = user.stripe_account_id;
@@ -218,7 +247,7 @@ router.post('/sellers/connect', requireAuth, async (req, res, next) => {
         capabilities: { transfers: { requested: true } },
       });
       accountId = account.id;
-      db.prepare('UPDATE users SET stripe_account_id = ? WHERE id = ?').run(accountId, user.id);
+      await pool.query('UPDATE users SET stripe_account_id = $1 WHERE id = $2', [accountId, user.id]);
     }
 
     const accountLink = await stripe.accountLinks.create({
@@ -239,7 +268,11 @@ router.post('/sellers/connect', requireAuth, async (req, res, next) => {
 router.get('/sellers/connect/status', requireAuth, async (req, res, next) => {
   try {
     const key = process.env.STRIPE_SECRET_KEY;
-    const user = db.prepare('SELECT stripe_account_id FROM users WHERE id = ?').get(req.user.id);
+    const { rows: userRows } = await pool.query(
+      'SELECT stripe_account_id FROM users WHERE id = $1',
+      [req.user.id]
+    );
+    const user = userRows[0];
 
     if (!key || !user.stripe_account_id) {
       return res.json({ connected: false, charges_enabled: false, details_submitted: false, stub: !key });

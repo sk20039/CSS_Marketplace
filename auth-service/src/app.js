@@ -57,8 +57,12 @@ async function handleStripeWebhook(req, res) {
 
   if (event.type === 'account.updated') {
     const account = event.data.object;
-    const db = require('./db');
-    const user = db.prepare('SELECT id, email FROM users WHERE stripe_account_id = ?').get(account.id);
+    const pool = require('./db');
+    const { rows } = await pool.query(
+      'SELECT id, email FROM users WHERE stripe_account_id = $1',
+      [account.id]
+    );
+    const user = rows[0];
     if (user) {
       console.log(
         `[webhook] account.updated: seller ${user.email} (id=${user.id}) ` +

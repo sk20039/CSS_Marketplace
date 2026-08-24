@@ -87,18 +87,23 @@ async function main() {
     }
 
     // --- Reset identity sequences to max imported ID ---
-    await client.query(
-      `SELECT setval(
-         pg_get_serial_sequence('listings', 'id'),
-         COALESCE((SELECT MAX(id) FROM listings), 0)
-       )`
-    );
-    await client.query(
-      `SELECT setval(
-         pg_get_serial_sequence('listing_photos', 'id'),
-         COALESCE((SELECT MAX(id) FROM listing_photos), 0)
-       )`
-    );
+    // setval(seq, N, true)  → next insert gets N+1  (use when rows exist)
+    // setval(seq, 1, false) → next insert gets 1    (use when table is empty)
+    for (const table of ['listings', 'listing_photos']) {
+      const { rows: maxRows } = await client.query(`SELECT MAX(id) AS m FROM ${table}`);
+      const maxId = maxRows[0].m;
+      if (maxId != null) {
+        await client.query(
+          `SELECT setval(pg_get_serial_sequence($1, 'id'), $2, true)`,
+          [table, maxId]
+        );
+      } else {
+        await client.query(
+          `SELECT setval(pg_get_serial_sequence($1, 'id'), 1, false)`,
+          [table]
+        );
+      }
+    }
 
     await client.query('COMMIT');
     console.log(
