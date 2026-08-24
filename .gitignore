@@ -18,6 +18,7 @@ listing-service/uploads/
 # Next.js build output
 frontend/.next/
 frontend/next-env.d.ts
+frontend/tsconfig.tsbuildinfo
 
 # env secrets - never commit real keys
 .env
