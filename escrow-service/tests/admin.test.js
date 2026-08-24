@@ -10,7 +10,7 @@
 //   - Admin users can invoke recovery and receive a valid result
 //   - Overlapping invocations return the in-process guard result safely
 //
-// Uses a temporary SQLite database and the stub Stripe client.
+// Uses escrow_db_test (PostgreSQL) and the stub Stripe client.
 // Introduces artificial stub latency (STRIPE_STUB_LATENCY_MS=50) so that
 // two simultaneous HTTP requests genuinely overlap inside runRecovery(),
 // making the in-process guard observable at the HTTP layer.
@@ -18,19 +18,16 @@
 'use strict';
 
 // ---- Must be set before any module load that touches db.js or stripeClient ----
-const path = require('path');
-const os   = require('os');
-const fs   = require('fs');
-const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'admin-test-'));
-process.env.DB_PATH = path.join(tmpDir, 'test.sqlite3');
+require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
+process.env.DATABASE_URL = process.env.DATABASE_URL_TEST;
 delete process.env.STRIPE_SECRET_KEY;   // force stub mode
 process.env.STRIPE_STUB_LATENCY_MS = '50'; // artificial delay so overlapping requests genuinely race
 
 const http = require('http');
 const jwt  = require('jsonwebtoken');
 
-const { buildApp } = require('../src/app');
-const db            = require('../src/db');
+const { buildApp }     = require('../src/app');
+const pool             = require('../src/db');
 const { stripeClient } = require('../src/stripeClient');
 
 // ---------------------------------------------------------------------------
@@ -109,6 +106,37 @@ function assertEqual(a, b, msg) {
 }
 
 // ---------------------------------------------------------------------------
+// DB setup
+// ---------------------------------------------------------------------------
+
+let BUYER_ID, SELLER_ID, LISTING_ID;
+const TEST_ACCT = 'acct_test_release_recovery';
+
+async function setupDb() {
+  await pool.query(`
+    TRUNCATE reviews, messages, order_events, orders, listings, users
+    RESTART IDENTITY CASCADE
+  `);
+
+  const { rows: [buyer] } = await pool.query(
+    `INSERT INTO users (name, email, role) VALUES ('Demo Buyer', 'buyer@demo.test', 'buyer') RETURNING id`
+  );
+  const { rows: [seller] } = await pool.query(
+    `INSERT INTO users (name, email, role, stripe_account_id)
+     VALUES ('Demo Seller', 'seller@demo.test', 'seller', $1) RETURNING id`,
+    [TEST_ACCT]
+  );
+  const { rows: [listing] } = await pool.query(
+    `INSERT INTO listings (seller_id, title, price_cents) VALUES ($1, 'Demo Item', 5000) RETURNING id`,
+    [seller.id]
+  );
+
+  BUYER_ID  = buyer.id;
+  SELLER_ID = seller.id;
+  LISTING_ID = listing.id;
+}
+
+// ---------------------------------------------------------------------------
 // Server lifecycle
 // ---------------------------------------------------------------------------
 
@@ -159,7 +187,6 @@ async function runAdminRecoveryTests() {
     const res = await post(server, '/admin/run-recovery', TOKENS.admin);
     assertEqual(res.status, 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
     const b = res.body;
-    // Either a normal result or a skipped guard result — both are valid
     if (b.skipped) {
       assert(b.skipped === true, 'skipped must be boolean true');
     } else {
@@ -181,32 +208,19 @@ async function runAdminRecoveryTests() {
   console.log('\nPOST /admin/run-recovery — in-process overlap guard');
 
   await test('two simultaneous admin requests return 200 — one runs, other returns guard result safely', async () => {
-    // The in-process guard (recoveryInProgress flag) is only observable under HTTP
-    // concurrency when the first sweep is genuinely awaiting an async operation.
-    // We ensure this by inserting a stale CAPTURING order backed by a real stub PI.
-    // With STRIPE_STUB_LATENCY_MS=50, the first sweep suspends for 50ms at
-    // stripeClient.getPaymentIntent(). During that window, the event loop
-    // processes the second HTTP request, which sees recoveryInProgress=true.
     const pi = await stripeClient.createPaymentIntent({ amountCents: 5000, currency: 'usd', metadata: {} });
-    const buyer  = db.prepare("SELECT id FROM users WHERE email = 'buyer@demo.test'").get();
-    const seller = db.prepare("SELECT id FROM users WHERE email = 'seller@demo.test'").get();
-    const listing = db.prepare('SELECT id FROM listings LIMIT 1').get();
     const staleTs = new Date(Date.now() - 15 * 60 * 1000).toISOString();
     const now     = new Date().toISOString();
-    db.prepare(`
-      INSERT INTO orders (
-        listing_id, buyer_id, seller_id, amount_cents, platform_fee_cents, seller_payout_cents,
-        status, stripe_payment_intent_id, prior_status, transition_started_at,
-        recovery_claimed_at, recovery_attempts, created_at, updated_at
-      ) VALUES (
-        ?, ?, ?, 5000, 150, 4850,
-        'CAPTURING', ?, 'CREATED', ?,
-        NULL, 0, ?, ?
-      )
-    `).run(listing.id, buyer.id, seller.id, pi.id, staleTs, now, now);
 
-    // Fire both requests simultaneously. The first will claim the candidate and
-    // enter the 50ms Stripe latency window. The second will see the guard flag.
+    await pool.query(
+      `INSERT INTO orders (
+         listing_id, buyer_id, seller_id, amount_cents, platform_fee_cents, seller_payout_cents,
+         status, stripe_payment_intent_id, prior_status, transition_started_at,
+         recovery_claimed_at, recovery_attempts, created_at, updated_at
+       ) VALUES ($1,$2,$3,5000,150,4850,'CAPTURING',$4,'CREATED',$5,NULL,0,$6,$7)`,
+      [LISTING_ID, BUYER_ID, SELLER_ID, pi.id, staleTs, now, now]
+    );
+
     const [r1, r2] = await Promise.all([
       post(server, '/admin/run-recovery', TOKENS.admin),
       post(server, '/admin/run-recovery', TOKENS.admin),
@@ -217,13 +231,11 @@ async function runAdminRecoveryTests() {
 
     const bodies = [r1.body, r2.body];
 
-    // At least one must have performed a real sweep
     assert(
       bodies.some((b) => !b.skipped && 'candidateCount' in b),
       'at least one of the two requests must have performed a real sweep'
     );
 
-    // At least one must have been skipped — confirms the guard result flows through to HTTP 200
     assert(
       bodies.some((b) => b.skipped === true),
       'at least one of the two requests must have returned the in-process guard result {skipped:true}'
@@ -236,27 +248,22 @@ async function runAdminRecoveryTests() {
 
   console.log('\nPOST /admin/run-recovery — RELEASING reconciliation (stub)');
 
-  // Give the demo seller a connected account so recovery can look up transfers.
-  const sellerRow = db.prepare("SELECT id FROM users WHERE email = 'seller@demo.test'").get();
-  const TEST_ACCT = 'acct_test_release_recovery';
-  db.prepare('UPDATE users SET stripe_account_id = ? WHERE id = ?').run(TEST_ACCT, sellerRow.id);
-
   // Helper: capture a stub PI and insert a stale RELEASING order backed by it.
   async function makeReleasingOrder() {
     const pi = await stripeClient.createPaymentIntent({ amountCents: 500, currency: 'usd', metadata: {} });
     const captured = await stripeClient.capturePaymentIntent(pi.id, {});
-    const buyer = db.prepare("SELECT id FROM users WHERE email = 'buyer@demo.test'").get();
-    const listing = db.prepare('SELECT id FROM listings LIMIT 1').get();
     const staleTs = new Date(Date.now() - 15 * 60 * 1000).toISOString();
     const now = new Date().toISOString();
-    const result = db.prepare(`
-      INSERT INTO orders (
-        listing_id, buyer_id, seller_id, amount_cents, platform_fee_cents, seller_payout_cents,
-        status, stripe_payment_intent_id, stripe_charge_id, prior_status, transition_started_at,
-        recovery_claimed_at, recovery_attempts, created_at, updated_at
-      ) VALUES (?, ?, ?, 500, 15, 485, 'RELEASING', ?, ?, 'DELIVERED', ?, NULL, 0, ?, ?)
-    `).run(listing.id, buyer.id, sellerRow.id, pi.id, captured.chargeId, staleTs, now, now);
-    return { orderId: Number(result.lastInsertRowid), chargeId: captured.chargeId };
+    const { rows: [row] } = await pool.query(
+      `INSERT INTO orders (
+         listing_id, buyer_id, seller_id, amount_cents, platform_fee_cents, seller_payout_cents,
+         status, stripe_payment_intent_id, stripe_charge_id, prior_status, transition_started_at,
+         recovery_claimed_at, recovery_attempts, created_at, updated_at
+       ) VALUES ($1,$2,$3,500,15,485,'RELEASING',$4,$5,'DELIVERED',$6,NULL,0,$7,$8)
+       RETURNING id`,
+      [LISTING_ID, BUYER_ID, SELLER_ID, pi.id, captured.chargeId, staleTs, now, now]
+    );
+    return { orderId: row.id, chargeId: captured.chargeId };
   }
 
   await test('RELEASING: transfer found by transfer_group → finalized, no new transfer created', async () => {
@@ -280,7 +287,7 @@ async function runAdminRecoveryTests() {
     assert(res.body.recoveredOrderIds.includes(orderId), `order ${orderId} must appear in recoveredOrderIds`);
     assertEqual(stripeClient._transfers.length, countAfterSetup, 'no new Stripe transfer must be created');
 
-    const row = db.prepare('SELECT status, stripe_transfer_id FROM orders WHERE id = ?').get(orderId);
+    const { rows: [row] } = await pool.query('SELECT status, stripe_transfer_id FROM orders WHERE id = $1', [orderId]);
     assertEqual(row.status, 'RELEASED', 'order must be RELEASED');
     assertEqual(row.stripe_transfer_id, existing.id, 'transfer id must match the pre-existing transfer');
   });
@@ -289,7 +296,7 @@ async function runAdminRecoveryTests() {
     const { orderId, chargeId } = await makeReleasingOrder();
     const oldTransfer = {
       id: `tr_old_${orderId}`,
-      transferGroup: null,           // no group — simulates a pre-fix transfer
+      transferGroup: null,
       sourceTransactionId: chargeId,
       amountCents: 485,
       currency: 'usd',
@@ -305,7 +312,7 @@ async function runAdminRecoveryTests() {
     assert(res.body.recoveredOrderIds.includes(orderId), `order ${orderId} must appear in recoveredOrderIds`);
     assertEqual(stripeClient._transfers.length, countAfterSetup, 'no new Stripe transfer must be created');
 
-    const row = db.prepare('SELECT status, stripe_transfer_id FROM orders WHERE id = ?').get(orderId);
+    const { rows: [row] } = await pool.query('SELECT status, stripe_transfer_id FROM orders WHERE id = $1', [orderId]);
     assertEqual(row.status, 'RELEASED', 'order must be RELEASED');
     assertEqual(row.stripe_transfer_id, oldTransfer.id, 'transfer id must match the old-style transfer');
   });
@@ -333,12 +340,12 @@ async function runAdminRecoveryTests() {
       `order ${orderId} must appear in ambiguous`
     );
 
-    const row = db.prepare('SELECT status FROM orders WHERE id = ?').get(orderId);
+    const { rows: [row] } = await pool.query('SELECT status FROM orders WHERE id = $1', [orderId]);
     assertEqual(row.status, 'RELEASING', 'order must remain RELEASING when ambiguous');
   });
 
   await test('RELEASING: no existing transfer → new transfer issued via idempotent createTransfer', async () => {
-    const { orderId, chargeId } = await makeReleasingOrder();
+    const { orderId } = await makeReleasingOrder();
     const tg = `order_${orderId}`;
     const countBefore = stripeClient._transfers.filter((t) => t.transferGroup === tg).length;
     assertEqual(countBefore, 0, 'must start with no transfers for this order group');
@@ -354,7 +361,7 @@ async function runAdminRecoveryTests() {
     assertEqual(created[0].metadata.orderId, String(orderId), 'transfer metadata must carry orderId');
     assertEqual(created[0].metadata.operationType, 'release', 'transfer metadata must carry operationType');
 
-    const row = db.prepare('SELECT status, stripe_transfer_id FROM orders WHERE id = ?').get(orderId);
+    const { rows: [row] } = await pool.query('SELECT status, stripe_transfer_id FROM orders WHERE id = $1', [orderId]);
     assertEqual(row.status, 'RELEASED', 'order must be RELEASED');
     assertEqual(row.stripe_transfer_id, created[0].id, 'order must record the new transfer id');
   });
@@ -380,13 +387,14 @@ async function runAdminRecoveryTests() {
 (async () => {
   console.log('=== Admin Endpoint Tests ===');
 
+  await setupDb();
   await startServer();
 
   try {
     await runAdminRecoveryTests();
   } finally {
     await stopServer();
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+    await pool.end();
   }
 
   console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed`);

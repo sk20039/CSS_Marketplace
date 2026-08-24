@@ -1,14 +1,16 @@
+'use strict';
 // Order lifecycle email notifications.
 // All exported functions are async and meant to be called fire-and-forget
 // (.catch(() => {})) — a failed email must never block a state transition.
 
-const db = require('./db');
+const pool = require('./db');
 const { sendEmail } = require('./emailer');
 
 const BASE_URL = process.env.APP_BASE_URL || 'http://localhost:3003';
 
-function getUser(id) {
-  return db.prepare('SELECT id, name, email FROM users WHERE id = ?').get(id);
+async function getUser(id) {
+  const { rows } = await pool.query('SELECT id, name, email FROM users WHERE id = $1', [id]);
+  return rows[0] || null;
 }
 
 function orderUrl(id) {
@@ -21,14 +23,13 @@ function money(cents) {
 
 // ---- HELD: payment captured ----
 async function notifyOrderCaptured(order) {
-  const buyer = getUser(order.buyer_id);
-  const seller = getUser(order.seller_id);
-  const link = orderUrl(order.id);
+  const [buyer, seller] = await Promise.all([getUser(order.buyer_id), getUser(order.seller_id)]);
+  const link   = orderUrl(order.id);
   const amount = money(order.amount_cents);
 
   await Promise.allSettled([
     buyer && sendEmail({
-      to: buyer.email,
+      to:      buyer.email,
       subject: `Payment confirmed — Order #${order.id}`,
       text:
         `Hi ${buyer.name},\n\n` +
@@ -37,7 +38,7 @@ async function notifyOrderCaptured(order) {
         `View order: ${link}`,
     }),
     seller && sendEmail({
-      to: seller.email,
+      to:      seller.email,
       subject: `New order to ship — Order #${order.id}`,
       text:
         `Hi ${seller.name},\n\n` +
@@ -51,10 +52,10 @@ async function notifyOrderCaptured(order) {
 
 // ---- SHIPPED ----
 async function notifyShipped(order) {
-  const buyer = getUser(order.buyer_id);
+  const buyer = await getUser(order.buyer_id);
   if (!buyer) return;
   await sendEmail({
-    to: buyer.email,
+    to:      buyer.email,
     subject: `Your order has been shipped — Order #${order.id}`,
     text:
       `Hi ${buyer.name},\n\n` +
@@ -67,10 +68,10 @@ async function notifyShipped(order) {
 
 // ---- DELIVERED ----
 async function notifyDelivered(order) {
-  const buyer = getUser(order.buyer_id);
+  const buyer = await getUser(order.buyer_id);
   if (!buyer) return;
   await sendEmail({
-    to: buyer.email,
+    to:      buyer.email,
     subject: `Delivery marked — please confirm receipt — Order #${order.id}`,
     text:
       `Hi ${buyer.name},\n\n` +
@@ -84,15 +85,14 @@ async function notifyDelivered(order) {
 
 // ---- CANCELLED ----
 async function notifyCancelled(order, { cancelledBy }) {
-  const buyer = getUser(order.buyer_id);
-  const seller = getUser(order.seller_id);
-  const link = orderUrl(order.id);
+  const [buyer, seller] = await Promise.all([getUser(order.buyer_id), getUser(order.seller_id)]);
+  const link   = orderUrl(order.id);
   const amount = money(order.amount_cents);
   const by = cancelledBy === 'buyer' ? 'the buyer' : cancelledBy === 'seller' ? 'the seller' : 'an admin';
 
   await Promise.allSettled([
     buyer && sendEmail({
-      to: buyer.email,
+      to:      buyer.email,
       subject: `Order cancelled — full refund issued — Order #${order.id}`,
       text:
         `Hi ${buyer.name},\n\n` +
@@ -102,7 +102,7 @@ async function notifyCancelled(order, { cancelledBy }) {
         `View order: ${link}`,
     }),
     seller && sendEmail({
-      to: seller.email,
+      to:      seller.email,
       subject: `Order cancelled — Order #${order.id}`,
       text:
         `Hi ${seller.name},\n\n` +
@@ -115,10 +115,10 @@ async function notifyCancelled(order, { cancelledBy }) {
 
 // ---- DISPUTED ----
 async function notifyDisputed(order) {
-  const seller = getUser(order.seller_id);
+  const seller = await getUser(order.seller_id);
   if (!seller) return;
   await sendEmail({
-    to: seller.email,
+    to:      seller.email,
     subject: `Dispute filed on your order — Order #${order.id}`,
     text:
       `Hi ${seller.name},\n\n` +
@@ -130,17 +130,16 @@ async function notifyDisputed(order) {
 
 // ---- RELEASED ----
 async function notifyReleased(order, { triggeredBy }) {
-  const buyer = getUser(order.buyer_id);
-  const seller = getUser(order.seller_id);
-  const link = orderUrl(order.id);
+  const [buyer, seller] = await Promise.all([getUser(order.buyer_id), getUser(order.seller_id)]);
+  const link    = orderUrl(order.id);
   const trigger =
-    triggeredBy === 'buyer_confirm' ? 'the buyer confirmed receipt' :
+    triggeredBy === 'buyer_confirm'      ? 'the buyer confirmed receipt' :
     triggeredBy === 'auto_release_sweep' ? 'the 48-hour window elapsed' :
     'an admin resolved the dispute';
 
   await Promise.allSettled([
     seller && sendEmail({
-      to: seller.email,
+      to:      seller.email,
       subject: `Funds released — Order #${order.id}`,
       text:
         `Hi ${seller.name},\n\n` +
@@ -149,7 +148,7 @@ async function notifyReleased(order, { triggeredBy }) {
         `View order: ${link}`,
     }),
     buyer && sendEmail({
-      to: buyer.email,
+      to:      buyer.email,
       subject: `Transaction complete — Order #${order.id}`,
       text:
         `Hi ${buyer.name},\n\n` +
@@ -162,14 +161,13 @@ async function notifyReleased(order, { triggeredBy }) {
 
 // ---- REFUNDED ----
 async function notifyRefunded(order, { triggeredBy }) {
-  const buyer = getUser(order.buyer_id);
-  const seller = getUser(order.seller_id);
-  const link = orderUrl(order.id);
+  const [buyer, seller] = await Promise.all([getUser(order.buyer_id), getUser(order.seller_id)]);
+  const link   = orderUrl(order.id);
   const amount = money(order.amount_cents);
 
   await Promise.allSettled([
     buyer && sendEmail({
-      to: buyer.email,
+      to:      buyer.email,
       subject: `Refund issued — Order #${order.id}`,
       text:
         `Hi ${buyer.name},\n\n` +
@@ -179,7 +177,7 @@ async function notifyRefunded(order, { triggeredBy }) {
         `View order: ${link}`,
     }),
     seller && sendEmail({
-      to: seller.email,
+      to:      seller.email,
       subject: `Dispute resolved — buyer refunded — Order #${order.id}`,
       text:
         `Hi ${seller.name},\n\n` +
