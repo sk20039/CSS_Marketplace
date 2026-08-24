@@ -4,6 +4,7 @@ const cors = require('cors');
 const db = require('./db');
 const orderService = require('./orderService');
 const { runReleaseCheck, cancelOrder } = require('./orderService');
+const { runRecovery } = require('./recoveryService');
 const { OrderError } = orderService;
 const requireAuth = require('./middleware/requireAuth');
 const { requireAdmin } = requireAuth;
@@ -313,6 +314,14 @@ function buildApp() {
   app.post('/admin/run-release-check', requireAuth, requireAdmin, async (req, res, next) => {
     try {
       res.json(await runReleaseCheck());
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post('/admin/run-recovery', requireAuth, requireAdmin, async (req, res, next) => {
+    try {
+      res.json(await runRecovery());
     } catch (err) {
       next(err);
     }
