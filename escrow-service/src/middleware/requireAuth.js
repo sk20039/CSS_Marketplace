@@ -9,10 +9,10 @@ function requireAuth(req, res, next) {
   try {
     let payload;
     try {
-      payload = jwt.verify(token, process.env.JWT_SECRET || 'change-me');
+      payload = jwt.verify(token, process.env.JWT_SECRET || '');
     } catch {
       // If ADMIN_JWT_SECRET is set and differs, admin tokens are signed with it — try that too.
-      if (process.env.ADMIN_JWT_SECRET && process.env.ADMIN_JWT_SECRET !== (process.env.JWT_SECRET || 'change-me')) {
+      if (process.env.ADMIN_JWT_SECRET && process.env.ADMIN_JWT_SECRET !== (process.env.JWT_SECRET || '')) {
         payload = jwt.verify(token, process.env.ADMIN_JWT_SECRET);
       } else {
         throw new Error('token invalid');

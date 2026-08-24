@@ -1,4 +1,5 @@
 require('dotenv').config();
+require('./config').assertProductionEnv();
 const { buildApp } = require('./app');
 
 const PORT = process.env.PORT || 3002;

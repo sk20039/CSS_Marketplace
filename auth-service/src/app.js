@@ -38,9 +38,13 @@ async function handleStripeWebhook(req, res) {
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
   const stripeKey = process.env.STRIPE_SECRET_KEY;
 
-  // Stub mode: no keys configured — acknowledge without verification so the
-  // endpoint can be smoke-tested locally before real Stripe credentials are set.
+  // In production the config module prevents startup without these keys, but
+  // guard here as defence-in-depth: never silently accept unsigned events.
   if (!webhookSecret || !stripeKey) {
+    if (process.env.NODE_ENV === 'production') {
+      console.error('[webhook] STRIPE_WEBHOOK_SECRET / STRIPE_SECRET_KEY missing in production');
+      return res.status(500).json({ error: 'Webhook verification not configured' });
+    }
     return res.json({ received: true, stub: true });
   }
 

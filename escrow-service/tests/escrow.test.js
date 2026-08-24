@@ -29,6 +29,7 @@
 // ---- Must be set before any src/ module load ----
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 process.env.DATABASE_URL = process.env.DATABASE_URL_TEST;
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'change-me'; // explicit: removed || '' fallback in requireAuth
 delete process.env.STRIPE_SECRET_KEY; // force stub mode
 
 // Start mock listing server before loading src/ (LISTING_SERVICE_URL must be set before require)

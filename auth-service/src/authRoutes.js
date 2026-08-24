@@ -14,7 +14,7 @@ const REFRESH_BYTES = 32;
 const REFRESH_DAYS = 7;
 
 function jwtSecret() {
-  return process.env.JWT_SECRET || 'change-me';
+  return process.env.JWT_SECRET || '';
 }
 
 function adminJwtSecret() {

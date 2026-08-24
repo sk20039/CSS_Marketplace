@@ -20,6 +20,7 @@
 // ---- Must be set before any module load that touches db.js or stripeClient ----
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 process.env.DATABASE_URL = process.env.DATABASE_URL_TEST;
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'change-me'; // explicit: removed || '' fallback in requireAuth
 delete process.env.STRIPE_SECRET_KEY;   // force stub mode
 process.env.STRIPE_STUB_LATENCY_MS = '50'; // artificial delay so overlapping requests genuinely race
 

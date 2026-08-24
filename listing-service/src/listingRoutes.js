@@ -10,11 +10,9 @@ const VALID_CONDITIONS = ['new', 'used_good', 'used_fair'];
 const PAGE_LIMIT_MAX = 50;
 
 // Shared secret for service-to-service calls (escrow-service marking a listing
-// sold once payment is captured). Reuses JWT_SECRET since it's already
-// provisioned identically across all three services - this is deliberately
-// NOT a user JWT check, since escrow-service has no seller session to act on
-// behalf of; it's escrow-service authenticating as itself.
-const INTERNAL_SECRET = process.env.JWT_SECRET || 'change-me';
+// sold once payment is captured). Uses INTERNAL_SERVICE_SECRET when set
+// (recommended for production), otherwise falls back to JWT_SECRET.
+const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET || process.env.JWT_SECRET || '';
 
 function requireInternalSecret(req, res, next) {
   const secret = req.headers['x-internal-secret'];

@@ -7,7 +7,7 @@ function requireAuth(req, res, next) {
   }
   const token = authHeader.slice(7);
   try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET || 'change-me');
+    const payload = jwt.verify(token, process.env.JWT_SECRET || '');
     req.user = { id: payload.sub, email: payload.email, role: payload.role };
     next();
   } catch {
