@@ -37,10 +37,11 @@ function assertNoError(errors, fragment, label) {
 
 // Minimal valid production environment for listing-service.
 const VALID = {
-  DATABASE_URL:    'postgres://listing_user:s3cr3t@db.railway.internal:5432/listing_db',
-  JWT_SECRET:      'a-very-long-jwt-secret-that-is-at-least-32-chars!!',
-  FRONTEND_ORIGIN: 'https://example.com',
-  PUBLIC_BASE_URL: 'https://listing.example.com',
+  DATABASE_URL:            'postgres://listing_user:s3cr3t@db.railway.internal:5432/listing_db',
+  JWT_SECRET:              'a-very-long-jwt-secret-that-is-at-least-32-chars!!',
+  INTERNAL_SERVICE_SECRET: 'a-different-internal-svc-secret-at-least-32chars!',
+  FRONTEND_ORIGIN:         'https://example.com',
+  PUBLIC_BASE_URL:         'https://listing.example.com',
 };
 
 (async () => {
@@ -61,6 +62,10 @@ const VALID = {
     assertError(validateProductionEnv({ ...VALID, JWT_SECRET: undefined }), 'JWT_SECRET', 'missing');
   });
 
+  test('missing INTERNAL_SERVICE_SECRET is rejected', () => {
+    assertError(validateProductionEnv({ ...VALID, INTERNAL_SERVICE_SECRET: undefined }), 'INTERNAL_SERVICE_SECRET', 'missing');
+  });
+
   test('missing FRONTEND_ORIGIN is rejected', () => {
     assertError(validateProductionEnv({ ...VALID, FRONTEND_ORIGIN: undefined }), 'FRONTEND_ORIGIN', 'missing');
   });
@@ -72,6 +77,10 @@ const VALID = {
   // ---- Placeholder values ----
   test('"change-me" JWT_SECRET is rejected', () => {
     assertError(validateProductionEnv({ ...VALID, JWT_SECRET: 'change-me' }), 'JWT_SECRET', 'placeholder');
+  });
+
+  test('"change-me" INTERNAL_SERVICE_SECRET is rejected', () => {
+    assertError(validateProductionEnv({ ...VALID, INTERNAL_SERVICE_SECRET: 'change-me' }), 'INTERNAL_SERVICE_SECRET', 'placeholder');
   });
 
   test('"change_me" JWT_SECRET is rejected', () => {
@@ -94,6 +103,15 @@ const VALID = {
 
   test('JWT_SECRET 31 characters is rejected', () => {
     assertError(validateProductionEnv({ ...VALID, JWT_SECRET: 'a'.repeat(31) }), 'JWT_SECRET', '31-char');
+  });
+
+  test('INTERNAL_SERVICE_SECRET shorter than 32 characters is rejected', () => {
+    assertError(validateProductionEnv({ ...VALID, INTERNAL_SERVICE_SECRET: 'tinykey' }), 'INTERNAL_SERVICE_SECRET', 'short');
+  });
+
+  test('INTERNAL_SERVICE_SECRET exactly 32 characters passes', () => {
+    const errors = validateProductionEnv({ ...VALID, INTERNAL_SERVICE_SECRET: 'c'.repeat(32) });
+    assertNoError(errors, 'INTERNAL_SERVICE_SECRET', '32-char internal secret');
   });
 
   // ---- Localhost URLs ----

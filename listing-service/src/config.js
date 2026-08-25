@@ -70,6 +70,7 @@ function validateProductionEnv(env) {
   // ---- Required variables ----
   need('DATABASE_URL');
   needMinLen('JWT_SECRET', MIN_SECRET_LENGTH);
+  needMinLen('INTERNAL_SERVICE_SECRET', MIN_SECRET_LENGTH);
   needHttpsUrl('FRONTEND_ORIGIN');
   needHttpsUrl('PUBLIC_BASE_URL');
 

@@ -14,6 +14,8 @@ process.env.DATABASE_URL =
   process.env.DATABASE_URL_TEST ||
   'postgres://listing_user:listing_pass@localhost:5432/listing_db_test';
 process.env.JWT_SECRET = 'test-secret';
+// Deliberately different from JWT_SECRET to prove the two are independent.
+process.env.INTERNAL_SERVICE_SECRET = 'test-internal-svc-secret-32chars!!';
 
 const request = require('supertest');
 const { Pool } = require('pg');
@@ -33,8 +35,7 @@ const SELLER_ID = 1000;
 const OTHER_ID = 1001;
 const sellerToken = makeToken(SELLER_ID);
 const otherToken = makeToken(OTHER_ID);
-// JWT_SECRET doubles as the internal service secret in listingRoutes.js
-const INTERNAL_SECRET = 'test-secret';
+const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET; // 'test-internal-svc-secret-32chars!!'
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS listings (
@@ -325,6 +326,74 @@ async function run() {
     const id = create.body.id;
     const res = await request(app).patch(`/listings/${id}/mark-sold`);
     assert(res.status === 401, `expected 401, got ${res.status}`);
+  });
+
+  // Internal service auth — 5-scenario security matrix
+  console.log('\nInternal service auth security');
+
+  await cleanup();
+  await test('correct INTERNAL_SERVICE_SECRET allows mark-sold', async () => {
+    const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'Auth Test Bat', price_cents: 7500, category: 'bat', condition: 'new' });
+    const id = create.body.id;
+    const res = await request(app).patch(`/listings/${id}/mark-sold`)
+      .set('x-internal-secret', INTERNAL_SECRET);
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.status === 'sold', 'status should be sold');
+  });
+
+  await cleanup();
+  await test('correct INTERNAL_SERVICE_SECRET allows mark-active', async () => {
+    const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'Auth Test Bat', price_cents: 7500, category: 'bat', condition: 'new' });
+    const id = create.body.id;
+    await request(app).patch(`/listings/${id}/mark-sold`).set('x-internal-secret', INTERNAL_SECRET);
+    const res = await request(app).patch(`/listings/${id}/mark-active`)
+      .set('x-internal-secret', INTERNAL_SECRET);
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.status === 'active', 'status should be active');
+  });
+
+  await cleanup();
+  await test('missing x-internal-secret header is rejected with 401', async () => {
+    const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'Auth Test Bat', price_cents: 7500, category: 'bat', condition: 'new' });
+    const id = create.body.id;
+    const res = await request(app).patch(`/listings/${id}/mark-sold`);
+    assert(res.status === 401, `expected 401, got ${res.status}`);
+  });
+
+  await cleanup();
+  await test('incorrect x-internal-secret is rejected with 401', async () => {
+    const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'Auth Test Bat', price_cents: 7500, category: 'bat', condition: 'new' });
+    const id = create.body.id;
+    const res = await request(app).patch(`/listings/${id}/mark-sold`)
+      .set('x-internal-secret', 'wrong-secret-value');
+    assert(res.status === 401, `expected 401, got ${res.status}`);
+  });
+
+  await cleanup();
+  await test('valid user JWT in x-internal-secret cannot replace INTERNAL_SERVICE_SECRET', async () => {
+    const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'Auth Test Bat', price_cents: 7500, category: 'bat', condition: 'new' });
+    const id = create.body.id;
+    // Passing a valid JWT token where an internal secret is expected must be rejected
+    const res = await request(app).patch(`/listings/${id}/mark-sold`)
+      .set('x-internal-secret', sellerToken);
+    assert(res.status === 401, `expected 401, got ${res.status}: JWT must not substitute for INTERNAL_SERVICE_SECRET`);
+  });
+
+  await cleanup();
+  await test('mismatched internal secrets (simulating different service configs) are rejected', async () => {
+    const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'Auth Test Bat', price_cents: 7500, category: 'bat', condition: 'new' });
+    const id = create.body.id;
+    // Simulate escrow-service configured with a different INTERNAL_SERVICE_SECRET
+    const escrowServiceSecret = 'different-escrow-svc-secret-32chars!!';
+    const res = await request(app).patch(`/listings/${id}/mark-sold`)
+      .set('x-internal-secret', escrowServiceSecret);
+    assert(res.status === 401, `expected 401 for mismatched service secrets, got ${res.status}`);
   });
 
   // DELETE /listings/:id

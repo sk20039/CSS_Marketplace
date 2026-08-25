@@ -144,7 +144,7 @@ async function markListingActive(listingId) {
   try {
     const res = await fetch(`${LISTING_SERVICE_URL}/listings/${listingId}/mark-active`, {
       method: 'PATCH',
-      headers: { 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET || process.env.JWT_SECRET || '' },
+      headers: { 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET || '' },
     });
     if (!res.ok) throw new Error(`listing-service returned ${res.status}`);
     return true;
@@ -158,7 +158,7 @@ async function markListingSold(listingId) {
   try {
     const res = await fetch(`${LISTING_SERVICE_URL}/listings/${listingId}/mark-sold`, {
       method: 'PATCH',
-      headers: { 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET || process.env.JWT_SECRET || '' },
+      headers: { 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET || '' },
     });
     if (!res.ok) throw new Error(`listing-service returned ${res.status}`);
     return true;

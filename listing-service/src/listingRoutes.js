@@ -9,10 +9,10 @@ const VALID_CATEGORIES = ['bat', 'helmet', 'pads', 'gloves', 'kit-bag', 'other']
 const VALID_CONDITIONS = ['new', 'used_good', 'used_fair'];
 const PAGE_LIMIT_MAX = 50;
 
-// Shared secret for service-to-service calls (escrow-service marking a listing
-// sold once payment is captured). Uses INTERNAL_SERVICE_SECRET when set
-// (recommended for production), otherwise falls back to JWT_SECRET.
-const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET || process.env.JWT_SECRET || '';
+// Dedicated secret for service-to-service calls (escrow-service marking a listing
+// sold/active). Must be set via INTERNAL_SERVICE_SECRET. Never falls back to
+// JWT_SECRET — user tokens must not authenticate internal service endpoints.
+const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET || '';
 
 function requireInternalSecret(req, res, next) {
   const secret = req.headers['x-internal-secret'];
