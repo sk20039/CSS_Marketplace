@@ -8,12 +8,13 @@
     "dev": "node --watch src/server.js",
     "migrate": "node-pg-migrate -m migrations up",
     "migrate:down": "node-pg-migrate -m migrations down",
-    "test": "node tests/auth.test.js && node tests/health.test.js && node tests/config.test.js"
+    "install:prod": "npm ci --omit=dev",
+    "test:smoke": "node tests/smoke.test.js",
+    "test": "node tests/auth.test.js && node tests/health.test.js && node tests/config.test.js && node tests/smoke.test.js"
   },
   "license": "UNLICENSED",
   "dependencies": {
     "bcryptjs": "^2.4.3",
-    "better-sqlite3": "^13.0.1",
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
