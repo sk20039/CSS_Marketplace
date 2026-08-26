@@ -105,7 +105,7 @@ function MarketplaceContent() {
         )}
       </div>
 
-      <div className="flex gap-6 items-start">
+      <div className="md:flex md:gap-6 md:items-start">
         <SearchSidebar />
 
         <div className="flex-1 min-w-0">
@@ -144,8 +144,8 @@ function MarketplaceContent() {
 export default function ListingsPage() {
   return (
     <Suspense fallback={
-      <div className="flex gap-6 mt-6">
-        <div className="w-60 shrink-0 h-96 bg-white rounded-xl border border-gray-200 animate-pulse" />
+      <div className="md:flex md:gap-6 mt-6">
+        <div className="hidden md:block w-60 shrink-0 h-96 bg-white rounded-xl border border-gray-200 animate-pulse" />
         <div className="flex-1 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-4">
           {Array.from({ length: 8 }).map((_, i) => (
             <div key={i} className="bg-white rounded-xl border border-gray-200 overflow-hidden">

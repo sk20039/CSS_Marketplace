@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/lib/auth';
 
 const CATEGORIES = [
@@ -19,14 +19,74 @@ export default function Navbar() {
   const router = useRouter();
   const [query, setQuery] = useState('');
   const [mobileOpen, setMobileOpen] = useState(false);
+  const hamburgerRef = useRef<HTMLButtonElement>(null);
+
+  // Scroll lock, focus-on-open, focus trap, Escape handler
+  useEffect(() => {
+    if (!mobileOpen) return;
+
+    // 1. Scroll lock
+    document.body.style.overflow = 'hidden';
+
+    // 2. Move focus into the drawer (defer one frame so the DOM is painted)
+    const raf = requestAnimationFrame(() => {
+      const drawer = document.getElementById('mobile-nav');
+      if (!drawer) return;
+      const focusable = drawer.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      );
+      if (focusable.length > 0) focusable[0].focus();
+    });
+
+    // 3. Escape + focus trap (Tab / Shift+Tab)
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        closeMobileMenu();
+        return;
+      }
+      if (e.key === 'Tab') {
+        const drawer = document.getElementById('mobile-nav');
+        if (!drawer) return;
+        const focusable = Array.from(
+          drawer.querySelectorAll<HTMLElement>(
+            'a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])'
+          )
+        );
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey) {
+          if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+        } else {
+          if (document.activeElement === last) { e.preventDefault(); first.focus(); }
+        }
+      }
+    }
+
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      cancelAnimationFrame(raf);
+      document.removeEventListener('keydown', onKeyDown);
+      document.body.style.overflow = '';
+    };
+  }, [mobileOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function closeMobileMenu() {
+    setMobileOpen(false);
+    hamburgerRef.current?.focus();
+  }
 
   function handleSearch(e: React.FormEvent) {
     e.preventDefault();
-    if (query.trim()) router.push(`/listings?q=${encodeURIComponent(query.trim())}`);
+    if (query.trim()) {
+      router.push(`/listings?q=${encodeURIComponent(query.trim())}`);
+      closeMobileMenu();
+    }
   }
 
   async function handleLogout() {
     await logout();
+    closeMobileMenu();
     router.push('/');
   }
 
@@ -47,7 +107,7 @@ export default function Navbar() {
             </span>
           </Link>
 
-          {/* Search */}
+          {/* Search — desktop only */}
           <form onSubmit={handleSearch} className="flex-1 max-w-2xl hidden sm:flex">
             <div className="relative w-full">
               <input
@@ -116,10 +176,14 @@ export default function Navbar() {
               </>
             )}
 
-            {/* Mobile menu button */}
+            {/* Mobile hamburger button */}
             <button
-              className="sm:hidden p-2 rounded-lg text-gray-600 hover:bg-gray-100"
-              onClick={() => setMobileOpen(!mobileOpen)}
+              ref={hamburgerRef}
+              className="sm:hidden p-2 rounded-lg text-gray-600 hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 focus-visible:ring-offset-1"
+              onClick={() => (mobileOpen ? closeMobileMenu() : setMobileOpen(true))}
+              aria-label={mobileOpen ? 'Close navigation menu' : 'Open navigation menu'}
+              aria-expanded={mobileOpen}
+              aria-controls="mobile-nav"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 {mobileOpen
@@ -132,7 +196,7 @@ export default function Navbar() {
         </div>
       </div>
 
-      {/* Category nav */}
+      {/* Category nav — desktop only */}
       <div className="bg-gray-900 hidden sm:block">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center gap-1">
@@ -155,57 +219,143 @@ export default function Navbar() {
         </div>
       </div>
 
-      {/* Mobile dropdown */}
+      {/* Mobile navigation drawer — full-screen overlay */}
       {mobileOpen && (
-        <div className="sm:hidden bg-white border-b border-gray-200 shadow-lg">
-          <div className="px-4 py-3">
-            <form onSubmit={handleSearch} className="flex gap-2 mb-4">
-              <input
-                type="search"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search..."
-                className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-brand-600"
-              />
-              <button type="submit" className="bg-brand-700 text-white px-4 py-2 rounded-lg text-sm">
-                Go
+        <div className="sm:hidden">
+          {/* Backdrop */}
+          <div
+            className="fixed inset-0 bg-black/40 z-[60]"
+            aria-hidden="true"
+            onClick={closeMobileMenu}
+          />
+
+          {/* Drawer panel */}
+          <nav
+            id="mobile-nav"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Navigation menu"
+            className="fixed inset-x-0 top-0 z-[70] bg-white shadow-2xl flex flex-col max-h-screen overflow-y-auto"
+          >
+            {/* Drawer header row */}
+            <div className="flex items-center justify-between px-4 py-4 border-b border-gray-200 sticky top-0 bg-white z-10">
+              <Link
+                href="/"
+                onClick={closeMobileMenu}
+                className="text-2xl font-extrabold text-gray-900 tracking-tight focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 rounded"
+              >
+                Cricket<span className="text-brand-700">Market</span>
+              </Link>
+              <button
+                onClick={closeMobileMenu}
+                className="p-2 rounded-lg text-gray-600 hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600"
+                aria-label="Close navigation menu"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
               </button>
-            </form>
-            <div className="space-y-1">
-              {CATEGORIES.map((cat) => (
-                <Link
-                  key={cat.value}
-                  href={`/listings?category=${cat.value}`}
-                  className="block py-2 text-sm text-gray-700 hover:text-brand-700"
-                  onClick={() => setMobileOpen(false)}
+            </div>
+
+            {/* Search */}
+            <div className="px-4 py-4 border-b border-gray-100">
+              <form onSubmit={handleSearch} className="flex gap-2">
+                <input
+                  type="search"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search gear..."
+                  className="flex-1 border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 focus:border-brand-600 transition-colors"
+                />
+                <button
+                  type="submit"
+                  className="bg-brand-700 text-white px-4 py-2.5 rounded-lg text-sm font-medium hover:bg-brand-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 transition-colors"
                 >
-                  {cat.label}
+                  Go
+                </button>
+              </form>
+            </div>
+
+            {/* Browse categories */}
+            <div className="px-4 py-4 border-b border-gray-100">
+              <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2 px-3">Browse</p>
+              <div className="space-y-0.5">
+                <Link
+                  href="/listings"
+                  onClick={closeMobileMenu}
+                  className="flex items-center px-3 py-3 text-sm font-semibold text-gray-900 rounded-lg hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600"
+                >
+                  All Gear
                 </Link>
-              ))}
-              <div className="border-t border-gray-100 pt-3 mt-3 flex flex-col gap-2">
+                {CATEGORIES.map((cat) => (
+                  <Link
+                    key={cat.value}
+                    href={`/listings?category=${cat.value}`}
+                    onClick={closeMobileMenu}
+                    className="flex items-center px-3 py-3 text-sm text-gray-700 rounded-lg hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600"
+                  >
+                    {cat.label}
+                  </Link>
+                ))}
+              </div>
+            </div>
+
+            {/* Account */}
+            <div className="px-4 py-4">
+              <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2 px-3">Account</p>
+              <div className="space-y-0.5">
                 {user ? (
                   <>
-                    <Link href={user.role === 'seller' ? '/dashboard/seller' : '/dashboard/buyer'} className="text-sm text-gray-700 font-medium">
-                      My Account ({user.name})
+                    <Link
+                      href={user.role === 'seller' ? '/dashboard/seller' : user.role === 'admin' ? '/admin' : '/dashboard/buyer'}
+                      onClick={closeMobileMenu}
+                      className="flex items-center gap-2 px-3 py-3 text-sm font-medium text-gray-900 rounded-lg hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600"
+                    >
+                      <svg className="w-4 h-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                      </svg>
+                      {user.name}
                     </Link>
                     {user.role === 'seller' && (
-                      <Link href="/listings/new" className="text-sm text-brand-700 font-semibold">
-                        + List Item for Sale
+                      <Link
+                        href="/listings/new"
+                        onClick={closeMobileMenu}
+                        className="flex items-center gap-2 px-3 py-3 text-sm font-semibold text-brand-700 rounded-lg hover:bg-brand-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600"
+                      >
+                        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                        </svg>
+                        List Item for Sale
                       </Link>
                     )}
-                    <button onClick={handleLogout} className="text-left text-sm text-red-600">
+                    <button
+                      onClick={handleLogout}
+                      className="flex w-full items-center gap-2 px-3 py-3 text-sm text-red-600 rounded-lg hover:bg-red-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+                    >
                       Logout
                     </button>
                   </>
                 ) : (
                   <>
-                    <Link href="/login" className="text-sm text-gray-700 font-medium">Login</Link>
-                    <Link href="/register" className="text-sm text-brand-700 font-semibold">Register</Link>
+                    <Link
+                      href="/login"
+                      onClick={closeMobileMenu}
+                      className="flex items-center px-3 py-3 text-sm font-medium text-gray-700 rounded-lg hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600"
+                    >
+                      Login
+                    </Link>
+                    <Link
+                      href="/register"
+                      onClick={closeMobileMenu}
+                      className="flex items-center px-3 py-3 text-sm font-semibold text-brand-700 rounded-lg hover:bg-brand-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600"
+                    >
+                      Create account
+                    </Link>
                   </>
                 )}
               </div>
             </div>
-          </div>
+          </nav>
         </div>
       )}
     </header>
