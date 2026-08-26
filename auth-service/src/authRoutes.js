@@ -33,12 +33,25 @@ function issueAccessToken(user) {
   );
 }
 
+// Returns the base cookie options for the refresh token.
+// In production (HTTPS), SameSite=None + Secure allows the cookie to be sent
+// on cross-origin fetch requests (credentials: 'include') from the frontend
+// hosted on a different domain.  In local development (HTTP), SameSite=Lax
+// is correct and Secure must be omitted so the cookie works on plain HTTP.
+function refreshCookieOptions() {
+  const prod = process.env.NODE_ENV === 'production';
+  return {
+    httpOnly: true,
+    sameSite: prod ? 'none' : 'lax',
+    secure: prod,
+    path: '/',
+  };
+}
+
 function setRefreshCookie(res, token) {
   res.cookie('refresh_token', token, {
-    httpOnly: true,
-    sameSite: 'lax',
+    ...refreshCookieOptions(),
     maxAge: REFRESH_DAYS * 24 * 60 * 60 * 1000,
-    path: '/',
   });
 }
 
@@ -164,7 +177,7 @@ router.post('/logout', async (req, res, next) => {
   try {
     const raw = req.cookies?.refresh_token;
     if (raw) await findAndDeleteRefreshToken(raw);
-    res.clearCookie('refresh_token', { path: '/' });
+    res.clearCookie('refresh_token', refreshCookieOptions());
     res.json({ ok: true });
   } catch (err) {
     next(err);

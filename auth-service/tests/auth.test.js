@@ -218,6 +218,7 @@ async function run() {
   console.log('\nPOST /auth/login — imported accounts');
 
   let buyerToken, sellerToken, adminToken;
+  let buyerRefreshCookie, sellerRefreshCookie;
 
   await test('imported buyer (buyer@cricket.test) can log in', async () => {
     const res = await request(app).post('/auth/login')
@@ -226,6 +227,7 @@ async function run() {
     assert(res.body.access_token, 'should return access_token');
     assert(res.body.user.role === 'buyer', `expected buyer, got ${res.body.user.role}`);
     buyerToken = res.body.access_token;
+    buyerRefreshCookie = res.headers['set-cookie'];
   });
 
   await test('imported seller (demo.seller@cricket.test) can log in', async () => {
@@ -235,6 +237,7 @@ async function run() {
     assert(res.body.access_token, 'should return access_token');
     assert(res.body.user.role === 'seller', `expected seller, got ${res.body.user.role}`);
     sellerToken = res.body.access_token;
+    sellerRefreshCookie = res.headers['set-cookie'];
   });
 
   await test('imported admin (admin@cricket.test) can log in', async () => {
@@ -332,20 +335,19 @@ async function run() {
   console.log('\nToken refresh');
 
   await test('login → refresh → new access token (cookie-based rotation)', async () => {
-    const login = await request(app).post('/auth/login')
-      .send({ email: 'buyer@cricket.test', password: 'Buyer1234!' });
-    assert(login.status === 200, `login failed: ${login.status}`);
-    const cookie = login.headers['set-cookie'];
-    assert(cookie && cookie.length > 0, 'should set refresh_token cookie');
+    // Reuse the buyer cookie from the imported-accounts login — avoids an extra
+    // login call that would push us past the rate limiter (max 10/15 min).
+    assert(buyerRefreshCookie && buyerRefreshCookie.length > 0, 'buyerRefreshCookie must be set from login test');
 
     const refresh = await request(app)
       .post('/auth/refresh')
-      .set('Cookie', cookie);
+      .set('Cookie', buyerRefreshCookie);
     assert(refresh.status === 200, `refresh failed: ${refresh.status}: ${JSON.stringify(refresh.body)}`);
     assert(refresh.body.access_token, 'should return new access_token');
+    assert(refresh.body.access_token !== buyerToken, 'new token should differ from original');
 
-    // New token should be different from original
-    assert(refresh.body.access_token !== login.body.access_token, 'new token should differ from original');
+    // Rotate: update stored cookie for subsequent tests
+    buyerRefreshCookie = refresh.headers['set-cookie'];
   });
 
   await test('refresh with no cookie returns 401', async () => {
@@ -354,15 +356,72 @@ async function run() {
   });
 
   await test('POST /auth/logout clears refresh cookie', async () => {
-    const login = await request(app).post('/auth/login')
-      .send({ email: 'buyer@cricket.test', password: 'Buyer1234!' });
-    const cookie = login.headers['set-cookie'];
-    const res = await request(app).post('/auth/logout').set('Cookie', cookie);
+    // Use the rotated buyer cookie — no additional login needed.
+    assert(buyerRefreshCookie && buyerRefreshCookie.length > 0, 'buyerRefreshCookie must be set');
+    const res = await request(app).post('/auth/logout').set('Cookie', buyerRefreshCookie);
     assert(res.status === 200, `expected 200, got ${res.status}`);
     assert(res.body.ok === true, 'should return ok:true');
     // Subsequent refresh with the same (now deleted) cookie should fail
-    const retried = await request(app).post('/auth/refresh').set('Cookie', cookie);
+    const retried = await request(app).post('/auth/refresh').set('Cookie', buyerRefreshCookie);
     assert(retried.status === 401, `expected 401 after logout, got ${retried.status}`);
+  });
+
+  // ── Cookie attributes ─────────────────────────────────────────────────────
+  // Use /auth/refresh (which also calls setRefreshCookie) with the seller's
+  // saved cookie. This avoids extra login calls that would exceed the rate limit.
+  console.log('\nRefresh token cookie attributes');
+
+  await test('dev mode: cookie is SameSite=Lax and not Secure', async () => {
+    assert(sellerRefreshCookie && sellerRefreshCookie.length > 0, 'sellerRefreshCookie must be set from login test');
+    delete process.env.NODE_ENV;
+    const res = await request(app).post('/auth/refresh').set('Cookie', sellerRefreshCookie);
+    assert(res.status === 200, `refresh failed: ${res.status}`);
+    const cookieHeader = (res.headers['set-cookie'] || []).join('; ');
+    assert(/samesite=lax/i.test(cookieHeader), `expected SameSite=Lax, got: ${cookieHeader}`);
+    assert(!/\bsecure\b/i.test(cookieHeader), `expected no Secure flag in dev mode, got: ${cookieHeader}`);
+    sellerRefreshCookie = res.headers['set-cookie']; // rotate
+  });
+
+  await test('production mode: cookie is SameSite=None and Secure', async () => {
+    assert(sellerRefreshCookie && sellerRefreshCookie.length > 0, 'sellerRefreshCookie must be set from dev cookie test');
+    process.env.NODE_ENV = 'production';
+    const res = await request(app).post('/auth/refresh').set('Cookie', sellerRefreshCookie);
+    delete process.env.NODE_ENV;
+    assert(res.status === 200, `refresh failed: ${res.status}`);
+    const cookieHeader = (res.headers['set-cookie'] || []).join('; ');
+    assert(/samesite=none/i.test(cookieHeader), `expected SameSite=None, got: ${cookieHeader}`);
+    assert(/\bsecure\b/i.test(cookieHeader), `expected Secure flag in production mode, got: ${cookieHeader}`);
+  });
+
+  // ── CORS ─────────────────────────────────────────────────────────────────
+  console.log('\nCORS');
+
+  await test('allows configured FRONTEND_ORIGIN with credentials', async () => {
+    const origin = process.env.FRONTEND_ORIGIN || 'http://localhost:3003';
+    const res = await request(app)
+      .options('/auth/login')
+      .set('Origin', origin)
+      .set('Access-Control-Request-Method', 'POST');
+    assert(
+      res.headers['access-control-allow-origin'] === origin,
+      `expected ACAO: ${origin}, got: ${res.headers['access-control-allow-origin']}`
+    );
+    assert(
+      res.headers['access-control-allow-credentials'] === 'true',
+      `expected ACAC: true, got: ${res.headers['access-control-allow-credentials']}`
+    );
+  });
+
+  await test('blocks unknown origin — no ACAO header for evil.example.com', async () => {
+    const res = await request(app)
+      .options('/auth/login')
+      .set('Origin', 'https://evil.example.com')
+      .set('Access-Control-Request-Method', 'POST');
+    const acao = res.headers['access-control-allow-origin'];
+    assert(
+      !acao || acao !== 'https://evil.example.com',
+      `expected no ACAO for unknown origin, got: ${acao}`
+    );
   });
 
   // Teardown
