@@ -8,6 +8,11 @@ const nextConfig = {
         port: '3002',
         pathname: '/photos/**',
       },
+      {
+        protocol: 'https',
+        hostname: 'listing-service-production-3b3f.up.railway.app',
+        pathname: '/photos/**',
+      },
     ],
   },
 };
