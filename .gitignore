@@ -34,3 +34,7 @@ escrow-service/_to_delete/
 # OS/editor
 .DS_Store
 Thumbs.db
+
+# Local Claude Code skills and settings
+.agents/
+.claude/
