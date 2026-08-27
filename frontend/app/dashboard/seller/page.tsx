@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import AuthGuard from '@/components/AuthGuard';
 import { listingFetch, getOrders, connectSellerStripe, getSellerConnectStatus, syncUserToEscrow, authMe } from '@/lib/api';
@@ -28,7 +27,6 @@ export default function SellerDashboard() {
 
 function SellerContent() {
   const { user, accessToken } = useAuth();
-  const searchParams = useSearchParams();
   const [listings, setListings] = useState<Listing[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
@@ -38,15 +36,14 @@ function SellerContent() {
 
   useEffect(() => {
     if (!user) return;
-    const isReturn = searchParams.get('stripe_return') === '1';
     getSellerConnectStatus().then(async (status) => {
       setConnectStatus(status);
-      if (isReturn && status.stripe_account_id && accessToken) {
+      if (status.stripe_account_id && accessToken) {
         const fullUser = await authMe(accessToken);
         if (fullUser) syncUserToEscrow({ ...fullUser, stripe_account_id: fullUser.stripe_account_id ?? undefined }).catch(() => {});
       }
     }).catch(() => {});
-  }, [user, accessToken, searchParams]);
+  }, [user, accessToken]);
 
   useEffect(() => {
     if (!user) return;
