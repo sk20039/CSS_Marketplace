@@ -28,8 +28,10 @@ function buildApp() {
   // Health checks — no auth required.
   app.use('/health', buildHealthRouter(pool, 'escrow-service'));
 
-  // ---- static demo UI ----
-  app.use(express.static(path.join(__dirname, '..', 'public')));
+  // ---- static demo UI (local development only) ----
+  if (process.env.NODE_ENV !== 'production') {
+    app.use(express.static(path.join(__dirname, '..', 'public')));
+  }
 
   // ---- helper endpoints (admin-only: expose user/listing mirror for demo UI) ----
   app.get('/api/users', requireAuth, requireAdmin, async (req, res, next) => {

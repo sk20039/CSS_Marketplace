@@ -10,6 +10,8 @@ const app = buildApp();
 
 app.listen(PORT, () => {
   console.log(`[server] Escrow service listening on http://localhost:${PORT}`);
-  console.log(`[server] Demo UI: http://localhost:${PORT}/index.html`);
+  if (process.env.NODE_ENV !== 'production') {
+    console.log(`[server] Demo UI: http://localhost:${PORT}/index.html`);
+  }
   startScheduler();
 });
