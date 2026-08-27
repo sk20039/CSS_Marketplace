@@ -294,12 +294,14 @@ router.get('/sellers/connect/status', requireAuth, async (req, res, next) => {
     const Stripe = require('stripe');
     const stripe = new Stripe(key, { apiVersion: '2024-06-20' });
     const account = await stripe.accounts.retrieve(user.stripe_account_id);
+    const transfersActive = account.capabilities?.transfers === 'active';
 
     res.json({
-      connected: true,
+      connected: account.charges_enabled && transfersActive,
       charges_enabled: account.charges_enabled,
       details_submitted: account.details_submitted,
       payouts_enabled: account.payouts_enabled,
+      transfers_active: transfersActive,
       stripe_account_id: user.stripe_account_id,
     });
   } catch (err) {
