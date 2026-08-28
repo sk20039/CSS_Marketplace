@@ -8,7 +8,7 @@ export const SITE = {
   address: '11003 Bluewater Lagoon Cir, Cypress, Texas 77433',
   state: 'Texas',
   email: 'cricketsportshop@gmail.com',
-  url: 'https://css-marketplace-frontend.vercel.app',
+  url: 'https://cricketmarketusa.com',
   platformFeePct: '3%',
   deliveryWindowHours: 48,
 } as const;

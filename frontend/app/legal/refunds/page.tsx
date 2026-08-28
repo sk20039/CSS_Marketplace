@@ -72,17 +72,11 @@ export default function RefundsPage() {
 
       <H2 id="platform-fee">2. Platform Fee on Cancellation</H2>
       <P>
-        The {SITE.platformFeePct} platform fee is non-refundable upon buyer-initiated
-        cancellation. This fee covers payment processing costs and Platform operating expenses
-        already incurred at the time of payment capture.
+        The {SITE.platformFeePct} platform fee is non-refundable on any pre-shipment
+        cancellation, regardless of who initiates the cancellation or the reason for it. This fee
+        covers payment processing costs and Platform operating expenses already incurred at the
+        time of payment capture.
       </P>
-      <P>
-        The platform fee is waived and fully refunded only in the following circumstances:
-      </P>
-      <UL>
-        <LI>We cancel the order due to a Platform error or technical failure on our side.</LI>
-        <LI>The seller fails to ship and we administratively cancel the order.</LI>
-      </UL>
 
       <H2 id="post-shipment">3. Post-Shipment: No Cancellation</H2>
       <P>
@@ -101,8 +95,10 @@ export default function RefundsPage() {
       <H2 id="dispute-refunds">4. Dispute-Based Refunds</H2>
       <P>
         If our team resolves a dispute in your favor (buyer wins), you receive a full refund of
-        the transaction amount to your original payment method. In this case, the platform fee
-        is not refunded — the seller absorbs the platform fee cost.
+        the transaction amount &mdash; including the platform fee portion &mdash; to your original
+        payment method. The platform collects no fee from a transaction resolved in the
+        buyer&rsquo;s favor. The seller receives no payment and no transfer is made on their
+        behalf.
       </P>
       <P>
         Dispute-based refunds are only available:

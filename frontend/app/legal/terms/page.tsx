@@ -126,8 +126,11 @@ export default function TermsPage() {
       <H3>6.2 Platform Fee</H3>
       <P>
         We retain a platform fee of {SITE.platformFeePct} of the transaction amount. This fee is
-        deducted from the amount transferred to the seller and is non-refundable unless we cancel
-        an order before shipment due to our error.
+        deducted from the amount transferred to the seller. For pre-shipment cancellations, the
+        platform fee is non-refundable regardless of the reason for cancellation. In the event of
+        a dispute resolved in the buyer&rsquo;s favor, the full transaction amount &mdash;
+        including the platform fee &mdash; is refunded to the buyer, and the platform collects no
+        fee from that transaction.
       </P>
       <H3>6.3 Refunds</H3>
       <P>
