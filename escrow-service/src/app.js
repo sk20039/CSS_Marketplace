@@ -22,7 +22,15 @@ function isParty(user, order) {
 
 function buildApp() {
   const app = express();
-  app.use(cors({ origin: process.env.FRONTEND_ORIGIN || 'http://localhost:3003', credentials: true }));
+  const allowedOrigins = (process.env.FRONTEND_ORIGIN || 'http://localhost:3003')
+    .split(',').map(o => o.trim());
+  app.use(cors({
+    origin: (origin, cb) => {
+      if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+      cb(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
+  }));
   app.use(express.json());
 
   // Health checks — no auth required.

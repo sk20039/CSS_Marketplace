@@ -84,8 +84,13 @@ async function handleStripeWebhook(req, res) {
 
 function buildApp() {
   const app = express();
+  const allowedOrigins = (process.env.FRONTEND_ORIGIN || 'http://localhost:3003')
+    .split(',').map(o => o.trim());
   app.use(cors({
-    origin: process.env.FRONTEND_ORIGIN || 'http://localhost:3003',
+    origin: (origin, cb) => {
+      if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+      cb(new Error('Not allowed by CORS'));
+    },
     credentials: true,
   }));
 
