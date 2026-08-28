@@ -10,13 +10,14 @@
     "migrate:down": "node-pg-migrate -m migrations down",
     "install:prod": "npm ci --omit=dev",
     "test:smoke": "node tests/smoke.test.js",
-    "test": "node tests/idempotency.test.js && node tests/recovery.test.js && node tests/admin.test.js && node tests/escrow.test.js && node tests/health.test.js && node tests/config.test.js && node tests/smoke.test.js"
+    "test": "node tests/idempotency.test.js && node tests/recovery.test.js && node tests/admin.test.js && node tests/escrow.test.js && node tests/health.test.js && node tests/config.test.js && node tests/security.test.js && node tests/smoke.test.js"
   },
   "license": "UNLICENSED",
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "express-rate-limit": "^8.6.2",
     "jsonwebtoken": "^9.0.3",
     "node-cron": "^3.0.3",
     "node-pg-migrate": "^7.0.0",

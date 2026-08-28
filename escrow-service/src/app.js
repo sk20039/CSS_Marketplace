@@ -3,6 +3,7 @@
 const path = require('path');
 const express = require('express');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 const pool = require('./db');
 const orderService = require('./orderService');
 const { runReleaseCheck, cancelOrder } = require('./orderService');
@@ -22,6 +23,21 @@ function isParty(user, order) {
 
 function buildApp() {
   const app = express();
+
+  // Railway terminates TLS and proxies through exactly one hop before reaching
+  // this service.  Setting trust proxy to 1 tells Express to trust the
+  // rightmost entry in X-Forwarded-For as the real client IP (set by Railway's
+  // proxy) while ignoring any XFF headers the client prefixed before that entry.
+  // This gives rate limiters a per-client IP key and prevents clients from
+  // bypassing their own limit by injecting a fake IP prefix in XFF.
+  //
+  // NOTE: the rate limiters below use Express's in-process memory store.
+  // Each service instance maintains its own counters independently — there is
+  // no shared counter across multiple Railway replicas.  This is acceptable for
+  // the current single-instance deployment.  If horizontal scaling is added
+  // later, replace the default store with a shared Redis store.
+  app.set('trust proxy', 1);
+
   const allowedOrigins = (process.env.FRONTEND_ORIGIN || 'http://localhost:3003')
     .split(',').map(o => o.trim());
   app.use(cors({
@@ -31,7 +47,47 @@ function buildApp() {
     },
     credentials: true,
   }));
-  app.use(express.json());
+  app.use(express.json({ limit: '100kb' }));
+
+  // Rate limiters — same library and style as auth-service.
+  // Limits are configurable via env vars so tests can set lower values.
+  // Limiters are created inside buildApp() so each test server starts with
+  // a fresh in-memory counter.
+  const orderCreateLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: Number(process.env.RATE_LIMIT_ORDER_CREATE_MAX || 50),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many orders created from this IP, please try again later' },
+  });
+  const disputeLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: Number(process.env.RATE_LIMIT_DISPUTE_MAX || 10),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many disputes filed from this IP, please try again later' },
+  });
+  const messageLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: Number(process.env.RATE_LIMIT_MESSAGE_MAX || 30),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many messages sent from this IP, please try again later' },
+  });
+  const adminResolveLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: Number(process.env.RATE_LIMIT_ADMIN_RESOLVE_MAX || 30),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many dispute resolution requests from this IP, please try again later' },
+  });
+  const adminRecoveryLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: Number(process.env.RATE_LIMIT_ADMIN_RECOVERY_MAX || 20),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many recovery requests from this IP, please try again later' },
+  });
 
   // Health checks — no auth required.
   app.use('/health', buildHealthRouter(pool, 'escrow-service'));
@@ -60,7 +116,7 @@ function buildApp() {
   });
 
   // ---- orders ----
-  app.post('/orders', requireAuth, async (req, res, next) => {
+  app.post('/orders', orderCreateLimiter, requireAuth, async (req, res, next) => {
     try {
       const { listing_id } = req.body;
       if (!listing_id) throw new OrderError('listing_id is required', 400);
@@ -174,7 +230,7 @@ function buildApp() {
     } catch (err) { next(err); }
   });
 
-  app.post('/orders/:id/dispute', requireAuth, async (req, res, next) => {
+  app.post('/orders/:id/dispute', disputeLimiter, requireAuth, async (req, res, next) => {
     try {
       const order = await orderService.getOrderWithTimeline(req.params.id);
       if (req.user.role !== 'admin' && String(req.user.id) !== String(order.buyer_id)) {
@@ -311,16 +367,18 @@ function buildApp() {
     } catch (err) { next(err); }
   });
 
-  app.post('/orders/:id/messages', requireAuth, async (req, res, next) => {
+  app.post('/orders/:id/messages', messageLimiter, requireAuth, async (req, res, next) => {
     try {
       const order = await orderService.getOrderWithTimeline(req.params.id);
       if (!isParty(req.user, order)) throw new OrderError('Forbidden', 403);
       const { body } = req.body;
-      if (!body || !String(body).trim()) throw new OrderError('body is required', 400);
+      const trimmed = body != null ? String(body).trim() : '';
+      if (!trimmed) throw new OrderError('Message body is required', 400);
+      if (trimmed.length > 2000) throw new OrderError('Message body must not exceed 2,000 characters', 400);
       const { rows: ins } = await pool.query(
         `INSERT INTO messages (order_id, sender_id, body, created_at)
          VALUES ($1, $2, $3, NOW()) RETURNING id`,
-        [order.id, req.user.id, String(body).trim()]
+        [order.id, req.user.id, trimmed]
       );
       const { rows } = await pool.query(
         `SELECT m.id, m.order_id, m.sender_id, u.name AS sender_name, m.body, m.created_at
@@ -334,7 +392,7 @@ function buildApp() {
   });
 
   // ---- admin ----
-  app.post('/admin/orders/:id/resolve', requireAuth, requireAdmin, async (req, res, next) => {
+  app.post('/admin/orders/:id/resolve', adminResolveLimiter, requireAuth, requireAdmin, async (req, res, next) => {
     try {
       const { action } = req.body;
       res.json(await orderService.resolveDispute(req.params.id, action));
@@ -347,7 +405,7 @@ function buildApp() {
     } catch (err) { next(err); }
   });
 
-  app.post('/admin/run-recovery', requireAuth, requireAdmin, async (req, res, next) => {
+  app.post('/admin/run-recovery', adminRecoveryLimiter, requireAuth, requireAdmin, async (req, res, next) => {
     try {
       res.json(await runRecovery());
     } catch (err) { next(err); }
