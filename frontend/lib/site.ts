@@ -9,6 +9,7 @@ export const SITE = {
   state: 'Texas',
   email: 'cricketsportshop@gmail.com',
   url: 'https://cricketmarketusa.com',
-  platformFeePct: '3%',
+  platformFeePct: '8%',
+  platformFeeMin: '$2.00',
   deliveryWindowHours: 48,
 } as const;

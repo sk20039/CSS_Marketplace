@@ -153,8 +153,95 @@ async function run() {
   await test('returns 401 when no auth token', async () => {
     const res = await request(app)
       .post('/listings')
-      .send({ title: 'X', price_cents: 500 });
+      .send({ title: 'X', price_cents: 1000 });
     assert(res.status === 401, `expected 401, got ${res.status}`);
+  });
+
+  // POST /listings — $10.00 minimum price
+  console.log('\nPOST /listings — $10.00 minimum price');
+
+  await cleanup();
+  await test('$9.99 (999 cents) is rejected with 400', async () => {
+    const res = await request(app)
+      .post('/listings')
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'Under Min', price_cents: 999, category: 'bat', condition: 'new' });
+    assert(res.status === 400, `expected 400, got ${res.status}`);
+    assert(res.body.error && res.body.error.includes('1000'), `error should mention 1000: ${res.body.error}`);
+  });
+
+  await cleanup();
+  await test('$10.00 (1000 cents) is accepted with 201', async () => {
+    const res = await request(app)
+      .post('/listings')
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'At Min', price_cents: 1000, category: 'bat', condition: 'new' });
+    assert(res.status === 201, `expected 201, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.price_cents === 1000, 'price_cents should be 1000');
+  });
+
+  await cleanup();
+  await test('$10.01 (1001 cents) is accepted with 201', async () => {
+    const res = await request(app)
+      .post('/listings')
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'Above Min', price_cents: 1001, category: 'bat', condition: 'new' });
+    assert(res.status === 201, `expected 201, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.price_cents === 1001, 'price_cents should be 1001');
+  });
+
+  await cleanup();
+  await test('negative price_cents is rejected with 400', async () => {
+    const res = await request(app)
+      .post('/listings')
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'Negative', price_cents: -100, category: 'bat', condition: 'new' });
+    assert(res.status === 400, `expected 400, got ${res.status}`);
+  });
+
+  await cleanup();
+  await test('zero price_cents is rejected with 400', async () => {
+    const res = await request(app)
+      .post('/listings')
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'Zero', price_cents: 0, category: 'bat', condition: 'new' });
+    assert(res.status === 400, `expected 400, got ${res.status}`);
+  });
+
+  await cleanup();
+  await test('missing price_cents is rejected with 400', async () => {
+    const res = await request(app)
+      .post('/listings')
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'No Price', category: 'bat', condition: 'new' });
+    assert(res.status === 400, `expected 400, got ${res.status}`);
+  });
+
+  await cleanup();
+  await test('text price_cents ("abc") is rejected with 400', async () => {
+    const res = await request(app)
+      .post('/listings')
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'Text Price', price_cents: 'abc', category: 'bat', condition: 'new' });
+    assert(res.status === 400, `expected 400, got ${res.status}`);
+  });
+
+  await cleanup();
+  await test('decimal price_cents (9.99) is rejected with 400', async () => {
+    const res = await request(app)
+      .post('/listings')
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'Float Price', price_cents: 9.99, category: 'bat', condition: 'new' });
+    assert(res.status === 400, `expected 400, got ${res.status}`);
+  });
+
+  await cleanup();
+  await test('malformed price_cents (null) is rejected with 400', async () => {
+    const res = await request(app)
+      .post('/listings')
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'Null Price', price_cents: null, category: 'bat', condition: 'new' });
+    assert(res.status === 400, `expected 400, got ${res.status}`);
   });
 
   // GET /listings/:id
@@ -208,12 +295,12 @@ async function run() {
   await cleanup();
   await test('filters by price range', async () => {
     await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Cheap', price_cents: 500, category: 'other', condition: 'new' });
+      .send({ title: 'Cheap', price_cents: 1000, category: 'other', condition: 'new' });
     await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
       .send({ title: 'Expensive', price_cents: 10000, category: 'other', condition: 'new' });
-    const res = await request(app).get('/listings?min_price=400&max_price=1000');
+    const res = await request(app).get('/listings?min_price=900&max_price=1500');
     assert(res.status === 200, `expected 200, got ${res.status}`);
-    assert(res.body.listings.every(l => l.price_cents >= 400 && l.price_cents <= 1000), 'price range filter failed');
+    assert(res.body.listings.every(l => l.price_cents >= 900 && l.price_cents <= 1500), 'price range filter failed');
   });
 
   await cleanup();
@@ -291,6 +378,58 @@ async function run() {
       .set('Authorization', `Bearer ${sellerToken}`)
       .send({ unknown_field: 'x' });
     assert(res.status === 400, `expected 400, got ${res.status}`);
+  });
+
+  // PATCH /listings/:id — $10.00 minimum price on edit
+  console.log('\nPATCH /listings/:id — $10.00 minimum price on edit');
+
+  await cleanup();
+  await test('editing price to $9.99 (999 cents) is rejected with 400', async () => {
+    const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'Bat', price_cents: 5000, category: 'bat', condition: 'new' });
+    const id = create.body.id;
+    const res = await request(app).patch(`/listings/${id}`)
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ price_cents: 999 });
+    assert(res.status === 400, `expected 400, got ${res.status}`);
+    assert(res.body.error && res.body.error.includes('1000'), `error should mention 1000: ${res.body.error}`);
+  });
+
+  await cleanup();
+  await test('editing price to $10.00 (1000 cents) is accepted', async () => {
+    const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'Bat', price_cents: 5000, category: 'bat', condition: 'new' });
+    const id = create.body.id;
+    const res = await request(app).patch(`/listings/${id}`)
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ price_cents: 1000 });
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.price_cents === 1000, 'price_cents should be updated to 1000');
+  });
+
+  await cleanup();
+  await test('editing price to $10.01 (1001 cents) is accepted', async () => {
+    const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'Bat', price_cents: 5000, category: 'bat', condition: 'new' });
+    const id = create.body.id;
+    const res = await request(app).patch(`/listings/${id}`)
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ price_cents: 1001 });
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.price_cents === 1001, 'price_cents should be updated to 1001');
+  });
+
+  await cleanup();
+  await test('editing a non-price field does not require price re-validation', async () => {
+    const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'Bat', price_cents: 2000, category: 'bat', condition: 'new' });
+    const id = create.body.id;
+    const res = await request(app).patch(`/listings/${id}`)
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'Updated Title' });
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.title === 'Updated Title', 'title should be updated');
+    assert(res.body.price_cents === 2000, 'price_cents should be unchanged');
   });
 
   // Internal mark-sold / mark-active

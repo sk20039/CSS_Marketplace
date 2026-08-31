@@ -15,7 +15,8 @@ const notifications = require('./notifications');
 
 const DELIVERY_WINDOW_MS =
   Number(process.env.DELIVERY_WINDOW_HOURS || 48) * 60 * 60 * 1000;
-const PLATFORM_FEE_BPS = Number(process.env.PLATFORM_FEE_BPS || 300); // 300 bps = 3%
+const PLATFORM_FEE_BPS = Number(process.env.PLATFORM_FEE_BPS || 800); // 800 bps = 8%
+const MIN_PLATFORM_FEE_CENTS = Number(process.env.MIN_PLATFORM_FEE_CENTS || 200); // $2.00 minimum
 const LISTING_SERVICE_URL = process.env.LISTING_SERVICE_URL || 'http://localhost:3002';
 
 // ---------------------------------------------------------------------------
@@ -58,9 +59,11 @@ function normalizeEvent(row) {
   };
 }
 
-// Integer-cents fee math (no floating point). 3% == 300 basis points.
+// Integer-cents fee math (no floating point). 8% == 800 basis points, $2.00 minimum.
+// Fee = max(8% of amount, $2.00 min), capped at order amount to prevent negative seller payout.
 function computeFee(amountCents) {
-  const platformFeeCents = Math.round((amountCents * PLATFORM_FEE_BPS) / 10000);
+  const rawFeeCents = Math.round((amountCents * PLATFORM_FEE_BPS) / 10000);
+  const platformFeeCents = Math.min(Math.max(rawFeeCents, MIN_PLATFORM_FEE_CENTS), amountCents);
   const sellerPayoutCents = amountCents - platformFeeCents;
   return { platformFeeCents, sellerPayoutCents };
 }
@@ -666,17 +669,22 @@ async function cancelOrder(id, { cancelledBy, reason }) {
   );
 
   let refund;
-  try {
-    refund = await stripeClient.createRefund({
-      paymentIntentId: order.stripe_payment_intent_id,
-      amountCents:     refundAmountCents,
-      metadata:        { orderId: String(id), operationType: 'cancel' },
-      idempotencyKey:  `cancel_order_${id}`,
-    });
-  } catch (err) {
-    await revertTransition(id, 'CANCELLING', 'HELD');
-    await recordEvent(id, 'CANCEL_FAILED', { cancelledBy, error: err.message });
-    throw new OrderError(`Stripe refund failed for order ${id}: ${err.message}`, 502);
+  if (refundAmountCents === 0) {
+    // Platform fee equals the entire order amount; no Stripe refund needed.
+    refund = { id: null };
+  } else {
+    try {
+      refund = await stripeClient.createRefund({
+        paymentIntentId: order.stripe_payment_intent_id,
+        amountCents:     refundAmountCents,
+        metadata:        { orderId: String(id), operationType: 'cancel' },
+        idempotencyKey:  `cancel_order_${id}`,
+      });
+    } catch (err) {
+      await revertTransition(id, 'CANCELLING', 'HELD');
+      await recordEvent(id, 'CANCEL_FAILED', { cancelledBy, error: err.message });
+      throw new OrderError(`Stripe refund failed for order ${id}: ${err.message}`, 502);
+    }
   }
 
   return finalizeCancelled(await getOrder(id), refund, { cancelledBy });

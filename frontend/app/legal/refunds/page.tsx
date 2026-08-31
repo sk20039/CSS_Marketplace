@@ -62,20 +62,22 @@ export default function RefundsPage() {
       <H3>1.4 Refund Amount on Cancellation</H3>
       <P>
         When you cancel a HELD order, the platform fee ({SITE.platformFeePct} of the transaction
-        amount) is retained by Cricket Market. The remainder is refunded to your original payment
-        method.
+        amount, minimum {SITE.platformFeeMin}) is retained by Cricket Market. The remainder is
+        refunded to your original payment method.
       </P>
       <P>
-        <strong>Example:</strong> If you paid $100.00, the platform fee is $3.00. You would
-        receive a refund of $97.00.
+        <strong>Example:</strong> If you paid $100.00, the platform fee is $8.00. You would
+        receive a refund of $92.00. For orders under $25.00, the {SITE.platformFeeMin} minimum
+        fee applies; for example, a $20.00 order would carry a {SITE.platformFeeMin} fee and a
+        $18.00 refund.
       </P>
 
       <H2 id="platform-fee">2. Platform Fee on Cancellation</H2>
       <P>
-        The {SITE.platformFeePct} platform fee is non-refundable on any pre-shipment
-        cancellation, regardless of who initiates the cancellation or the reason for it. This fee
-        covers payment processing costs and Platform operating expenses already incurred at the
-        time of payment capture.
+        The {SITE.platformFeePct} platform fee ({SITE.platformFeeMin} minimum) is non-refundable
+        on any pre-shipment cancellation, regardless of who initiates the cancellation or the
+        reason for it. This fee covers payment processing costs and Platform operating expenses
+        already incurred at the time of payment capture.
       </P>
 
       <H2 id="post-shipment">3. Post-Shipment: No Cancellation</H2>

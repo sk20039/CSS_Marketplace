@@ -8,6 +8,7 @@ const router = express.Router();
 const VALID_CATEGORIES = ['bat', 'helmet', 'pads', 'gloves', 'kit-bag', 'other'];
 const VALID_CONDITIONS = ['new', 'used_good', 'used_fair'];
 const PAGE_LIMIT_MAX = 50;
+const MIN_LISTING_PRICE_CENTS = 1000; // $10.00 minimum listing price
 
 // Dedicated secret for service-to-service calls (escrow-service marking a listing
 // sold/active). Must be set via INTERNAL_SERVICE_SECRET. Never falls back to
@@ -37,8 +38,8 @@ router.post('/', requireAuth, async (req, res, next) => {
     if (!title || price_cents == null) {
       return res.status(400).json({ error: 'title and price_cents are required' });
     }
-    if (!Number.isInteger(price_cents) || price_cents <= 0) {
-      return res.status(400).json({ error: 'price_cents must be a positive integer' });
+    if (!Number.isInteger(price_cents) || price_cents < MIN_LISTING_PRICE_CENTS) {
+      return res.status(400).json({ error: `price_cents must be an integer >= ${MIN_LISTING_PRICE_CENTS} (minimum listing price is $10.00)` });
     }
     if (!VALID_CATEGORIES.includes(category)) {
       return res.status(400).json({ error: `category must be one of: ${VALID_CATEGORIES.join(', ')}` });
@@ -170,6 +171,11 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
     }
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ error: 'No valid fields to update' });
+    }
+    if (updates.price_cents !== undefined) {
+      if (!Number.isInteger(updates.price_cents) || updates.price_cents < MIN_LISTING_PRICE_CENTS) {
+        return res.status(400).json({ error: `price_cents must be an integer >= ${MIN_LISTING_PRICE_CENTS} (minimum listing price is $10.00)` });
+      }
     }
     if (updates.category && !VALID_CATEGORIES.includes(updates.category)) {
       return res.status(400).json({ error: 'Invalid category' });

@@ -76,6 +76,10 @@ export default function TermsPage() {
       <UL>
         <LI>List only items you legally own and have the right to sell.</LI>
         <LI>
+          Set a listing price of at least $10.00. The Platform enforces a $10.00 minimum
+          listing price; items priced below this amount cannot be listed.
+        </LI>
+        <LI>
           Provide accurate titles, descriptions, condition disclosures, and photographs. Materially
           misleading listings are grounds for immediate removal and account suspension.
         </LI>
@@ -125,12 +129,12 @@ export default function TermsPage() {
       </P>
       <H3>6.2 Platform Fee</H3>
       <P>
-        We retain a platform fee of {SITE.platformFeePct} of the transaction amount. This fee is
-        deducted from the amount transferred to the seller. For pre-shipment cancellations, the
-        platform fee is non-refundable regardless of the reason for cancellation. In the event of
-        a dispute resolved in the buyer&rsquo;s favor, the full transaction amount &mdash;
-        including the platform fee &mdash; is refunded to the buyer, and the platform collects no
-        fee from that transaction.
+        We retain a platform fee of {SITE.platformFeePct} of the transaction amount ({SITE.platformFeeMin} minimum).
+        This fee is deducted from the amount transferred to the seller; buyers pay the listed price only.
+        For pre-shipment cancellations, the platform fee is non-refundable regardless of the reason
+        for cancellation. In the event of a dispute resolved in the buyer&rsquo;s favor, the full
+        transaction amount &mdash; including the platform fee &mdash; is refunded to the buyer, and
+        the platform collects no fee from that transaction.
       </P>
       <H3>6.3 Refunds</H3>
       <P>

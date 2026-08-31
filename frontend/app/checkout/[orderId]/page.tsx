@@ -136,7 +136,7 @@ function CheckoutContent() {
               <span className="font-medium">${itemPrice}</span>
             </div>
             <div className="flex justify-between items-center text-xs text-gray-400">
-              <span>Platform fee (3%)</span>
+              <span>Platform fee (8%, min $2.00)</span>
               <span>${fee}</span>
             </div>
             <div className="border-t border-gray-100 pt-3 flex justify-between items-center">

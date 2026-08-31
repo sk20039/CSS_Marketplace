@@ -72,7 +72,7 @@ function NewListingForm() {
 
   async function createAndUpload(): Promise<number | null> {
     const price = parseFloat(priceStr);
-    if (isNaN(price) || price <= 0) { setError('Enter a valid price'); return null; }
+    if (isNaN(price) || price < 10) { setError('Minimum listing price is $10.00'); return null; }
     const price_cents = Math.round(price * 100);
 
     if (createdListingId !== null) {
@@ -440,21 +440,37 @@ function NewListingForm() {
           <h2 className="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3 mb-5">Pricing</h2>
           <label className="block text-sm font-medium text-gray-700 mb-1.5">
             Price (USD) <span className="text-red-500">*</span>
+            <span className="ml-2 text-xs font-normal text-gray-400">$10.00 minimum</span>
           </label>
           <div className="relative max-w-xs">
             <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 font-medium">$</span>
             <input
               type="number"
               required
-              min="0.01"
+              min="10.00"
               step="0.01"
               value={priceStr}
               onChange={(e) => setPriceStr(e.target.value)}
-              placeholder="0.00"
+              placeholder="10.00"
               className="w-full border-2 border-gray-200 rounded-xl pl-8 pr-4 py-2.5 text-sm focus:outline-none focus:border-brand-600 transition-colors"
             />
           </div>
-          <p className="text-xs text-gray-400 mt-2">A 3% platform fee applies at the time of sale.</p>
+          {(() => {
+            const price = parseFloat(priceStr);
+            if (!isNaN(price) && price > 0) {
+              const priceCents = Math.round(price * 100);
+              const rawFee = Math.round((priceCents * 800) / 10000);
+              const feeCents = Math.min(Math.max(rawFee, 200), priceCents);
+              const payoutCents = priceCents - feeCents;
+              return (
+                <p className="text-xs text-gray-400 mt-2">
+                  Platform fee: <strong className="text-gray-600">${(feeCents / 100).toFixed(2)}</strong>
+                  {' '}· You receive: <strong className="text-gray-600">${(payoutCents / 100).toFixed(2)}</strong>
+                </p>
+              );
+            }
+            return <p className="text-xs text-gray-400 mt-2">8% platform fee, $2.00 minimum — deducted from your payout at sale.</p>;
+          })()}
         </div>
 
         {/* Photos */}

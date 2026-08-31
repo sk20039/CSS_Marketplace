@@ -19,7 +19,7 @@
     <div class="row">
       <div>
         <p class="muted">Amount: <b id="amount"></b></p>
-        <p class="muted">Platform fee (3%): <b id="fee"></b></p>
+        <p class="muted">Platform fee (8%, min $2.00): <b id="fee"></b></p>
         <p class="muted">Seller payout: <b id="payout"></b></p>
       </div>
       <div>
@@ -71,7 +71,7 @@ function renderActions(order) {
   if (order.status === 'HELD') {
     addButton('Mark Shipped (seller)', 'primary', () => runAction(`/orders/${order.id}/ship`));
     addButton('Cancel Order', 'danger', () => {
-      if (!window.confirm('Cancel this order? The payment will be refunded minus the 3% platform fee.')) return;
+      if (!window.confirm('Cancel this order? The payment will be refunded minus the 8% platform fee ($2.00 minimum).')) return;
       const reason = window.prompt('Reason for cancellation (optional):', '');
       if (reason === null) return; // user dismissed the prompt — abort
       runAction(`/orders/${order.id}/cancel`, { reason });
