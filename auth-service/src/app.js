@@ -49,6 +49,12 @@ async function handleStripeWebhook(req, res) {
   }
 
   const sig = req.headers['stripe-signature'];
+  // TEMP DIAGNOSTIC — remove after webhook body investigation
+  console.log('[webhook-debug] isBuffer:', Buffer.isBuffer(req.body),
+    '| typeof:', typeof req.body,
+    '| length:', req.body?.length,
+    '| content-type:', req.headers['content-type'],
+    '| has-sig:', !!sig);
   if (!sig) return res.status(400).json({ error: 'Missing stripe-signature header' });
 
   let event;
