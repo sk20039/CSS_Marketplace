@@ -34,4 +34,23 @@ async function sendVerificationEmail(email, token) {
   });
 }
 
-module.exports = { sendVerificationEmail };
+async function sendPasswordResetEmail(email, token) {
+  const link = `${BASE_URL}/reset-password?token=${token}`;
+  if (!transport) {
+    console.log(`[EMAIL STUB] Password reset email → ${email}`);
+    console.log(`[EMAIL STUB] Link: ${link}`);
+    return;
+  }
+  await transport.sendMail({
+    from: FROM,
+    to: email,
+    subject: 'Reset your Cricket Market USA password',
+    text: `You requested a password reset for your Cricket Market USA account.\n\nClick the link below to set a new password:\n\n${link}\n\nThis link expires in 1 hour. If you did not request this, you can safely ignore this email — your password will not change.`,
+    html: `<p>You requested a password reset for your Cricket Market USA account.</p>
+           <p>Click the link below to set a new password:</p>
+           <p><a href="${link}">${link}</a></p>
+           <p>This link expires in 1 hour. If you did not request this, you can safely ignore this email — your password will not change.</p>`,
+  });
+}
+
+module.exports = { sendVerificationEmail, sendPasswordResetEmail };

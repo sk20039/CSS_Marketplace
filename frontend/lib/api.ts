@@ -87,6 +87,24 @@ export async function authLogin(body: { email: string; password: string }) {
   return res;
 }
 
+export async function authForgotPassword(body: { email: string }) {
+  const res = await fetch(`${AUTH_URL}/auth/forgot-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return res;
+}
+
+export async function authResetPassword(body: { token: string; password: string }) {
+  const res = await fetch(`${AUTH_URL}/auth/reset-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return res;
+}
+
 // ---- Listing service ----
 export async function listingFetch(path: string, options: RequestInit = {}) {
   return apiFetch(`${LISTING_URL}${path}`, options);

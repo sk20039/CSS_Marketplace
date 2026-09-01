@@ -4,7 +4,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const pool = require('./db');
 const requireAuth = require('./middleware/requireAuth');
-const { sendVerificationEmail } = require('./emailer');
+const { sendVerificationEmail, sendPasswordResetEmail } = require('./emailer');
 
 const router = express.Router();
 
@@ -304,6 +304,74 @@ router.get('/sellers/connect/status', requireAuth, async (req, res, next) => {
       transfers_active: transfersActive,
       stripe_account_id: user.stripe_account_id,
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /auth/forgot-password
+router.post('/forgot-password', async (req, res, next) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+
+    // Always return the same message regardless of whether the email exists
+    // to prevent account enumeration.
+    const genericResponse = {
+      message: 'If that email is registered, you will receive a password reset link shortly.',
+    };
+
+    const { rows } = await pool.query('SELECT id, email FROM users WHERE email = $1', [email]);
+    const user = rows[0];
+    if (!user) return res.json(genericResponse);
+
+    // Remove any existing unused reset tokens for this user before issuing a new one.
+    await pool.query('DELETE FROM password_reset_tokens WHERE user_id = $1', [user.id]);
+
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour
+
+    await pool.query(
+      'INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)',
+      [user.id, tokenHash, expiresAt]
+    );
+
+    await sendPasswordResetEmail(user.email, resetToken);
+
+    res.json(genericResponse);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /auth/reset-password
+router.post('/reset-password', async (req, res, next) => {
+  try {
+    const { token, password } = req.body;
+    if (!token || !password) return res.status(400).json({ error: 'token and password are required' });
+    if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+
+    const tokenHash = crypto.createHash('sha256').update(String(token)).digest('hex');
+    const { rows } = await pool.query(
+      'SELECT * FROM password_reset_tokens WHERE token_hash = $1 AND expires_at > NOW()',
+      [tokenHash]
+    );
+    if (!rows[0]) {
+      return res.status(400).json({ error: 'Invalid or expired reset link. Please request a new one.' });
+    }
+
+    const resetRow = rows[0];
+    const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+
+    await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [passwordHash, resetRow.user_id]);
+    // Consume the reset token.
+    await pool.query('DELETE FROM password_reset_tokens WHERE id = $1', [resetRow.id]);
+    // Invalidate all active sessions so any attacker who had the old password
+    // cannot stay logged in via a still-valid refresh token.
+    await pool.query('DELETE FROM refresh_tokens WHERE user_id = $1', [resetRow.user_id]);
+
+    res.json({ message: 'Password reset successful. You can now sign in with your new password.' });
   } catch (err) {
     next(err);
   }

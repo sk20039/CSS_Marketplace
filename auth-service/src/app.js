@@ -30,6 +30,14 @@ const refreshLimiter = rateLimit({
   message: { error: 'Too many token refresh attempts, please try again in 15 minutes' },
 });
 
+const forgotPasswordLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many password reset requests, please try again in an hour' },
+});
+
 // Stripe Connect webhook handler.
 // Must be defined before buildApp() mounts express.json() so the raw request
 // body is preserved — Stripe signature verification requires the exact bytes
@@ -106,6 +114,7 @@ function buildApp() {
   app.post('/auth/login', loginLimiter);
   app.post('/auth/register', registerLimiter);
   app.post('/auth/refresh', refreshLimiter);
+  app.post('/auth/forgot-password', forgotPasswordLimiter);
   app.use('/auth', authRoutes);
 
   // eslint-disable-next-line no-unused-vars
