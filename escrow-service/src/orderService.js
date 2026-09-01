@@ -19,6 +19,37 @@ const PLATFORM_FEE_BPS = Number(process.env.PLATFORM_FEE_BPS || 800); // 800 bps
 const MIN_PLATFORM_FEE_CENTS = Number(process.env.MIN_PLATFORM_FEE_CENTS || 200); // $2.00 minimum
 const LISTING_SERVICE_URL = process.env.LISTING_SERVICE_URL || 'http://localhost:3002';
 
+// US address validation (buyer shipping address on orders)
+const US_STATES = new Set([
+  'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA',
+  'KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ',
+  'NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT',
+  'VA','WA','WV','WI','WY','DC',
+]);
+const ZIP_RE = /^\d{5}(-\d{4})?$/;
+
+function validateShippingAddress(addr) {
+  if (!addr || typeof addr !== 'object') return 'shipping_address is required';
+  if (!addr.name  || typeof addr.name  !== 'string' || !addr.name.trim())  return 'shipping_address.name is required';
+  if (!addr.line1 || typeof addr.line1 !== 'string' || !addr.line1.trim()) return 'shipping_address.line1 is required';
+  if (!addr.city  || typeof addr.city  !== 'string' || !addr.city.trim())  return 'shipping_address.city is required';
+  if (!addr.state || !US_STATES.has(String(addr.state).toUpperCase())) return 'shipping_address.state must be a valid US state or DC abbreviation';
+  if (!addr.zip   || !ZIP_RE.test(String(addr.zip).trim())) return 'shipping_address.zip must be a 5-digit or ZIP+4 US postal code';
+  return null;
+}
+
+function sanitizeShippingAddress(addr) {
+  return {
+    name:  String(addr.name).trim(),
+    line1: String(addr.line1).trim(),
+    line2: addr.line2 ? String(addr.line2).trim() : null,
+    city:  String(addr.city).trim(),
+    state: String(addr.state).toUpperCase().trim(),
+    zip:   String(addr.zip).trim(),
+    phone: addr.phone ? String(addr.phone).replace(/\D/g, '') : null,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -36,10 +67,13 @@ function ts(v) {
 
 // Normalize an order row from pg: convert TIMESTAMPTZ Date objects to ISO strings.
 // BIGINT columns (id, *_id) are already numbers via the type parser in db.js.
+// shipping_address is stripped from all API responses (privacy — buyer's address).
 function normalizeOrder(row) {
   if (!row) return null;
+  // eslint-disable-next-line no-unused-vars
+  const { shipping_address, ...rest } = row;
   return {
-    ...row,
+    ...rest,
     shipped_at:           ts(row.shipped_at),
     delivered_at:         ts(row.delivered_at),
     window_expires_at:    ts(row.window_expires_at),
@@ -232,13 +266,16 @@ async function reservationConflictError(orderId, expectedStatus, action) {
 // POST /orders
 // ---------------------------------------------------------------------------
 
-async function createOrder({ listingId, buyerId }) {
+async function createOrder({ listingId, buyerId, shippingAddress }) {
   if (!isPositiveIntegerId(listingId)) {
     throw new OrderError('listing_id must be a positive integer', 400);
   }
   if (!isPositiveIntegerId(buyerId)) {
     throw new OrderError('buyer_id must be a positive integer', 400);
   }
+  const addrError = validateShippingAddress(shippingAddress);
+  if (addrError) throw new OrderError(addrError, 422);
+  const sanitizedAddr = sanitizeShippingAddress(shippingAddress);
   const normalizedListingId = Number(listingId);
   const normalizedBuyerId   = Number(buyerId);
 
@@ -289,14 +326,16 @@ async function createOrder({ listingId, buyerId }) {
     `INSERT INTO orders (
        listing_id, buyer_id, seller_id, amount_cents, item_price_cents, shipping_cents,
        platform_fee_cents, seller_payout_cents,
-       status, stripe_payment_intent_id, stripe_client_secret, created_at, updated_at
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'CREATED', $9, $10, $11, $12)
+       status, stripe_payment_intent_id, stripe_client_secret, shipping_address,
+       created_at, updated_at
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'CREATED', $9, $10, $11, $12, $13)
      RETURNING id`,
     [
       normalizedListingId, normalizedBuyerId, sellerId,
       amountCents, itemPriceCents, shippingCents,
       platformFeeCents, sellerPayoutCents,
       intent.id, intent.client_secret || null,
+      JSON.stringify(sanitizedAddr),
       ts_now, ts_now,
     ]
   );

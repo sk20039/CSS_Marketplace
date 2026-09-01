@@ -370,7 +370,10 @@ async function runMessageValidationTests() {
     };
 
     // Drive order to HELD state via API (stub Stripe, no real calls)
-    const created = await post(server, '/orders', buyerToken, { listing_id: 888 });
+    const created = await post(server, '/orders', buyerToken, {
+      listing_id: 888,
+      shipping_address: { name: 'Sec Buyer', line1: '1 Test St', city: 'Austin', state: 'TX', zip: '78701' },
+    });
     assertEqual(created.status, 201, `createOrder failed: ${JSON.stringify(created.body)}`);
     const captured = await post(server, `/orders/${created.body.id}/capture`, buyerToken);
     assertEqual(captured.status, 200, `capture failed: ${JSON.stringify(captured.body)}`);

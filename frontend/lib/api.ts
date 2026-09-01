@@ -55,7 +55,29 @@ export async function authMe(token: string) {
     credentials: 'include',
   });
   if (!res.ok) return null;
-  return res.json() as Promise<{ id: number; name: string; email: string; role: string; stripe_account_id: string | null }>;
+  return res.json() as Promise<{
+    id: number; name: string; email: string; role: string;
+    stripe_account_id: string | null;
+    ship_from_address: ShipFromAddress | null;
+  }>;
+}
+
+export interface ShipFromAddress {
+  name: string; company?: string | null;
+  line1: string; line2?: string | null;
+  city: string; state: string; zip: string; phone: string;
+}
+
+export interface ShippingAddress {
+  name: string; line1: string; line2?: string | null;
+  city: string; state: string; zip: string; phone?: string | null;
+}
+
+export async function saveShipFromAddress(body: ShipFromAddress) {
+  return apiFetch(`${AUTH_URL}/auth/address/ship-from`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
 }
 
 export async function connectSellerStripe() {
@@ -194,7 +216,7 @@ export async function getOrder(id: string | number) {
   return res.json();
 }
 
-export async function createOrder(body: { listing_id: number }) {
+export async function createOrder(body: { listing_id: number; shipping_address: ShippingAddress }) {
   // buyer_id is derived server-side from the auth token now, not sent by the client.
   return escrowFetch('/orders', { method: 'POST', body: JSON.stringify(body) });
 }

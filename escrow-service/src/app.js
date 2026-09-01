@@ -118,9 +118,13 @@ function buildApp() {
   // ---- orders ----
   app.post('/orders', orderCreateLimiter, requireAuth, async (req, res, next) => {
     try {
-      const { listing_id } = req.body;
+      const { listing_id, shipping_address } = req.body;
       if (!listing_id) throw new OrderError('listing_id is required', 400);
-      const order = await orderService.createOrder({ listingId: listing_id, buyerId: req.user.id });
+      const order = await orderService.createOrder({
+        listingId: listing_id,
+        buyerId: req.user.id,
+        shippingAddress: shipping_address,
+      });
       res.status(201).json(order);
     } catch (err) { next(err); }
   });
@@ -242,6 +246,29 @@ function buildApp() {
   });
 
   // ---- internal sync endpoints ----
+
+  function requireInternalSecret(req, res, next) {
+    const secret = process.env.INTERNAL_SERVICE_SECRET || '';
+    if (!secret || req.headers['x-internal-secret'] !== secret) {
+      return res.status(401).json({ error: 'Invalid or missing internal service secret' });
+    }
+    next();
+  }
+
+  app.post('/api/sync/ship-from-address', requireInternalSecret, async (req, res, next) => {
+    try {
+      const { user_id, ship_from_address } = req.body;
+      if (!user_id || !ship_from_address) {
+        return res.status(400).json({ error: 'user_id and ship_from_address are required' });
+      }
+      await pool.query(
+        `UPDATE users SET ship_from_address = $1 WHERE id = $2`,
+        [JSON.stringify(ship_from_address), user_id]
+      );
+      res.json({ ok: true });
+    } catch (err) { next(err); }
+  });
+
   app.post('/api/sync/user', requireAuth, async (req, res, next) => {
     try {
       const { id, name, email, role, stripe_account_id } = req.body;

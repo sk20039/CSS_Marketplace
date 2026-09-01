@@ -140,6 +140,14 @@ let buyerToken, sellerToken, adminToken;
 const LISTING_ID = 999; // mock listing ID
 const JWT_SECRET = process.env.JWT_SECRET || 'change-me';
 
+const VALID_SHIPPING_ADDRESS = {
+  name: 'John Buyer',
+  line1: '123 Main St',
+  city: 'Houston',
+  state: 'TX',
+  zip: '77001',
+};
+
 // ---------------------------------------------------------------------------
 // Setup
 // ---------------------------------------------------------------------------
@@ -208,7 +216,10 @@ async function teardown() {
 // ---------------------------------------------------------------------------
 
 async function createOrder() {
-  const res = await post(appServer, '/orders', buyerToken, { listing_id: LISTING_ID });
+  const res = await post(appServer, '/orders', buyerToken, {
+    listing_id: LISTING_ID,
+    shipping_address: VALID_SHIPPING_ADDRESS,
+  });
   assertEqual(res.status, 201, `createOrder failed: ${JSON.stringify(res.body)}`);
   return res.body;
 }
@@ -294,6 +305,41 @@ async function runOrderCreationTests() {
   await test('POST /orders rejects missing listing_id with 400', async () => {
     const res = await post(appServer, '/orders', buyerToken, {});
     assertEqual(res.status, 400, `expected 400, got ${res.status}`);
+  });
+
+  await test('POST /orders requires shipping_address', async () => {
+    const res = await post(appServer, '/orders', buyerToken, { listing_id: LISTING_ID });
+    assertEqual(res.status, 422, `expected 422, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.error, 'error message required');
+  });
+
+  await test('POST /orders rejects invalid US state', async () => {
+    const res = await post(appServer, '/orders', buyerToken, {
+      listing_id: LISTING_ID,
+      shipping_address: { ...VALID_SHIPPING_ADDRESS, state: 'XX' },
+    });
+    assertEqual(res.status, 422, `expected 422, got ${res.status}`);
+  });
+
+  await test('POST /orders rejects invalid ZIP code', async () => {
+    const res = await post(appServer, '/orders', buyerToken, {
+      listing_id: LISTING_ID,
+      shipping_address: { ...VALID_SHIPPING_ADDRESS, zip: 'ABCDE' },
+    });
+    assertEqual(res.status, 422, `expected 422, got ${res.status}`);
+  });
+
+  await test('POST /orders response does not include shipping_address (privacy)', async () => {
+    const order = await createOrder();
+    assert(!('shipping_address' in order), 'shipping_address must not be in order response');
+    assert(!('shipping_address' in (order.events ? order : {})), 'shipping_address must not leak');
+  });
+
+  await test('GET /orders/:id does not include shipping_address', async () => {
+    const order = await createOrder();
+    const res = await get(appServer, `/orders/${order.id}`, buyerToken);
+    assertEqual(res.status, 200, `expected 200, got ${res.status}`);
+    assert(!('shipping_address' in res.body), 'shipping_address must not appear in GET response');
   });
 }
 

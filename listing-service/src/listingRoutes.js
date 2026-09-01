@@ -34,6 +34,12 @@ async function withPhotos(listing) {
 // POST /listings — create
 router.post('/', requireAuth, async (req, res, next) => {
   try {
+    if (req.user.role === 'seller' && !req.user.has_ship_from_address) {
+      return res.status(422).json({
+        error: 'You must add a ship-from address before creating listings',
+        code: 'SHIP_FROM_ADDRESS_REQUIRED',
+      });
+    }
     const { title, description = '', price_cents, category = 'other', condition = 'used_good' } = req.body;
     if (!title || price_cents == null) {
       return res.status(400).json({ error: 'title and price_cents are required' });

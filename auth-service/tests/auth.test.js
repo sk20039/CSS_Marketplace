@@ -15,6 +15,7 @@ process.env.DATABASE_URL =
   process.env.DATABASE_URL_TEST ||
   'postgres://auth_user:auth_pass@127.0.0.1:5432/auth_db_test';
 process.env.JWT_SECRET = 'test-secret';
+process.env.INTERNAL_SERVICE_SECRET = 'test-internal-svc-secret-32chars!!';
 // Clear Stripe keys so tests run in stub mode (no real API calls)
 delete process.env.STRIPE_SECRET_KEY;
 delete process.env.STRIPE_WEBHOOK_SECRET;
@@ -555,6 +556,126 @@ async function run() {
       !acao || acao !== 'https://evil.example.com',
       `expected no ACAO for unknown origin, got: ${acao}`
     );
+  });
+
+  // ── PUT /auth/address/ship-from ─────────────────────────────────────────
+  console.log('\nPUT /auth/address/ship-from');
+
+  const VALID_SHIP_FROM = {
+    name: 'Test Seller',
+    line1: '789 Cricket Ave',
+    city: 'Houston',
+    state: 'TX',
+    zip: '77001',
+    phone: '8885551234',
+  };
+
+  await test('returns 403 for buyer role', async () => {
+    assert(buyerToken, 'buyerToken must be set');
+    const res = await request(app)
+      .put('/auth/address/ship-from')
+      .set('Authorization', `Bearer ${buyerToken}`)
+      .send(VALID_SHIP_FROM);
+    assert(res.status === 403, `expected 403, got ${res.status}`);
+  });
+
+  await test('returns 422 for missing required field (line1)', async () => {
+    assert(sellerToken, 'sellerToken must be set from login test');
+    const res = await request(app)
+      .put('/auth/address/ship-from')
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ ...VALID_SHIP_FROM, line1: '' });
+    assert(res.status === 422, `expected 422, got ${res.status}: ${JSON.stringify(res.body)}`);
+  });
+
+  await test('returns 422 for invalid US state', async () => {
+    assert(sellerToken, 'sellerToken must be set from login test');
+    const res = await request(app)
+      .put('/auth/address/ship-from')
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ ...VALID_SHIP_FROM, state: 'XX' });
+    assert(res.status === 422, `expected 422, got ${res.status}`);
+  });
+
+  await test('returns 422 for invalid ZIP code', async () => {
+    assert(sellerToken, 'sellerToken must be set from login test');
+    const res = await request(app)
+      .put('/auth/address/ship-from')
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ ...VALID_SHIP_FROM, zip: 'ABCDE' });
+    assert(res.status === 422, `expected 422, got ${res.status}`);
+  });
+
+  await test('returns 422 for phone with fewer than 10 digits', async () => {
+    assert(sellerToken, 'sellerToken must be set from login test');
+    const res = await request(app)
+      .put('/auth/address/ship-from')
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ ...VALID_SHIP_FROM, phone: '123' });
+    assert(res.status === 422, `expected 422, got ${res.status}`);
+  });
+
+  let updatedToken;
+  await test('saves valid ship-from address and returns new access_token with has_ship_from_address=true', async () => {
+    assert(sellerToken, 'sellerToken must be set from login test');
+    const res = await request(app)
+      .put('/auth/address/ship-from')
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send(VALID_SHIP_FROM);
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.ship_from_address, 'ship_from_address must be in response');
+    assert(res.body.ship_from_address.line1 === '789 Cricket Ave', 'line1 mismatch');
+    assert(res.body.ship_from_address.state === 'TX', 'state must be normalized to uppercase');
+    assert(res.body.access_token, 'access_token must be in response');
+
+    updatedToken = res.body.access_token;
+    const decoded = jwt.verify(updatedToken, 'test-secret');
+    assert(decoded.has_ship_from_address === true, `has_ship_from_address must be true, got ${decoded.has_ship_from_address}`);
+  });
+
+  await test('GET /auth/me returns ship_from_address after save', async () => {
+    assert(updatedToken, 'updatedToken must be set from previous test');
+    const res = await request(app)
+      .get('/auth/me')
+      .set('Authorization', `Bearer ${updatedToken}`);
+    assert(res.status === 200, `expected 200, got ${res.status}`);
+    assert(res.body.ship_from_address, 'ship_from_address must be in /me response');
+    assert(res.body.ship_from_address.city === 'Houston', 'city mismatch');
+  });
+
+  // ── GET /auth/internal/seller/:id/has-ship-from ──────────────────────────
+  console.log('\nGET /auth/internal/seller/:id/has-ship-from');
+
+  const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET;
+
+  await test('returns 401 without internal secret', async () => {
+    const res = await request(app).get('/auth/internal/seller/3/has-ship-from');
+    assert(res.status === 401, `expected 401, got ${res.status}`);
+  });
+
+  await test('returns 401 with wrong internal secret', async () => {
+    const res = await request(app)
+      .get('/auth/internal/seller/3/has-ship-from')
+      .set('x-internal-secret', 'wrong-secret');
+    assert(res.status === 401, `expected 401, got ${res.status}`);
+  });
+
+  await test('returns 404 for non-existent user', async () => {
+    const res = await request(app)
+      .get('/auth/internal/seller/99999/has-ship-from')
+      .set('x-internal-secret', INTERNAL_SECRET);
+    assert(res.status === 404, `expected 404, got ${res.status}`);
+  });
+
+  await test('returns has_ship_from_address=true for seller with saved address', async () => {
+    // seller id=3 (demo.seller@cricket.test) just had address saved in previous test
+    const { rows } = await pool.query("SELECT id FROM users WHERE email = 'demo.seller@cricket.test'");
+    assert(rows[0], 'seller must exist in DB');
+    const res = await request(app)
+      .get(`/auth/internal/seller/${rows[0].id}/has-ship-from`)
+      .set('x-internal-secret', INTERNAL_SECRET);
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.has_ship_from_address === true, `expected true, got ${res.body.has_ship_from_address}`);
   });
 
   // Teardown

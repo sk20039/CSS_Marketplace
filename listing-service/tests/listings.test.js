@@ -27,14 +27,14 @@ const app = buildApp();
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function makeToken(userId, role = 'user') {
-  return jwt.sign({ sub: userId, role }, 'test-secret', { expiresIn: '1h' });
+function makeToken(userId, role = 'seller', has_ship_from_address = true) {
+  return jwt.sign({ sub: userId, role, has_ship_from_address }, 'test-secret', { expiresIn: '1h' });
 }
 
 const SELLER_ID = 1000;
 const OTHER_ID = 1001;
-const sellerToken = makeToken(SELLER_ID);
-const otherToken = makeToken(OTHER_ID);
+const sellerToken = makeToken(SELLER_ID, 'seller', true);
+const otherToken = makeToken(OTHER_ID, 'seller', true);
 const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET; // 'test-internal-svc-secret-32chars!!'
 
 const SCHEMA_SQL = `
@@ -567,6 +567,52 @@ async function run() {
     const res = await request(app).delete(`/listings/${id}`)
       .set('Authorization', `Bearer ${otherToken}`);
     assert(res.status === 403, `expected 403, got ${res.status}`);
+  });
+
+  // Ship-from address gate
+  console.log('\nPOST /listings — ship-from address gate');
+
+  await cleanup();
+  await test('seller without ship-from address gets 422 with SHIP_FROM_ADDRESS_REQUIRED', async () => {
+    const noAddrToken = makeToken(SELLER_ID, 'seller', false);
+    const res = await request(app)
+      .post('/listings')
+      .set('Authorization', `Bearer ${noAddrToken}`)
+      .send({ title: 'Test Bat', price_cents: 5000 });
+    assert(res.status === 422, `expected 422, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.code === 'SHIP_FROM_ADDRESS_REQUIRED', `expected code SHIP_FROM_ADDRESS_REQUIRED, got ${res.body.code}`);
+  });
+
+  await cleanup();
+  await test('seller with ship-from address can create listing', async () => {
+    const withAddrToken = makeToken(SELLER_ID, 'seller', true);
+    const res = await request(app)
+      .post('/listings')
+      .set('Authorization', `Bearer ${withAddrToken}`)
+      .send({ title: 'Test Bat', price_cents: 5000 });
+    assert(res.status === 201, `expected 201, got ${res.status}: ${JSON.stringify(res.body)}`);
+  });
+
+  await cleanup();
+  await test('buyer (non-seller) can create listings regardless of has_ship_from_address', async () => {
+    const buyerToken = makeToken(2000, 'buyer', false);
+    const res = await request(app)
+      .post('/listings')
+      .set('Authorization', `Bearer ${buyerToken}`)
+      .send({ title: 'Buyer Bat', price_cents: 5000 });
+    // buyer role is not gated — they should pass the gate (though in prod buyers don't create listings)
+    assert(res.status === 201 || res.status === 400, `unexpected status ${res.status}`);
+  });
+
+  await cleanup();
+  await test('admin can create listings without ship-from address', async () => {
+    const adminToken = makeToken(3000, 'admin', false);
+    const res = await request(app)
+      .post('/listings')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ title: 'Admin Bat', price_cents: 5000 });
+    // admin is not gated
+    assert(res.status === 201, `expected 201, got ${res.status}: ${JSON.stringify(res.body)}`);
   });
 
   // Teardown

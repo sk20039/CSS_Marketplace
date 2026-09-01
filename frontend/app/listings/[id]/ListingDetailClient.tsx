@@ -3,10 +3,107 @@
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { getListing, createOrder, getUserReviews } from '@/lib/api';
+import { getListing, createOrder, getUserReviews, type ShippingAddress } from '@/lib/api';
 import { useUser } from '@/lib/auth';
 import { CONDITION_LABELS, CATEGORY_LABELS } from '@/lib/constants';
 import ErrorAlert from '@/components/ErrorAlert';
+
+const US_STATES = [
+  'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA',
+  'KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ',
+  'NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT',
+  'VA','WA','WV','WI','WY','DC',
+];
+
+interface ShippingModalProps {
+  onSubmit: (addr: ShippingAddress) => Promise<void>;
+  onCancel: () => void;
+  submitting: boolean;
+  error: string;
+}
+
+function ShippingAddressModal({ onSubmit, onCancel, submitting, error }: ShippingModalProps) {
+  const [form, setForm] = useState<ShippingAddress>({
+    name: '', line1: '', line2: '', city: '', state: '', zip: '', phone: '',
+  });
+
+  function set(field: keyof ShippingAddress, value: string) {
+    setForm((f) => ({ ...f, [field]: value }));
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    await onSubmit(form);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6">
+        <h2 className="text-lg font-bold text-gray-900 mb-1">Ship-to Address</h2>
+        <p className="text-sm text-gray-500 mb-5">Enter the address where you want this item delivered.</p>
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <input
+            required placeholder="Full name"
+            className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-brand-600"
+            value={form.name} onChange={(e) => set('name', e.target.value)}
+          />
+          <input
+            required placeholder="Address line 1"
+            className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-brand-600"
+            value={form.line1} onChange={(e) => set('line1', e.target.value)}
+          />
+          <input
+            placeholder="Address line 2 (optional)"
+            className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-brand-600"
+            value={form.line2 ?? ''} onChange={(e) => set('line2', e.target.value)}
+          />
+          <div className="grid grid-cols-2 gap-3">
+            <input
+              required placeholder="City"
+              className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-brand-600"
+              value={form.city} onChange={(e) => set('city', e.target.value)}
+            />
+            <select
+              required
+              className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-brand-600 bg-white"
+              value={form.state} onChange={(e) => set('state', e.target.value)}
+            >
+              <option value="">State</option>
+              {US_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <input
+              required placeholder="ZIP code" pattern="\d{5}(-\d{4})?"
+              className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-brand-600"
+              value={form.zip} onChange={(e) => set('zip', e.target.value)}
+            />
+            <input
+              placeholder="Phone (optional)"
+              className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-brand-600"
+              value={form.phone ?? ''} onChange={(e) => set('phone', e.target.value)}
+            />
+          </div>
+          {error && <p className="text-red-600 text-sm">{error}</p>}
+          <div className="flex gap-3 pt-1">
+            <button
+              type="button" onClick={onCancel}
+              className="flex-1 border border-gray-200 text-gray-700 py-2.5 rounded-xl font-semibold text-sm hover:bg-gray-50 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit" disabled={submitting}
+              className="flex-1 bg-brand-700 text-white py-2.5 rounded-xl font-bold text-sm hover:bg-brand-800 disabled:opacity-50 transition-colors"
+            >
+              {submitting ? 'Processing...' : 'Continue to Payment'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
 
 interface Photo { id: number; filename: string; display_order: number; }
 interface Listing {
@@ -46,6 +143,8 @@ export default function ListingDetailClient({ initialListing }: ListingDetailCli
   const [error, setError] = useState('');
   const [activePhoto, setActivePhoto] = useState(0);
   const [sellerRating, setSellerRating] = useState<{ average_rating: number | null; count: number } | null>(null);
+  const [showAddressModal, setShowAddressModal] = useState(false);
+  const [addrError, setAddrError] = useState('');
 
   useEffect(() => {
     if (initialListing) {
@@ -64,18 +163,29 @@ export default function ListingDetailClient({ initialListing }: ListingDetailCli
       .finally(() => setLoading(false));
   }, [id, initialListing]);
 
-  async function handleBuy() {
+  function handleBuy() {
     if (!user) { router.push('/login'); return; }
     if (!listing) return;
+    setAddrError('');
+    setShowAddressModal(true);
+  }
+
+  async function handleAddressSubmit(addr: ShippingAddress) {
+    if (!listing) return;
     setBuying(true);
+    setAddrError('');
     setError('');
     try {
-      const res = await createOrder({ listing_id: listing.id });
+      const res = await createOrder({ listing_id: listing.id, shipping_address: addr });
       const data = await res.json();
-      if (!res.ok) { setError(data.error || 'Could not create order'); return; }
+      if (!res.ok) {
+        setAddrError(data.error || 'Could not create order');
+        return;
+      }
+      setShowAddressModal(false);
       router.push(`/checkout/${data.id}`);
     } catch {
-      setError('Network error');
+      setAddrError('Network error');
     } finally {
       setBuying(false);
     }
@@ -121,6 +231,14 @@ export default function ListingDetailClient({ initialListing }: ListingDetailCli
 
   return (
     <div className="max-w-5xl mx-auto">
+      {showAddressModal && (
+        <ShippingAddressModal
+          onSubmit={handleAddressSubmit}
+          onCancel={() => { setShowAddressModal(false); setAddrError(''); }}
+          submitting={buying}
+          error={addrError}
+        />
+      )}
       {/* Breadcrumb */}
       <nav className="flex items-center gap-2 text-sm text-gray-400 mb-6">
         <Link href="/" className="hover:text-gray-700 transition-colors">Home</Link>

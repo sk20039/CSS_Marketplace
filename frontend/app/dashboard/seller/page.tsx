@@ -3,8 +3,8 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import AuthGuard from '@/components/AuthGuard';
-import { listingFetch, getOrders, connectSellerStripe, getSellerConnectStatus, syncUserToEscrow, authMe } from '@/lib/api';
-import { useAuth } from '@/lib/auth';
+import { listingFetch, getOrders, connectSellerStripe, getSellerConnectStatus, syncUserToEscrow, authMe, saveShipFromAddress, type ShipFromAddress } from '@/lib/api';
+import { useAuth, setAccessToken } from '@/lib/auth';
 import { ORDER_STATUS_STYLE } from '@/lib/constants';
 
 interface Listing {
@@ -25,6 +25,13 @@ export default function SellerDashboard() {
   );
 }
 
+const US_STATES = [
+  'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA',
+  'KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ',
+  'NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT',
+  'VA','WA','WV','WI','WY','DC',
+];
+
 function SellerContent() {
   const { user, accessToken } = useAuth();
   const [listings, setListings] = useState<Listing[]>([]);
@@ -33,14 +40,24 @@ function SellerContent() {
   const [connectStatus, setConnectStatus] = useState<ConnectStatus>(null);
   const [connecting, setConnecting] = useState(false);
   const [connectError, setConnectError] = useState('');
+  const [shipFromAddress, setShipFromAddress] = useState<ShipFromAddress | null>(null);
+  const [showAddrForm, setShowAddrForm] = useState(false);
+  const [addrForm, setAddrForm] = useState<ShipFromAddress>({ name: '', line1: '', line2: null, city: '', state: '', zip: '', phone: '' });
+  const [addrSaving, setAddrSaving] = useState(false);
+  const [addrError, setAddrError] = useState('');
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || !accessToken) return;
     getSellerConnectStatus().then(async (status) => {
       setConnectStatus(status);
-      if (status.stripe_account_id && accessToken) {
-        const fullUser = await authMe(accessToken);
-        if (fullUser) syncUserToEscrow({ ...fullUser, stripe_account_id: fullUser.stripe_account_id ?? undefined }).catch(() => {});
+      const fullUser = await authMe(accessToken);
+      if (fullUser) {
+        if (status.stripe_account_id) {
+          syncUserToEscrow({ ...fullUser, stripe_account_id: fullUser.stripe_account_id ?? undefined }).catch(() => {});
+        }
+        if (fullUser.ship_from_address) {
+          setShipFromAddress(fullUser.ship_from_address);
+        }
       }
     }).catch(() => {});
   }, [user, accessToken]);
@@ -71,6 +88,24 @@ function SellerContent() {
       setConnectError('Network error');
     } finally {
       setConnecting(false);
+    }
+  }
+
+  async function handleSaveAddress(e: React.FormEvent) {
+    e.preventDefault();
+    setAddrSaving(true);
+    setAddrError('');
+    try {
+      const res = await saveShipFromAddress(addrForm);
+      const data = await res.json();
+      if (!res.ok) { setAddrError(data.error || 'Failed to save address'); return; }
+      setShipFromAddress(data.ship_from_address);
+      if (data.access_token) setAccessToken(data.access_token);
+      setShowAddrForm(false);
+    } catch {
+      setAddrError('Network error');
+    } finally {
+      setAddrSaving(false);
     }
   }
 
@@ -185,6 +220,87 @@ function SellerContent() {
           )}
         </div>
       )}
+
+      {/* Ship-from address */}
+      <div className={`rounded-xl border p-5 ${shipFromAddress ? 'bg-brand-50 border-brand-200' : 'bg-amber-50 border-amber-200'}`}>
+        {!showAddrForm ? (
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <div className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 mt-0.5 ${shipFromAddress ? 'bg-brand-700' : 'bg-amber-200'}`}>
+                <svg className={`w-5 h-5 ${shipFromAddress ? 'text-white' : 'text-amber-700'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+              </div>
+              <div>
+                {shipFromAddress ? (
+                  <>
+                    <p className="font-semibold text-brand-900 text-sm">Ship-from Address Set</p>
+                    <p className="text-xs text-brand-700 mt-0.5">
+                      {shipFromAddress.line1}, {shipFromAddress.city}, {shipFromAddress.state} {shipFromAddress.zip}
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="font-semibold text-amber-900 text-sm">Add a Ship-from Address</p>
+                    <p className="text-xs text-amber-700 mt-0.5">Required before you can create listings.</p>
+                  </>
+                )}
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                setAddrForm(shipFromAddress ?? { name: '', line1: '', line2: null, city: '', state: '', zip: '', phone: '' });
+                setAddrError('');
+                setShowAddrForm(true);
+              }}
+              className={`shrink-0 text-sm font-semibold px-4 py-2 rounded-lg transition-colors ${
+                shipFromAddress
+                  ? 'bg-brand-700 text-white hover:bg-brand-800'
+                  : 'bg-amber-600 text-white hover:bg-amber-700'
+              }`}
+            >
+              {shipFromAddress ? 'Update' : 'Add Address'}
+            </button>
+          </div>
+        ) : (
+          <form onSubmit={handleSaveAddress} className="space-y-3">
+            <p className="font-semibold text-gray-900 text-sm mb-3">Ship-from Address</p>
+            <div className="grid grid-cols-2 gap-3">
+              <input required placeholder="Full name" className="col-span-2 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-brand-600"
+                value={addrForm.name} onChange={(e) => setAddrForm((f) => ({ ...f, name: e.target.value }))} />
+              <input placeholder="Company (optional)" className="col-span-2 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-brand-600"
+                value={addrForm.company ?? ''} onChange={(e) => setAddrForm((f) => ({ ...f, company: e.target.value || null }))} />
+              <input required placeholder="Address line 1" className="col-span-2 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-brand-600"
+                value={addrForm.line1} onChange={(e) => setAddrForm((f) => ({ ...f, line1: e.target.value }))} />
+              <input placeholder="Address line 2 (optional)" className="col-span-2 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-brand-600"
+                value={addrForm.line2 ?? ''} onChange={(e) => setAddrForm((f) => ({ ...f, line2: e.target.value || null }))} />
+              <input required placeholder="City" className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-brand-600"
+                value={addrForm.city} onChange={(e) => setAddrForm((f) => ({ ...f, city: e.target.value }))} />
+              <select required className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-brand-600 bg-white"
+                value={addrForm.state} onChange={(e) => setAddrForm((f) => ({ ...f, state: e.target.value }))}>
+                <option value="">State</option>
+                {US_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+              <input required placeholder="ZIP" pattern="\d{5}(-\d{4})?" className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-brand-600"
+                value={addrForm.zip} onChange={(e) => setAddrForm((f) => ({ ...f, zip: e.target.value }))} />
+              <input required placeholder="Phone" className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-brand-600"
+                value={addrForm.phone} onChange={(e) => setAddrForm((f) => ({ ...f, phone: e.target.value }))} />
+            </div>
+            {addrError && <p className="text-red-600 text-xs">{addrError}</p>}
+            <div className="flex gap-3">
+              <button type="button" onClick={() => setShowAddrForm(false)}
+                className="flex-1 border border-gray-200 text-gray-700 py-2 rounded-lg font-semibold text-sm hover:bg-gray-50 transition-colors">
+                Cancel
+              </button>
+              <button type="submit" disabled={addrSaving}
+                className="flex-1 bg-brand-700 text-white py-2 rounded-lg font-bold text-sm hover:bg-brand-800 disabled:opacity-50 transition-colors">
+                {addrSaving ? 'Saving...' : 'Save Address'}
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
 
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">

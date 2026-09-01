@@ -130,6 +130,14 @@ const post = (s, p, t, b) => request(s, 'POST', p, t, b);
 const LISTING_ID = 998;
 const JWT_SECRET = process.env.JWT_SECRET || 'change-me';
 
+const VALID_SHIPPING_ADDRESS = {
+  name: 'Fee Buyer',
+  line1: '456 Cricket Ln',
+  city: 'Houston',
+  state: 'TX',
+  zip: '77002',
+};
+
 let pool, appServer, computeFee;
 let buyerId, sellerId, adminId;
 let buyerToken, sellerToken, adminToken;
@@ -195,7 +203,10 @@ async function createOrderWithPrice(priceCents) {
     price_cents: priceCents,
     status: 'active',
   };
-  const res = await post(appServer, '/orders', buyerToken, { listing_id: LISTING_ID });
+  const res = await post(appServer, '/orders', buyerToken, {
+    listing_id: LISTING_ID,
+    shipping_address: VALID_SHIPPING_ADDRESS,
+  });
   if (res.status !== 201) throw new Error(`createOrder failed (${res.status}): ${JSON.stringify(res.body)}`);
   return res.body;
 }

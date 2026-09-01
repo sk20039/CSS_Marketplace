@@ -13,6 +13,63 @@ const ACCESS_EXPIRES = '15m';
 const REFRESH_BYTES = 32;
 const REFRESH_DAYS = 7;
 
+// US address validation
+const US_STATES = new Set([
+  'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA',
+  'KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ',
+  'NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT',
+  'VA','WA','WV','WI','WY','DC',
+]);
+const ZIP_RE = /^\d{5}(-\d{4})?$/;
+
+function validateShipFromAddress(addr) {
+  if (!addr || typeof addr !== 'object') return 'ship_from_address is required';
+  if (!addr.name || typeof addr.name !== 'string' || !addr.name.trim()) return 'name is required';
+  if (!addr.line1 || typeof addr.line1 !== 'string' || !addr.line1.trim()) return 'line1 is required';
+  if (!addr.city  || typeof addr.city  !== 'string' || !addr.city.trim())  return 'city is required';
+  if (!addr.state || !US_STATES.has(String(addr.state).toUpperCase())) return 'state must be a valid US state or DC abbreviation';
+  if (!addr.zip   || !ZIP_RE.test(String(addr.zip).trim())) return 'zip must be a 5-digit or ZIP+4 US postal code';
+  const phone = addr.phone ? String(addr.phone).replace(/\D/g, '') : '';
+  if (phone.length < 10) return 'phone must contain at least 10 digits';
+  return null;
+}
+
+function sanitizeShipFromAddress(addr) {
+  return {
+    name:    String(addr.name).trim(),
+    company: addr.company ? String(addr.company).trim() : null,
+    line1:   String(addr.line1).trim(),
+    line2:   addr.line2 ? String(addr.line2).trim() : null,
+    city:    String(addr.city).trim(),
+    state:   String(addr.state).toUpperCase().trim(),
+    zip:     String(addr.zip).trim(),
+    phone:   String(addr.phone).replace(/\D/g, ''),
+  };
+}
+
+function syncShipFromToEscrow(userId, shipFromAddress) {
+  const escrowUrl = process.env.ESCROW_SERVICE_URL || 'http://localhost:3000';
+  const secret = process.env.INTERNAL_SERVICE_SECRET || '';
+  fetch(`${escrowUrl}/api/sync/ship-from-address`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-internal-secret': secret,
+    },
+    body: JSON.stringify({ user_id: userId, ship_from_address: shipFromAddress }),
+  }).catch((err) => {
+    console.error('[auth] syncShipFromToEscrow failed (non-fatal):', err.message);
+  });
+}
+
+function requireInternalSecret(req, res, next) {
+  const secret = process.env.INTERNAL_SERVICE_SECRET || '';
+  if (!secret || req.headers['x-internal-secret'] !== secret) {
+    return res.status(401).json({ error: 'Invalid or missing internal service secret' });
+  }
+  next();
+}
+
 function jwtSecret() {
   return process.env.JWT_SECRET || '';
 }
@@ -27,7 +84,7 @@ function adminJwtSecret() {
 function issueAccessToken(user) {
   const secret = user.role === 'admin' ? adminJwtSecret() : jwtSecret();
   return jwt.sign(
-    { sub: user.id, email: user.email, role: user.role },
+    { sub: user.id, email: user.email, role: user.role, has_ship_from_address: !!user.ship_from_address },
     secret,
     { expiresIn: ACCESS_EXPIRES }
   );
@@ -194,7 +251,7 @@ router.post('/refresh', async (req, res, next) => {
     if (!matched) return res.status(401).json({ error: 'Invalid or expired refresh token' });
 
     const { rows } = await pool.query(
-      'SELECT id, name, email, role FROM users WHERE id = $1',
+      'SELECT id, name, email, role, ship_from_address FROM users WHERE id = $1',
       [matched.user_id]
     );
     const user = rows[0];
@@ -213,7 +270,7 @@ router.post('/refresh', async (req, res, next) => {
 router.get('/me', requireAuth, async (req, res, next) => {
   try {
     const { rows } = await pool.query(
-      'SELECT id, name, email, role, stripe_account_id, created_at FROM users WHERE id = $1',
+      'SELECT id, name, email, role, stripe_account_id, ship_from_address, created_at FROM users WHERE id = $1',
       [req.user.id]
     );
     if (!rows[0]) return res.status(404).json({ error: 'User not found' });
@@ -412,6 +469,59 @@ router.post('/resend-verification', async (req, res, next) => {
     await sendVerificationEmail(user.email, verifyToken);
 
     res.json(genericResponse);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /auth/address/ship-from
+// Sellers save their ship-from address here. Returns a fresh access_token so
+// the seller's listing gate (has_ship_from_address claim) takes effect immediately.
+router.put('/address/ship-from', requireAuth, async (req, res, next) => {
+  try {
+    if (req.user.role !== 'seller' && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Only sellers can set a ship-from address' });
+    }
+    const validationError = validateShipFromAddress(req.body);
+    if (validationError) return res.status(422).json({ error: validationError });
+
+    const sanitized = sanitizeShipFromAddress(req.body);
+    await pool.query(
+      'UPDATE users SET ship_from_address = $1 WHERE id = $2',
+      [JSON.stringify(sanitized), req.user.id]
+    );
+
+    // Re-fetch to build the updated token
+    const { rows } = await pool.query(
+      'SELECT id, name, email, role, ship_from_address FROM users WHERE id = $1',
+      [req.user.id]
+    );
+    const user = rows[0];
+
+    // Sync to escrow user mirror (fire-and-forget)
+    syncShipFromToEscrow(user.id, sanitized);
+
+    res.json({
+      ship_from_address: sanitized,
+      access_token: issueAccessToken(user),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /auth/internal/seller/:id/has-ship-from
+// Internal endpoint for listing-service to check if a seller has a ship-from address.
+// Secured with x-internal-secret header. Not needed for the JWT-claim approach but
+// provided as a fallback for future service-to-service checks.
+router.get('/internal/seller/:id/has-ship-from', requireInternalSecret, async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT ship_from_address FROM users WHERE id = $1',
+      [req.params.id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'User not found' });
+    res.json({ has_ship_from_address: !!rows[0].ship_from_address });
   } catch (err) {
     next(err);
   }
