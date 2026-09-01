@@ -79,6 +79,9 @@ function ResetPasswordContent() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
+    // token is guaranteed non-null here (null case returns early above),
+    // but TypeScript cannot narrow a closure capture -- guard explicitly.
+    if (!token) return;
 
     if (password !== confirm) {
       setError('Passwords do not match.');
