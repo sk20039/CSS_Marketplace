@@ -111,8 +111,8 @@ export default function HomePage() {
           backgroundImage: 'radial-gradient(circle at 20% 50%, #22c55e 0%, transparent 50%), radial-gradient(circle at 80% 20%, #16a34a 0%, transparent 40%)',
         }} />
         <div className="relative max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-20 text-center">
-          <div className="inline-flex items-center gap-2 bg-brand-700/20 border border-brand-700/30 text-brand-400 text-sm font-medium px-4 py-1.5 rounded-full mb-6">
-            <span className="w-2 h-2 rounded-full bg-brand-500 animate-pulse" />
+          <div className="inline-flex items-center gap-2 bg-green-100 border border-green-300 text-green-900 text-sm font-medium px-4 py-1.5 rounded-full mb-6">
+            <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
             USA&apos;s #1 Cricket Equipment Marketplace
           </div>
           <h1 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold text-white leading-tight mb-5">
