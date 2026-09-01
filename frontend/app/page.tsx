@@ -120,7 +120,7 @@ export default function HomePage() {
             <span className="text-brand-500">Cricket Equipment</span>
           </h1>
           <p className="text-gray-400 text-lg sm:text-xl max-w-2xl mx-auto mb-8">
-            From Kashmir willow bats to Masuri helmets — find quality used gear at unbeatable prices, with secure buyer protection.
+            From cricket bats to helmets, find quality used gear from players across the USA, with secure buyer protection.
           </p>
           <div className="flex flex-wrap items-center justify-center gap-4">
             <Link
@@ -221,9 +221,9 @@ export default function HomePage() {
             ))}
           </div>
         ) : listings.length === 0 ? (
-          <div className="bg-white rounded-xl border border-gray-200 px-8 py-10 text-center">
-            <p className="text-lg font-bold text-gray-900 mb-1">Be one of the first sellers on Cricket Market</p>
-            <p className="text-sm text-gray-500 mb-6">List your bat, pads, helmet, or kit and reach cricket players across the USA.</p>
+          <div className="bg-white rounded-xl border border-gray-200 px-8 py-7 text-center">
+            <p className="text-lg font-bold text-gray-900 mb-1">Turn Your Cricket Gear Into Cash</p>
+            <p className="text-sm text-gray-500 mb-5">List your bats, pads, helmets, gloves and more. Reach cricket players across the USA.</p>
             <Link
               href="/register"
               className="inline-flex items-center gap-2 bg-brand-700 text-white font-semibold px-6 py-2.5 rounded-lg hover:bg-brand-800 transition-colors text-sm"
