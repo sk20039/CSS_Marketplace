@@ -3,9 +3,9 @@
 // Stripe requires several src directives — keep them in sync with:
 // https://stripe.com/docs/security/guide#content-security-policy
 const railwayApis = [
-  'https://auth-service-production-1f4c7.up.railway.app',
-  'https://listing-service-production-3b3f.up.railway.app',
-  'https://escrow-service-production-1e20.up.railway.app',
+  'https://auth-service-production-7d82.up.railway.app',
+  'https://listing-service-production-ccb1.up.railway.app',
+  'https://escrow-service-production-7727.up.railway.app',
 ].join(' ');
 
 const cspHeader = [
@@ -16,7 +16,7 @@ const cspHeader = [
   `connect-src 'self' ${railwayApis} https://api.stripe.com https://errors.stripe.com`,
   // Stripe Elements renders in iframes hosted on js.stripe.com / hooks.stripe.com
   "frame-src https://js.stripe.com https://hooks.stripe.com",
-  `img-src 'self' data: https://*.stripe.com https://listing-service-production-3b3f.up.railway.app`,
+  `img-src 'self' data: https://*.stripe.com https://listing-service-production-ccb1.up.railway.app`,
   "font-src 'self' data:",
   "object-src 'none'",
   "base-uri 'self'",
@@ -34,7 +34,7 @@ const nextConfig = {
       },
       {
         protocol: 'https',
-        hostname: 'listing-service-production-3b3f.up.railway.app',
+        hostname: 'listing-service-production-ccb1.up.railway.app',
         pathname: '/photos/**',
       },
     ],
