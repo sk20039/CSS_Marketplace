@@ -105,6 +105,15 @@ export async function authResetPassword(body: { token: string; password: string 
   return res;
 }
 
+export async function authResendVerification(body: { email: string }) {
+  const res = await fetch(`${AUTH_URL}/auth/resend-verification`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return res;
+}
+
 // ---- Listing service ----
 export async function listingFetch(path: string, options: RequestInit = {}) {
   return apiFetch(`${LISTING_URL}${path}`, options);

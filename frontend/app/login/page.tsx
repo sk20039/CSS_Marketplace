@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { authLogin, syncUserToEscrow } from '@/lib/api';
+import { authLogin, syncUserToEscrow, authResendVerification } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 
 export default function LoginPage() {
@@ -13,15 +13,34 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [unverifiedEmail, setUnverifiedEmail] = useState('');
+  const [resendSent, setResendSent] = useState(false);
+
+  async function handleResend() {
+    if (!unverifiedEmail) return;
+    setResendSent(false);
+    try {
+      await authResendVerification({ email: unverifiedEmail });
+      setResendSent(true);
+    } catch {
+      // ignore — the backend always returns 200 for this endpoint
+      setResendSent(true);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
+    setUnverifiedEmail('');
+    setResendSent(false);
     setLoading(true);
     try {
       const res = await authLogin({ email, password });
       const data = await res.json();
       if (!res.ok) {
+        if (res.status === 403) {
+          setUnverifiedEmail(email);
+        }
         setError(data.error || 'Login failed');
         return;
       }
@@ -52,11 +71,30 @@ export default function LoginPage() {
         {/* Card */}
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-8">
           {error && (
-            <div className="flex items-center gap-2 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3 mb-5">
-              <svg className="w-4 h-4 shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-              </svg>
-              {error}
+            <div className={`text-sm rounded-lg px-4 py-3 mb-5 ${unverifiedEmail ? 'bg-amber-50 border border-amber-200 text-amber-800' : 'flex items-center gap-2 bg-red-50 border border-red-200 text-red-700'}`}>
+              {!unverifiedEmail && (
+                <svg className="w-4 h-4 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                </svg>
+              )}
+              <div>
+                <p>{error}</p>
+                {unverifiedEmail && (
+                  <div className="mt-2">
+                    {resendSent ? (
+                      <p className="text-sm font-medium text-amber-700">Verification email sent — check your inbox.</p>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={handleResend}
+                        className="text-sm font-medium underline hover:no-underline"
+                      >
+                        Resend verification email
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 

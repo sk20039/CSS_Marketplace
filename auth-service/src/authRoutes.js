@@ -377,4 +377,44 @@ router.post('/reset-password', async (req, res, next) => {
   }
 });
 
+
+// POST /auth/resend-verification
+router.post('/resend-verification', async (req, res, next) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+
+    // Always return generic response to prevent account enumeration.
+    const genericResponse = {
+      message: 'If that email is registered and unverified, a new verification link has been sent.',
+    };
+
+    const { rows } = await pool.query(
+      'SELECT id, email, email_verified FROM users WHERE email = $1',
+      [email]
+    );
+    const user = rows[0];
+    // Return generic response for unknown email or already-verified account.
+    if (!user || user.email_verified) return res.json(genericResponse);
+
+    // Replace any existing unused token before issuing a fresh one.
+    await pool.query('DELETE FROM email_verification_tokens WHERE user_id = $1', [user.id]);
+
+    const verifyToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(verifyToken).digest('hex');
+    const expiresAt = new Date(Date.now() + 24 * 3600000).toISOString();
+
+    await pool.query(
+      'INSERT INTO email_verification_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)',
+      [user.id, tokenHash, expiresAt]
+    );
+
+    await sendVerificationEmail(user.email, verifyToken);
+
+    res.json(genericResponse);
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;
