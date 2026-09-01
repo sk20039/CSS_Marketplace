@@ -44,6 +44,8 @@ const VALID = {
   STRIPE_WEBHOOK_SECRET: 'whsec_FAKE_SECRET_FOR_CONFIG_TESTS_ONLY',
   APP_BASE_URL:          'https://api.example.com',
   FRONTEND_ORIGIN:       'https://example.com',
+  RESEND_API_KEY:        're_test_FAKE_KEY_FOR_CONFIG_TESTS_ONLY',
+  EMAIL_FROM:            'noreply@cricketmarketusa.com',
 };
 
 (async () => {
@@ -148,6 +150,14 @@ const VALID = {
   test('HTTPS APP_BASE_URL passes', () => {
     const errors = validateProductionEnv(VALID);
     assertNoError(errors, 'APP_BASE_URL', 'https APP_BASE_URL');
+  });
+
+  test('missing RESEND_API_KEY is rejected', () => {
+    assertError(validateProductionEnv({ ...VALID, RESEND_API_KEY: undefined }), 'RESEND_API_KEY', 'missing');
+  });
+
+  test('missing EMAIL_FROM is rejected', () => {
+    assertError(validateProductionEnv({ ...VALID, EMAIL_FROM: undefined }), 'EMAIL_FROM', 'missing');
   });
 
   // ---- Multiple errors ----

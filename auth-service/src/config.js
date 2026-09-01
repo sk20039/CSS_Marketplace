@@ -89,7 +89,7 @@ function validateProductionEnv(env) {
   needHttpsUrl('FRONTEND_ORIGIN');
   // Email is required in production — without it, password reset and email
   // verification links are silently dropped (logged to console only).
-  need('SMTP_HOST');
+  need('RESEND_API_KEY');
   need('EMAIL_FROM');
 
   return errors;
