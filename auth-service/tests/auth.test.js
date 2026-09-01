@@ -26,6 +26,8 @@ const jwt = require('jsonwebtoken');
 const path = require('path');
 const Database = require('better-sqlite3');
 const { buildApp } = require('../src/app');
+const crypto = require('crypto');
+const bcryptjs = require('bcryptjs');
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const app = buildApp();
@@ -85,6 +87,15 @@ const SCHEMA_SQL = `
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
   CREATE INDEX IF NOT EXISTS idx_verification_tokens_user ON email_verification_tokens(user_id);
+
+  CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id     BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash  TEXT        NOT NULL UNIQUE,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+  CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user ON password_reset_tokens(user_id);
 `;
 
 async function importSqliteUsers(client) {
@@ -117,10 +128,10 @@ async function importSqliteUsers(client) {
       );
     }
     await client.query(
-      `SELECT setval(pg_get_serial_sequence('users','id'), COALESCE((SELECT MAX(id) FROM users), 0))`
+      `SELECT setval(pg_get_serial_sequence('users','id'), GREATEST(COALESCE((SELECT MAX(id) FROM users), 0), 1))`
     );
     await client.query(
-      `SELECT setval(pg_get_serial_sequence('refresh_tokens','id'), COALESCE((SELECT MAX(id) FROM refresh_tokens), 0))`
+      `SELECT setval(pg_get_serial_sequence('refresh_tokens','id'), GREATEST(COALESCE((SELECT MAX(id) FROM refresh_tokens), 0), 1))`
     );
     return { users: users.length, tokens: tokens.length };
   } finally {
@@ -141,7 +152,7 @@ async function run() {
   console.log('Auth service — PostgreSQL integration tests\n');
 
   // Setup: apply schema and import real SQLite data once
-  await pool.query('TRUNCATE TABLE email_verification_tokens, refresh_tokens, users RESTART IDENTITY CASCADE');
+  await pool.query('TRUNCATE TABLE password_reset_tokens, email_verification_tokens, refresh_tokens, users RESTART IDENTITY CASCADE');
   await pool.query(SCHEMA_SQL);
   const client = await pool.connect();
   let imported;
@@ -212,6 +223,127 @@ async function run() {
   await test('returns 400 when fields are missing', async () => {
     const res = await request(app).post('/auth/login').send({ email: 'a@b.com' });
     assert(res.status === 400, `expected 400, got ${res.status}`);
+  });
+
+
+  // ── Email verification ─────────────────────────────────────────────────────
+  console.log('\nEmail verification');
+
+  // Direct-SQL helper: creates a user without going through the rate-limited
+  // /auth/register endpoint. Uses bcrypt cost 4 (minimum) for test speed.
+  async function insertTestUser(email, verified = false) {
+    const hash = await bcryptjs.hash('TestPass1!', 4);
+    const { rows } = await pool.query(
+      `INSERT INTO users (name, email, password_hash, role, email_verified)
+       VALUES ('Test', $1, $2, 'buyer', $3) RETURNING id, email`,
+      [email, hash, verified]
+    );
+    return rows[0];
+  }
+
+  await test('registration stores exactly one verification token in the database', async () => {
+    const { rows } = await pool.query(
+      `SELECT evt.* FROM email_verification_tokens evt
+       JOIN users u ON u.id = evt.user_id WHERE u.email = $1`,
+      [registeredEmail]
+    );
+    assert(rows.length === 1, `expected 1 token, got ${rows.length}`);
+    assert(new Date(rows[0].expires_at) > new Date(), 'token should not already be expired');
+  });
+
+  await test('expired verification token returns 400', async () => {
+    const user = await insertTestUser(uniqueEmail());
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const hash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    await pool.query(
+      `INSERT INTO email_verification_tokens (user_id, token_hash, expires_at)
+       VALUES ($1, $2, NOW() - INTERVAL '1 second')`,
+      [user.id, hash]
+    );
+    const res = await request(app).get(`/auth/verify-email?token=${rawToken}`);
+    assert(res.status === 400, `expected 400, got ${res.status}`);
+    assert(res.body.error, 'should have error message');
+  });
+
+  let consumedToken;
+  await test('valid verification token verifies account and is consumed', async () => {
+    const user = await insertTestUser(uniqueEmail());
+    consumedToken = crypto.randomBytes(32).toString('hex');
+    const hash = crypto.createHash('sha256').update(consumedToken).digest('hex');
+    await pool.query(
+      `INSERT INTO email_verification_tokens (user_id, token_hash, expires_at)
+       VALUES ($1, $2, NOW() + INTERVAL '24 hours')`,
+      [user.id, hash]
+    );
+    const res = await request(app).get(`/auth/verify-email?token=${consumedToken}`);
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.message, 'should have success message');
+    const { rows: uRows } = await pool.query('SELECT email_verified FROM users WHERE id = $1', [user.id]);
+    assert(uRows[0].email_verified === true, 'email_verified should be true in DB');
+    const { rows: tRows } = await pool.query(
+      'SELECT * FROM email_verification_tokens WHERE user_id = $1', [user.id]
+    );
+    assert(tRows.length === 0, 'token should be deleted after successful verification');
+  });
+
+  await test('verification token cannot be reused after successful verification', async () => {
+    assert(consumedToken, 'consumedToken must be set from previous test');
+    const res = await request(app).get(`/auth/verify-email?token=${consumedToken}`);
+    assert(res.status === 400, `expected 400, got ${res.status}`);
+  });
+
+  console.log('\nPOST /auth/resend-verification');
+
+  await test('missing email field returns 400', async () => {
+    const res = await request(app).post('/auth/resend-verification').send({});
+    assert(res.status === 400, `expected 400, got ${res.status}`);
+  });
+
+  await test('unknown email returns generic 200 without leaking existence', async () => {
+    const res = await request(app)
+      .post('/auth/resend-verification')
+      .send({ email: 'nobody-resend@nowhere.invalid' });
+    assert(res.status === 200, `expected 200, got ${res.status}`);
+    assert(res.body.message, 'should have message');
+  });
+
+  await test('already-verified user returns generic 200 and no token is created', async () => {
+    const res = await request(app)
+      .post('/auth/resend-verification')
+      .send({ email: 'buyer@cricket.test' });
+    assert(res.status === 200, `expected 200, got ${res.status}`);
+    assert(res.body.message, 'should have message');
+    const { rows: uRows } = await pool.query('SELECT id FROM users WHERE email = $1', ['buyer@cricket.test']);
+    const { rows: tRows } = await pool.query(
+      'SELECT * FROM email_verification_tokens WHERE user_id = $1', [uRows[0].id]
+    );
+    assert(tRows.length === 0, 'verified user should not receive a new token');
+  });
+
+  await test('unverified user gets a new token; old token is replaced', async () => {
+    const { rows: oldRows } = await pool.query(
+      `SELECT evt.id FROM email_verification_tokens evt
+       JOIN users u ON u.id = evt.user_id WHERE u.email = $1`,
+      [registeredEmail]
+    );
+    const oldTokenId = oldRows[0]?.id;
+
+    const res = await request(app)
+      .post('/auth/resend-verification')
+      .send({ email: registeredEmail });
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.message, 'should have message');
+
+    const { rows: newRows } = await pool.query(
+      `SELECT evt.* FROM email_verification_tokens evt
+       JOIN users u ON u.id = evt.user_id WHERE u.email = $1`,
+      [registeredEmail]
+    );
+    assert(newRows.length === 1, `expected 1 replacement token, got ${newRows.length}`);
+    if (oldTokenId) {
+      assert(newRows[0].id !== oldTokenId, 'replacement token should have a new id');
+    }
+    assert(new Date(newRows[0].expires_at) > new Date(), 'replacement token should not be expired');
   });
 
   // ── POST /auth/login — imported real accounts ─────────────────────────────
