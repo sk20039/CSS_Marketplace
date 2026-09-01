@@ -1,0 +1,24 @@
+<svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Helmet shell / dome -->
+  <path d="M28,112 C28,58 62,18 100,18 C138,18 172,58 172,112 L172,132 L28,132 Z" fill="#1e293b"/>
+  <!-- Helmet peak/brim -->
+  <rect x="18" y="126" width="164" height="14" rx="4" fill="#0f172a"/>
+  <!-- Left ear guard -->
+  <path d="M28,112 L18,118 C14,126 14,140 18,150 L36,144 L28,132 Z" fill="#1e293b"/>
+  <!-- Right ear guard -->
+  <path d="M172,112 L182,118 C186,126 186,140 182,150 L164,144 L172,132 Z" fill="#1e293b"/>
+  <!-- Shell highlight / shine -->
+  <path d="M55,30 C65,22 80,18 95,18 C98,18 100,18 100,18 C80,22 62,38 52,60 C44,46 48,36 55,30 Z" fill="#334155" opacity="0.7"/>
+  <!-- Grill vertical bars -->
+  <rect x="55" y="140" width="6" height="46" rx="3" fill="#94a3b8"/>
+  <rect x="70" y="140" width="6" height="52" rx="3" fill="#94a3b8"/>
+  <rect x="85" y="140" width="6" height="56" rx="3" fill="#94a3b8"/>
+  <rect x="100" y="140" width="6" height="56" rx="3" fill="#94a3b8"/>
+  <rect x="115" y="140" width="6" height="52" rx="3" fill="#94a3b8"/>
+  <rect x="130" y="140" width="6" height="46" rx="3" fill="#94a3b8"/>
+  <!-- Grill horizontal cross-bar -->
+  <rect x="52" y="158" width="96" height="5" rx="2.5" fill="#64748b"/>
+  <!-- Brand badge -->
+  <circle cx="100" cy="72" r="13" fill="#0f172a"/>
+  <circle cx="100" cy="72" r="10" fill="#1e3a5f"/>
+</svg>

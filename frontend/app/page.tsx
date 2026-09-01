@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import ListingCard from '@/components/ListingCard';
 import { getListings } from '@/lib/api';
 
@@ -20,69 +21,43 @@ const CATEGORIES = [
     value: 'bat',
     label: 'Cricket Bats',
     description: 'Kashmir willow, English willow & more',
-    icon: (
-      <svg viewBox="0 0 64 64" className="w-10 h-10" fill="none" stroke="currentColor" strokeWidth="2">
-        <path d="M12 52L44 8l8 8L20 52z" strokeLinejoin="round" />
-        <circle cx="14" cy="50" r="4" />
-      </svg>
-    ),
+    image: '/categories/bat.svg',
+    alt: 'Cricket bats',
   },
   {
     value: 'helmet',
     label: 'Helmets',
     description: 'Masuri, Shrey & protective gear',
-    icon: (
-      <svg viewBox="0 0 64 64" className="w-10 h-10" fill="none" stroke="currentColor" strokeWidth="2">
-        <path d="M12 32a20 20 0 0140 0v6H12v-6z" strokeLinejoin="round" />
-        <path d="M12 38h40M20 38v8M44 38v8" strokeLinecap="round" />
-      </svg>
-    ),
+    image: '/categories/helmet.svg',
+    alt: 'Cricket helmets',
   },
   {
     value: 'pads',
     label: 'Batting Pads',
     description: 'Front leg, thigh & shin protection',
-    icon: (
-      <svg viewBox="0 0 64 64" className="w-10 h-10" fill="none" stroke="currentColor" strokeWidth="2">
-        <rect x="20" y="8" width="24" height="48" rx="6" />
-        <line x1="20" y1="24" x2="44" y2="24" />
-        <line x1="20" y1="36" x2="44" y2="36" />
-      </svg>
-    ),
+    image: '/categories/pads.svg',
+    alt: 'Cricket batting pads',
   },
   {
     value: 'gloves',
     label: 'Gloves',
     description: 'Batting & wicket keeping gloves',
-    icon: (
-      <svg viewBox="0 0 64 64" className="w-10 h-10" fill="none" stroke="currentColor" strokeWidth="2">
-        <path d="M16 40V22a4 4 0 018 0v-4a4 4 0 018 0v-2a4 4 0 018 0v4a4 4 0 018 0v20c0 8-6 14-14 14h-4c-8 0-14-6-14-14z" strokeLinejoin="round" />
-      </svg>
-    ),
+    image: '/categories/gloves.svg',
+    alt: 'Cricket batting gloves',
   },
   {
     value: 'kit-bag',
     label: 'Kit Bags',
     description: 'Duffle, wheelie & backpack styles',
-    icon: (
-      <svg viewBox="0 0 64 64" className="w-10 h-10" fill="none" stroke="currentColor" strokeWidth="2">
-        <rect x="8" y="20" width="48" height="34" rx="4" />
-        <path d="M22 20v-6a10 10 0 0120 0v6" />
-        <line x1="8" y1="34" x2="56" y2="34" />
-      </svg>
-    ),
+    image: '/categories/kit-bag.svg',
+    alt: 'Cricket kit bags',
   },
   {
     value: 'other',
     label: 'Accessories',
     description: 'Balls, grips, guards & more',
-    icon: (
-      <svg viewBox="0 0 64 64" className="w-10 h-10" fill="none" stroke="currentColor" strokeWidth="2">
-        <circle cx="32" cy="32" r="20" />
-        <path d="M14 26c4 2 8 3 18 3s14-1 18-3M14 38c4-2 8-3 18-3s14 1 18 3" />
-        <line x1="32" y1="12" x2="32" y2="52" />
-      </svg>
-    ),
+    image: '/categories/accessories.svg',
+    alt: 'Cricket accessories and balls',
   },
 ];
 
@@ -197,17 +172,25 @@ export default function HomePage() {
             <Link
               key={cat.value}
               href={`/listings?category=${cat.value}`}
-              className="group bg-white border border-gray-200 rounded-xl p-4 text-center hover:border-brand-500 hover:shadow-md transition-all duration-200"
+              className="group bg-white border border-gray-200 rounded-xl overflow-hidden hover:border-brand-500 hover:shadow-md transition-all duration-200"
             >
-              <div className="flex justify-center text-gray-400 group-hover:text-brand-700 transition-colors mb-3">
-                {cat.icon}
+              <div className="relative bg-gray-50 h-36">
+                <Image
+                  src={cat.image}
+                  alt={cat.alt}
+                  fill
+                  className="object-contain p-4"
+                  sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 17vw"
+                />
               </div>
-              <p className="text-sm font-semibold text-gray-900 group-hover:text-brand-700 transition-colors">
-                {cat.label}
-              </p>
-              <p className="text-xs text-gray-400 mt-0.5 hidden lg:block leading-tight">
-                {cat.description}
-              </p>
+              <div className="px-3 pt-2.5 pb-3 text-center">
+                <p className="text-sm font-semibold text-gray-900 group-hover:text-brand-700 transition-colors">
+                  {cat.label}
+                </p>
+                <p className="text-xs text-gray-400 mt-0.5 hidden lg:block leading-tight">
+                  {cat.description}
+                </p>
+              </div>
             </Link>
           ))}
         </div>
