@@ -56,7 +56,7 @@ async function run() {
     INSERT INTO orders
       (listing_id, buyer_id, seller_id, amount_cents, platform_fee_cents, seller_payout_cents,
        status, stripe_payment_intent_id, stripe_client_secret, created_at, updated_at)
-    VALUES (9001, 9002, 9001, 10000, 300, 9700, 'CREATED', ?, ?, ?, ?)
+    VALUES (9001, 9002, 9001, 10000, 800, 9200, 'CREATED', ?, ?, ?, ?)
   `).run(intent.id, intent.client_secret || null, ts, ts);
   const orderId = result.lastInsertRowid;
   console.log(`Test order created: id=${orderId}\n`);
@@ -99,12 +99,12 @@ async function run() {
   const releasedEvent = released.events.find(e => e.event_type === 'RELEASED');
   assert(!!releasedEvent, 'RELEASED event recorded in timeline');
   assert(
-    releasedEvent && releasedEvent.payload.sellerPayoutCents === 9700,
-    `seller payout is 9700 cents (10000 - 300 fee), got: ${releasedEvent && releasedEvent.payload.sellerPayoutCents}`
+    releasedEvent && releasedEvent.payload.sellerPayoutCents === 9200,
+    `seller payout is 9200 cents (10000 - 800 fee), got: ${releasedEvent && releasedEvent.payload.sellerPayoutCents}`
   );
   assert(
-    releasedEvent && releasedEvent.payload.platformFeeCents === 300,
-    `platform fee retained is 300 cents, got: ${releasedEvent && releasedEvent.payload.platformFeeCents}`
+    releasedEvent && releasedEvent.payload.platformFeeCents === 800,
+    `platform fee retained is 800 cents, got: ${releasedEvent && releasedEvent.payload.platformFeeCents}`
   );
 
   // ----------------------------------------------------------------
@@ -120,7 +120,7 @@ async function run() {
     INSERT INTO orders
       (listing_id, buyer_id, seller_id, amount_cents, platform_fee_cents, seller_payout_cents,
        status, stripe_payment_intent_id, created_at, updated_at)
-    VALUES (9001, 9002, 9001, 5000, 150, 4850, 'CREATED', ?, ?, ?)
+    VALUES (9001, 9002, 9001, 5000, 400, 4600, 'CREATED', ?, ?, ?)
   `).run(intent2.id, ts2, ts2);
   const orderId2 = r2.lastInsertRowid;
 

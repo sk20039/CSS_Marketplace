@@ -21,7 +21,7 @@ No test runner is configured. Tests are written as one-off scripts and run via t
 - `STRIPE_SECRET_KEY` — if set, switches from stub to real Stripe Connect test-mode API
 - `STRIPE_STUB_LATENCY_MS` — artificial latency for the stub client (use in concurrency tests to expose races)
 - `DELIVERY_WINDOW_HOURS` — default `48`; hours before auto-release fires after delivery
-- `PLATFORM_FEE_BPS` — default `300` (3% expressed in basis points)
+- `PLATFORM_FEE_BPS` — default `800` (8% expressed in basis points)
 - `RELEASE_CHECK_CRON` — default `* * * * *` (every minute); node-cron schedule for auto-release sweep
 - `DB_PATH` — default `escrow-service/data/escrow.sqlite3`
 - `PORT` — default `3000`
