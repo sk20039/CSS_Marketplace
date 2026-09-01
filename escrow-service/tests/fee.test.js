@@ -268,9 +268,17 @@ function runUnitTests() {
     assertEqual(sellerPayoutCents, 9200, 'payout must be 9200 cents');
   });
 
+  // $200.00 (20000 cents): raw 8% = $16.00 → fee = $16.00, payout = $184.00
+  // Shipping-aware scenario: if shipping=$18 then amount_cents=$218, but fee/payout are on item only.
+  test('$200.00: 8% rate applies; fee = $16.00, payout = $184.00', () => {
+    const { platformFeeCents, sellerPayoutCents } = computeFee(20000);
+    assertEqual(platformFeeCents,  1600,  'fee must be 1600 cents (8% of 20000)');
+    assertEqual(sellerPayoutCents, 18400, 'payout must be 18400 cents');
+  });
+
   console.log('\nInvariants');
 
-  test('fee + payout always equals order amount across a wide range', () => {
+  test('fee + payout always equals item price across a wide range', () => {
     const amounts = [1, 50, 99, 100, 101, 150, 199, 200, 201, 249, 250, 251,
                      500, 999, 1000, 2499, 2500, 2501, 5000, 9999, 10000, 99999];
     for (const cents of amounts) {
@@ -350,13 +358,15 @@ async function runFeeAmountTests() {
   for (const { priceCents, expectedFee, expectedPayout, label } of cases) {
     await testAsync(`Order at ${label}: fee=${expectedFee}¢, payout=${expectedPayout}¢`, async () => {
       const order = await createOrderWithPrice(priceCents);
-      assertEqual(order.amount_cents,        priceCents,     'amount_cents must match listing price');
+      assertEqual(order.item_price_cents,    priceCents,     'item_price_cents must match listing price');
+      assertEqual(order.shipping_cents,      0,              'shipping_cents must be 0 (Phase 2)');
+      assertEqual(order.amount_cents,        priceCents,     'amount_cents must equal item_price_cents when shipping=0');
       assertEqual(order.platform_fee_cents,  expectedFee,    'platform_fee_cents must match expected');
       assertEqual(order.seller_payout_cents, expectedPayout, 'seller_payout_cents must match expected');
       assertEqual(
         order.platform_fee_cents + order.seller_payout_cents,
-        order.amount_cents,
-        'fee + payout must equal amount'
+        order.item_price_cents,
+        'fee + payout must equal item_price_cents'
       );
     });
   }
@@ -371,6 +381,7 @@ async function runCancellationTests() {
     const res = await post(appServer, `/orders/${held.id}/cancel`, buyerToken, { reason: 'changed mind' });
     assertEqual(res.status, 200, `cancel failed: ${JSON.stringify(res.body)}`);
     assertEqual(res.body.status, 'CANCELLED');
+    assertEqual(res.body.cancellation_cause, 'buyer_change_of_mind', 'cancellation_cause must be buyer_change_of_mind');
     const event = res.body.events.find((e) => e.event_type === 'CANCELLED');
     assert(event, 'CANCELLED event required');
     assertEqual(event.payload.refundAmountCents,    9200, 'refundAmountCents must be 9200');

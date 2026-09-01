@@ -64,6 +64,7 @@ const SCHEMA_SQL = `
     role              TEXT        NOT NULL DEFAULT 'buyer',
     stripe_account_id TEXT,
     email_verified    BOOLEAN     NOT NULL DEFAULT false,
+    ship_from_address JSONB,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT users_role_check CHECK (role IN ('buyer','seller','admin'))
   );

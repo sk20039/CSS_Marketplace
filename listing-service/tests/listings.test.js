@@ -51,6 +51,10 @@ const SCHEMA_SQL = `
     meta_description TEXT,
     tags           TEXT,
     quality_score  INTEGER,
+    weight_oz      INTEGER,
+    pkg_length_in  NUMERIC(5,1),
+    pkg_width_in   NUMERIC(5,1),
+    pkg_height_in  NUMERIC(5,1),
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT listings_category_check

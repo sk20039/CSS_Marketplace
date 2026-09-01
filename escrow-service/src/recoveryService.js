@@ -350,7 +350,10 @@ async function _reconcileRefunding(order) {
 // ---------------------------------------------------------------------------
 
 async function _reconcileCancelling(order) {
-  const refundAmountCents = order.amount_cents - order.platform_fee_cents;
+  // seller_late: full refund; buyer_change_of_mind or null: partial refund
+  const refundAmountCents = order.cancellation_cause === 'seller_late'
+    ? order.amount_cents
+    : order.amount_cents - order.platform_fee_cents;
 
   const refunds = await stripeClient.listRefundsForPaymentIntent(order.stripe_payment_intent_id);
   const matching = refunds.filter(

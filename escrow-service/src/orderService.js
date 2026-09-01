@@ -60,11 +60,12 @@ function normalizeEvent(row) {
 }
 
 // Integer-cents fee math (no floating point). 8% == 800 basis points, $2.00 minimum.
-// Fee = max(8% of amount, $2.00 min), capped at order amount to prevent negative seller payout.
-function computeFee(amountCents) {
-  const rawFeeCents = Math.round((amountCents * PLATFORM_FEE_BPS) / 10000);
-  const platformFeeCents = Math.min(Math.max(rawFeeCents, MIN_PLATFORM_FEE_CENTS), amountCents);
-  const sellerPayoutCents = amountCents - platformFeeCents;
+// Operates on item_price_cents only — shipping is excluded from the fee basis.
+// Fee = max(8% of item price, $2.00 min), capped at item price to prevent negative payout.
+function computeFee(itemPriceCents) {
+  const rawFeeCents = Math.round((itemPriceCents * PLATFORM_FEE_BPS) / 10000);
+  const platformFeeCents = Math.min(Math.max(rawFeeCents, MIN_PLATFORM_FEE_CENTS), itemPriceCents);
+  const sellerPayoutCents = itemPriceCents - platformFeeCents;
   return { platformFeeCents, sellerPayoutCents };
 }
 
@@ -254,14 +255,16 @@ async function createOrder({ listingId, buyerId }) {
     throw new OrderError('buyer_id cannot be the seller of the listing (cannot buy your own listing)', 400);
   }
 
-  const amountCents = listing.price_cents;
-  if (!Number.isInteger(amountCents) || amountCents <= 0) {
+  const itemPriceCents = listing.price_cents;
+  if (!Number.isInteger(itemPriceCents) || itemPriceCents <= 0) {
     throw new OrderError(
-      `Listing ${normalizedListingId} has an invalid price_cents (${amountCents}); amount_cents must be a positive integer`,
+      `Listing ${normalizedListingId} has an invalid price_cents (${itemPriceCents}); item_price_cents must be a positive integer`,
       400
     );
   }
-  const { platformFeeCents, sellerPayoutCents } = computeFee(amountCents);
+  const shippingCents = 0; // Phase 2: no shipping yet; will be buyer-selected in Phase 3
+  const amountCents = itemPriceCents + shippingCents;
+  const { platformFeeCents, sellerPayoutCents } = computeFee(itemPriceCents);
 
   // Keep local mirror in sync for admin views.
   await pool.query(
@@ -272,7 +275,7 @@ async function createOrder({ listingId, buyerId }) {
        seller_id   = EXCLUDED.seller_id,
        title       = EXCLUDED.title,
        price_cents = EXCLUDED.price_cents`,
-    [normalizedListingId, sellerId, listing.title, amountCents]
+    [normalizedListingId, sellerId, listing.title, itemPriceCents]
   );
 
   const intent = await stripeClient.createPaymentIntent({
@@ -284,13 +287,15 @@ async function createOrder({ listingId, buyerId }) {
   const ts_now = nowIso();
   const { rows: inserted } = await pool.query(
     `INSERT INTO orders (
-       listing_id, buyer_id, seller_id, amount_cents, platform_fee_cents, seller_payout_cents,
+       listing_id, buyer_id, seller_id, amount_cents, item_price_cents, shipping_cents,
+       platform_fee_cents, seller_payout_cents,
        status, stripe_payment_intent_id, stripe_client_secret, created_at, updated_at
-     ) VALUES ($1, $2, $3, $4, $5, $6, 'CREATED', $7, $8, $9, $10)
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'CREATED', $9, $10, $11, $12)
      RETURNING id`,
     [
       normalizedListingId, normalizedBuyerId, sellerId,
-      amountCents, platformFeeCents, sellerPayoutCents,
+      amountCents, itemPriceCents, shippingCents,
+      platformFeeCents, sellerPayoutCents,
       intent.id, intent.client_secret || null,
       ts_now, ts_now,
     ]
@@ -301,6 +306,8 @@ async function createOrder({ listingId, buyerId }) {
     listingId: normalizedListingId,
     buyerId: normalizedBuyerId,
     sellerId,
+    itemPriceCents,
+    shippingCents,
     amountCents,
     platformFeeCents,
     sellerPayoutCents,
@@ -662,10 +669,10 @@ async function cancelOrder(id, { cancelledBy, reason }) {
   }
   const refundAmountCents = order.amount_cents - order.platform_fee_cents;
 
-  // Persist cancellation reason before Stripe call so recovery can read it.
+  // Persist cancellation metadata before Stripe call so recovery can read it.
   await pool.query(
-    'UPDATE orders SET cancellation_reason = $1 WHERE id = $2 AND status = $3',
-    [normalizedReason, id, 'CANCELLING']
+    'UPDATE orders SET cancellation_reason = $1, cancellation_cause = $2 WHERE id = $3 AND status = $4',
+    [normalizedReason, 'buyer_change_of_mind', id, 'CANCELLING']
   );
 
   let refund;
@@ -692,7 +699,11 @@ async function cancelOrder(id, { cancelledBy, reason }) {
 
 // Shared cancellation finalization — called by cancelOrder and by recoveryService.
 async function finalizeCancelled(order, stripeRefund, { cancelledBy }) {
-  const refundAmountCents = order.amount_cents - order.platform_fee_cents;
+  // seller_late: full refund (platform does not retain fee)
+  // buyer_change_of_mind or null: partial refund (platform keeps fee)
+  const refundAmountCents = order.cancellation_cause === 'seller_late'
+    ? order.amount_cents
+    : order.amount_cents - order.platform_fee_cents;
   const ts_now = nowIso();
   const client = await pool.connect();
   let conflict = false;

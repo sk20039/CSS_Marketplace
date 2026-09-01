@@ -15,6 +15,7 @@ const stripePromise = STRIPE_PUB_KEY ? loadStripe(STRIPE_PUB_KEY) : null;
 interface Order {
   id: number; status: string; amount_cents: number; platform_fee_cents: number;
   seller_payout_cents: number; listing_id: number; buyer_id: number;
+  item_price_cents?: number; shipping_cents?: number;
 }
 
 export default function CheckoutPage() {
@@ -103,7 +104,7 @@ function CheckoutContent() {
 
   const total = (order.amount_cents / 100).toFixed(2);
   const fee = (order.platform_fee_cents / 100).toFixed(2);
-  const itemPrice = ((order.amount_cents - order.platform_fee_cents) / 100).toFixed(2);
+  const itemPrice = ((order.item_price_cents ?? order.amount_cents) / 100).toFixed(2);
 
   return (
     <div className="max-w-lg mx-auto">
