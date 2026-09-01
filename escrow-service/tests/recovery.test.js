@@ -116,8 +116,8 @@ async function insertOrder(overrides = {}) {
     buyer_id:                 BUYER_ID,
     seller_id:                SELLER_ID,
     amount_cents:             10000,
-    platform_fee_cents:       300,
-    seller_payout_cents:      9700,
+    platform_fee_cents:       800,
+    seller_payout_cents:      9200,
     status:                   'HELD',
     stripe_payment_intent_id: null,
     stripe_charge_id:         null,
@@ -388,7 +388,7 @@ async function runReleasingTests() {
     injectStubTransfer({
       id: existingTransferId,
       sourceTransactionId: chargeId,
-      amountCents: 9700,
+      amountCents: 9200,
       currency: 'usd',
       destination: SELLER_STRIPE_ACCOUNT,
       metadata: { orderId: String(orderId), operationType: 'release' },
@@ -422,7 +422,7 @@ async function runReleasingTests() {
     injectStubTransfer({
       id: 'tr_stub_dup_1',
       sourceTransactionId: chargeId,
-      amountCents: 9700,
+      amountCents: 9200,
       currency: 'usd',
       destination: SELLER_STRIPE_ACCOUNT,
       metadata: { orderId: String(orderId), operationType: 'release' },
@@ -431,7 +431,7 @@ async function runReleasingTests() {
     injectStubTransfer({
       id: 'tr_stub_dup_2',
       sourceTransactionId: chargeId,
-      amountCents: 9700,
+      amountCents: 9200,
       currency: 'usd',
       destination: SELLER_STRIPE_ACCOUNT,
       metadata: { orderId: String(orderId), operationType: 'release' },
@@ -601,8 +601,8 @@ async function runCancellingTests() {
     await stripeClient.capturePaymentIntent(pi.id, { idempotencyKey: `cap_cancel_${pi.id}` });
     const orderId = await insertOrder({
       amount_cents:          15000,
-      platform_fee_cents:      450,
-      seller_payout_cents:   14550,
+      platform_fee_cents:     1200,
+      seller_payout_cents:   13800,
       stripe_payment_intent_id: pi.id,
       status:        'CANCELLING',
       prior_status:  'HELD',
@@ -639,7 +639,7 @@ async function runCancellingTests() {
     injectStubRefund({
       id: existingRefundId,
       paymentIntentId: piId,
-      amountCents: 14550, // amount_cents - platform_fee_cents
+      amountCents: 13800, // amount_cents - platform_fee_cents
       metadata: { orderId: String(orderId), operationType: 'cancel' },
       status: 'succeeded',
     });
@@ -681,14 +681,14 @@ async function runCancellingTests() {
     injectStubRefund({
       id: 're_stub_cancel_dup_1',
       paymentIntentId: piId,
-      amountCents: 14550,
+      amountCents: 13800,
       metadata: { orderId: String(orderId), operationType: 'cancel' },
       status: 'succeeded',
     });
     injectStubRefund({
       id: 're_stub_cancel_dup_2',
       paymentIntentId: piId,
-      amountCents: 14550,
+      amountCents: 13800,
       metadata: { orderId: String(orderId), operationType: 'cancel' },
       status: 'succeeded',
     });
