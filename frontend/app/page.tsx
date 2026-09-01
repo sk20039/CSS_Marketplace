@@ -113,7 +113,7 @@ export default function HomePage() {
         <div className="relative max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-20 text-center">
           <div className="inline-flex items-center gap-2 bg-green-100 border border-green-300 text-green-900 text-sm font-medium px-4 py-1.5 rounded-full mb-6">
             <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-            USA&apos;s #1 Cricket Equipment Marketplace
+            USA&apos;s Cricket Equipment Marketplace
           </div>
           <h1 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold text-white leading-tight mb-5">
             Buy & Sell Premium<br />
@@ -221,15 +221,14 @@ export default function HomePage() {
             ))}
           </div>
         ) : listings.length === 0 ? (
-          <div className="text-center py-20 bg-white rounded-xl border border-gray-200">
-            <div className="text-5xl mb-4 text-gray-300">
-              <svg className="w-16 h-16 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-              </svg>
-            </div>
-            <p className="text-gray-500 font-medium">No listings yet</p>
-            <Link href="/register" className="mt-4 inline-block text-brand-700 font-semibold hover:underline text-sm">
-              Be the first to sell gear &rarr;
+          <div className="bg-white rounded-xl border border-gray-200 px-8 py-10 text-center">
+            <p className="text-lg font-bold text-gray-900 mb-1">Be one of the first sellers on Cricket Market</p>
+            <p className="text-sm text-gray-500 mb-6">List your bat, pads, helmet, or kit and reach cricket players across the USA.</p>
+            <Link
+              href="/register"
+              className="inline-flex items-center gap-2 bg-brand-700 text-white font-semibold px-6 py-2.5 rounded-lg hover:bg-brand-800 transition-colors text-sm"
+            >
+              List Your Gear
             </Link>
           </div>
         ) : (
