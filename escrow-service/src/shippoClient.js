@@ -206,9 +206,17 @@ async function getRates(from, to, parcel, listingId, buyerAddr) {
     async: false,
   };
 
+  console.log(
+    `[shippo] getRates: listing=${listingId} ` +
+    `from_state=${from.state} from_zip=${from.zip} ` +
+    `to_state=${to.state} to_zip=${String(to.zip || '').slice(0, 3)}xxx ` +
+    `parcel=${JSON.stringify(parcel)}`
+  );
+
   const res = await _shippoFetch('/shipments/', 'POST', shipmentBody);
   if (!res.ok) {
     const errBody = await res.json().catch(() => ({}));
+    console.error(`[shippo] shipment HTTP ${res.status}:`, JSON.stringify(errBody));
     const err = new Error(
       `Shippo shipment creation failed: ${errBody.detail || errBody.non_field_errors || res.status}`
     );
@@ -217,10 +225,17 @@ async function getRates(from, to, parcel, listingId, buyerAddr) {
   }
 
   const data = await res.json();
+  console.log(
+    `[shippo] shipment ${data.object_id} status=${data.status} ` +
+    `rates_total=${(data.rates || []).length} ` +
+    `msg_count=${(data.messages || []).length}`
+  );
+
   const rates = (data.rates || [])
-    .filter(r => r.object_status === 'VALID')
+    .filter(r => r.object_status !== 'INVALID')
     .map(r => _normalizeRate(r, listingId, from.zip, buyerAddr, parcel));
 
+  console.log(`[shippo] returning ${rates.length} valid rate(s) to caller`);
   return rates;
 }
 
