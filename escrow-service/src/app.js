@@ -40,9 +40,15 @@ function buildApp() {
 
   const allowedOrigins = (process.env.FRONTEND_ORIGIN || 'http://localhost:3003')
     .split(',').map(o => o.trim());
+  // Allows any per-commit or per-branch Vercel Preview URL for this specific
+  // project and Vercel team. Does not allow *.vercel.app broadly.
+  const VERCEL_PREVIEW_RE =
+    /^https:\/\/css-marketplace-frontend-[a-z0-9-]+-sk20039s-projects\.vercel\.app$/;
   app.use(cors({
     origin: (origin, cb) => {
-      if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+      if (!origin) return cb(null, true);
+      if (allowedOrigins.includes(origin)) return cb(null, true);
+      if (VERCEL_PREVIEW_RE.test(origin)) return cb(null, true);
       cb(new Error('Not allowed by CORS'));
     },
     credentials: true,
