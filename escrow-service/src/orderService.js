@@ -12,6 +12,7 @@ const pool = require('./db');
 const { stripeClient } = require('./stripeClient');
 const { categorizeDispute } = require('./disputeCategorizer');
 const notifications = require('./notifications');
+const shippoClient = require('./shippoClient');
 
 const DELIVERY_WINDOW_MS =
   Number(process.env.DELIVERY_WINDOW_HOURS || 48) * 60 * 60 * 1000;
@@ -263,10 +264,25 @@ async function reservationConflictError(orderId, expectedStatus, action) {
 }
 
 // ---------------------------------------------------------------------------
+// Exported helpers used by app.js shipping-rates route
+// ---------------------------------------------------------------------------
+
+// Expose validateShippingAddress under a public name so app.js can call it
+// before even hitting createOrder (for the /shipping-rates pre-check).
+function validateShippingAddressPublic(addr) {
+  return validateShippingAddress(addr);
+}
+
+// Expose fetchAuthoritativeListing for the /shipping-rates route.
+async function fetchListingPublic(listingId) {
+  return fetchAuthoritativeListing(listingId);
+}
+
+// ---------------------------------------------------------------------------
 // POST /orders
 // ---------------------------------------------------------------------------
 
-async function createOrder({ listingId, buyerId, shippingAddress }) {
+async function createOrder({ listingId, buyerId, shippingAddress, shippoRateId, rateToken }) {
   if (!isPositiveIntegerId(listingId)) {
     throw new OrderError('listing_id must be a positive integer', 400);
   }
@@ -275,6 +291,12 @@ async function createOrder({ listingId, buyerId, shippingAddress }) {
   }
   const addrError = validateShippingAddress(shippingAddress);
   if (addrError) throw new OrderError(addrError, 422);
+  if (!shippoRateId) {
+    throw new OrderError('shippo_rate_id is required — select a shipping rate before placing an order', 422);
+  }
+  if (!rateToken) {
+    throw new OrderError('rate_token is required — retrieve fresh shipping rates and select one', 422);
+  }
   const sanitizedAddr = sanitizeShippingAddress(shippingAddress);
   const normalizedListingId = Number(listingId);
   const normalizedBuyerId   = Number(buyerId);
@@ -299,8 +321,73 @@ async function createOrder({ listingId, buyerId, shippingAddress }) {
       400
     );
   }
-  const shippingCents = 0; // Phase 2: no shipping yet; will be buyer-selected in Phase 3
+
+  // ── Shipping rate verification ────────────────────────────────────────────
+  // 1. Re-fetch seller's ship-from address (authoritative from escrow DB).
+  const { rows: sellerRows } = await pool.query('SELECT ship_from_address FROM users WHERE id = $1', [sellerId]);
+  const sellerShipFrom = sellerRows[0]?.ship_from_address
+    ? (typeof sellerRows[0].ship_from_address === 'string'
+        ? JSON.parse(sellerRows[0].ship_from_address)
+        : sellerRows[0].ship_from_address)
+    : null;
+  if (!sellerShipFrom) {
+    throw new OrderError(
+      `Order cannot be created: seller ${sellerId} has no ship-from address on file`,
+      422
+    );
+  }
+
+  // 2. Validate package dims on the listing (must exist — enforced at listing creation).
+  const { weight_oz, pkg_length_in, pkg_width_in, pkg_height_in } = listing;
+  const missingDims = [
+    !weight_oz     && 'weight_oz',
+    !pkg_length_in && 'pkg_length_in',
+    !pkg_width_in  && 'pkg_width_in',
+    !pkg_height_in && 'pkg_height_in',
+  ].filter(Boolean);
+  if (missingDims.length > 0) {
+    throw new OrderError(
+      `Listing ${normalizedListingId} is missing package dimensions: ${missingDims.join(', ')}`,
+      422
+    );
+  }
+
+  const parcel = {
+    weight_oz:  Number(weight_oz),
+    length_in:  Number(pkg_length_in),
+    width_in:   Number(pkg_width_in),
+    height_in:  Number(pkg_height_in),
+  };
+
+  // 3. Verify rate_token — binds shippo_rate_id to this listing + seller zip + buyer address + parcel.
+  const tokenValid = shippoClient.verifyRateToken(
+    rateToken,
+    shippoRateId,
+    normalizedListingId,
+    sellerShipFrom.zip,
+    sanitizedAddr,   // normalized buyer address (same normalization used when token was issued)
+    parcel
+  );
+  if (!tokenValid) {
+    throw new OrderError(
+      'Shipping rate is not valid for this order — please refresh shipping rates and select again',
+      422
+    );
+  }
+
+  // 4. Fetch the rate from Shippo to get the authoritative price.
+  //    The browser-submitted price is ignored entirely.
+  const rateData = await shippoClient.getRate(shippoRateId);
+  if (!rateData) {
+    throw new OrderError(
+      'Selected shipping rate has expired or is invalid — please refresh shipping rates and select again',
+      422
+    );
+  }
+  const shippingCents = rateData.price_cents;
+
   const amountCents = itemPriceCents + shippingCents;
+  // Platform fee is based on item price only — shipping passes through to carrier.
   const { platformFeeCents, sellerPayoutCents } = computeFee(itemPriceCents);
 
   // Keep local mirror in sync for admin views.
@@ -327,8 +414,9 @@ async function createOrder({ listingId, buyerId, shippingAddress }) {
        listing_id, buyer_id, seller_id, amount_cents, item_price_cents, shipping_cents,
        platform_fee_cents, seller_payout_cents,
        status, stripe_payment_intent_id, stripe_client_secret, shipping_address,
+       shippo_rate_id,
        created_at, updated_at
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'CREATED', $9, $10, $11, $12, $13)
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'CREATED', $9, $10, $11, $12, $13, $14)
      RETURNING id`,
     [
       normalizedListingId, normalizedBuyerId, sellerId,
@@ -336,6 +424,7 @@ async function createOrder({ listingId, buyerId, shippingAddress }) {
       platformFeeCents, sellerPayoutCents,
       intent.id, intent.client_secret || null,
       JSON.stringify(sanitizedAddr),
+      shippoRateId,
       ts_now, ts_now,
     ]
   );
@@ -350,6 +439,7 @@ async function createOrder({ listingId, buyerId, shippingAddress }) {
     amountCents,
     platformFeeCents,
     sellerPayoutCents,
+    shippoRateId,
     stripePaymentIntentId: intent.id,
     stripeMode: stripeClient.mode,
   });
@@ -965,4 +1055,7 @@ module.exports = {
   finalizeReleased,
   finalizeRefunded,
   finalizeCancelled,
+  // Exported for use by the /shipping-rates route in app.js.
+  validateShippingAddressPublic,
+  fetchListingPublic,
 };

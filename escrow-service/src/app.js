@@ -12,6 +12,7 @@ const { OrderError } = orderService;
 const requireAuth = require('./middleware/requireAuth');
 const { requireAdmin } = requireAuth;
 const { buildHealthRouter } = require('./healthRoutes');
+const shippoClient = require('./shippoClient');
 
 function isParty(user, order) {
   return (
@@ -59,6 +60,13 @@ function buildApp() {
   // Limits are configurable via env vars so tests can set lower values.
   // Limiters are created inside buildApp() so each test server starts with
   // a fresh in-memory counter.
+  const shippingRatesLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: Number(process.env.RATE_LIMIT_SHIPPING_RATES_MAX || 60),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many shipping rate requests from this IP, please try again later' },
+  });
   const orderCreateLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: Number(process.env.RATE_LIMIT_ORDER_CREATE_MAX || 50),
@@ -121,15 +129,85 @@ function buildApp() {
     } catch (err) { next(err); }
   });
 
+  // ---- shipping rates ----
+  // POST /shipping-rates
+  // Fetches available carrier rates for a listing given the buyer's ship-to address.
+  // Requires buyer auth so unauthenticated clients cannot fish for rates.
+  // Each returned rate includes a cryptographic rate_token that binds the rate to
+  // this exact (listing, seller ship-from, buyer ship-to, parcel) context.
+  // The token is verified on POST /orders before the rate price is accepted.
+  app.post('/shipping-rates', shippingRatesLimiter, requireAuth, async (req, res, next) => {
+    try {
+      const { listing_id, shipping_address } = req.body;
+      if (!listing_id) throw new OrderError('listing_id is required', 400);
+      const addrError = orderService.validateShippingAddressPublic(shipping_address);
+      if (addrError) throw new OrderError(addrError, 422);
+
+      const listing = await orderService.fetchListingPublic(Number(listing_id));
+
+      // Verify package dims — required before rates can be fetched.
+      const { weight_oz, pkg_length_in, pkg_width_in, pkg_height_in } = listing;
+      const missingDims = [
+        !weight_oz     && 'weight_oz',
+        !pkg_length_in && 'pkg_length_in',
+        !pkg_width_in  && 'pkg_width_in',
+        !pkg_height_in && 'pkg_height_in',
+      ].filter(Boolean);
+      if (missingDims.length > 0) {
+        throw new OrderError(
+          `Listing ${listing_id} is missing package dimensions required for shipping rate calculation: ${missingDims.join(', ')}. ` +
+          'The seller must update this listing with package weight and dimensions before it can be purchased.',
+          422
+        );
+      }
+
+      // Fetch seller's ship-from address from escrow users table.
+      const { rows: sellerRows } = await pool.query(
+        'SELECT ship_from_address FROM users WHERE id = $1',
+        [Number(listing.seller_id)]
+      );
+      const seller = sellerRows[0];
+      if (!seller || !seller.ship_from_address) {
+        throw new OrderError(
+          'Seller has not set up a ship-from address. Rates cannot be calculated until the seller adds their address.',
+          422
+        );
+      }
+
+      const fromAddr = typeof seller.ship_from_address === 'string'
+        ? JSON.parse(seller.ship_from_address)
+        : seller.ship_from_address;
+
+      const parcel = {
+        weight_oz:    Number(weight_oz),
+        length_in:    Number(pkg_length_in),
+        width_in:     Number(pkg_width_in),
+        height_in:    Number(pkg_height_in),
+      };
+
+      const rates = await shippoClient.getRates(
+        fromAddr,
+        shipping_address,
+        parcel,
+        Number(listing_id),
+        shipping_address
+      );
+
+      res.json({ rates, stub: shippoClient.STUB_MODE });
+    } catch (err) { next(err); }
+  });
+
   // ---- orders ----
   app.post('/orders', orderCreateLimiter, requireAuth, async (req, res, next) => {
     try {
-      const { listing_id, shipping_address } = req.body;
+      const { listing_id, shipping_address, shippo_rate_id, rate_token } = req.body;
       if (!listing_id) throw new OrderError('listing_id is required', 400);
       const order = await orderService.createOrder({
         listingId: listing_id,
         buyerId: req.user.id,
         shippingAddress: shipping_address,
+        shippoRateId: shippo_rate_id,
+        rateToken: rate_token,
       });
       res.status(201).json(order);
     } catch (err) { next(err); }

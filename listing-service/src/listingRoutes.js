@@ -40,7 +40,10 @@ router.post('/', requireAuth, async (req, res, next) => {
         code: 'SHIP_FROM_ADDRESS_REQUIRED',
       });
     }
-    const { title, description = '', price_cents, category = 'other', condition = 'used_good' } = req.body;
+    const {
+      title, description = '', price_cents, category = 'other', condition = 'used_good',
+      weight_oz, pkg_length_in, pkg_width_in, pkg_height_in,
+    } = req.body;
     if (!title || price_cents == null) {
       return res.status(400).json({ error: 'title and price_cents are required' });
     }
@@ -54,11 +57,42 @@ router.post('/', requireAuth, async (req, res, next) => {
       return res.status(400).json({ error: `condition must be one of: ${VALID_CONDITIONS.join(', ')}` });
     }
 
+    // Package dimensions — all four are required to enable shipping rate calculation.
+    const PKG_FIELDS = ['weight_oz', 'pkg_length_in', 'pkg_width_in', 'pkg_height_in'];
+    const pkgValues  = { weight_oz, pkg_length_in, pkg_width_in, pkg_height_in };
+    const missingPkg = PKG_FIELDS.filter(f => pkgValues[f] == null);
+    if (missingPkg.length > 0) {
+      return res.status(422).json({
+        error: `Package details are required for shipping: ${missingPkg.join(', ')}`,
+        code: 'PACKAGE_DIMS_REQUIRED',
+        missing: missingPkg,
+      });
+    }
+    const parsedWeight = Number(weight_oz);
+    const parsedLength = Number(pkg_length_in);
+    const parsedWidth  = Number(pkg_width_in);
+    const parsedHeight = Number(pkg_height_in);
+    if (!Number.isFinite(parsedWeight) || parsedWeight <= 0) {
+      return res.status(422).json({ error: 'weight_oz must be a positive number' });
+    }
+    if (!Number.isFinite(parsedLength) || parsedLength <= 0) {
+      return res.status(422).json({ error: 'pkg_length_in must be a positive number' });
+    }
+    if (!Number.isFinite(parsedWidth) || parsedWidth <= 0) {
+      return res.status(422).json({ error: 'pkg_width_in must be a positive number' });
+    }
+    if (!Number.isFinite(parsedHeight) || parsedHeight <= 0) {
+      return res.status(422).json({ error: 'pkg_height_in must be a positive number' });
+    }
+
     const { rows: inserted } = await pool.query(
-      `INSERT INTO listings (seller_id, title, description, price_cents, category, condition, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'active')
+      `INSERT INTO listings
+         (seller_id, title, description, price_cents, category, condition, status,
+          weight_oz, pkg_length_in, pkg_width_in, pkg_height_in)
+       VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8, $9, $10)
        RETURNING id`,
-      [req.user.id, title, description, price_cents, category, condition]
+      [req.user.id, title, description, price_cents, category, condition,
+       parsedWeight, parsedLength, parsedWidth, parsedHeight]
     );
     const { rows: listingRows } = await pool.query(
       'SELECT * FROM listings WHERE id = $1',
@@ -170,7 +204,8 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
       return res.status(403).json({ error: 'Forbidden: not your listing' });
     }
 
-    const allowed = ['title', 'description', 'price_cents', 'category', 'condition', 'status'];
+    const allowed = ['title', 'description', 'price_cents', 'category', 'condition', 'status',
+                     'weight_oz', 'pkg_length_in', 'pkg_width_in', 'pkg_height_in'];
     const updates = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
@@ -188,6 +223,23 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
     }
     if (updates.condition && !VALID_CONDITIONS.includes(updates.condition)) {
       return res.status(400).json({ error: 'Invalid condition' });
+    }
+    // Package dims: must all be provided together if any are being updated.
+    const PKG_PATCH_FIELDS = ['weight_oz', 'pkg_length_in', 'pkg_width_in', 'pkg_height_in'];
+    const pkgPresent = PKG_PATCH_FIELDS.filter(f => updates[f] !== undefined);
+    if (pkgPresent.length > 0 && pkgPresent.length < 4) {
+      const missing = PKG_PATCH_FIELDS.filter(f => updates[f] === undefined);
+      return res.status(422).json({
+        error: `Package dimensions must all be updated together. Missing: ${missing.join(', ')}`,
+        code: 'PACKAGE_DIMS_PARTIAL',
+      });
+    }
+    for (const f of pkgPresent) {
+      const v = Number(updates[f]);
+      if (!Number.isFinite(v) || v <= 0) {
+        return res.status(422).json({ error: `${f} must be a positive number` });
+      }
+      updates[f] = v;
     }
 
     let pIdx = 1;

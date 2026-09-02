@@ -102,9 +102,9 @@ function CheckoutContent() {
     );
   }
 
-  const total = (order.amount_cents / 100).toFixed(2);
-  const fee = (order.platform_fee_cents / 100).toFixed(2);
+  const total     = (order.amount_cents / 100).toFixed(2);
   const itemPrice = ((order.item_price_cents ?? order.amount_cents) / 100).toFixed(2);
+  const shipping  = order.shipping_cents != null ? (order.shipping_cents / 100).toFixed(2) : null;
 
   return (
     <div className="max-w-lg mx-auto">
@@ -136,10 +136,12 @@ function CheckoutContent() {
               <span className="text-gray-600">Item price</span>
               <span className="font-medium">${itemPrice}</span>
             </div>
-            <div className="flex justify-between items-center text-xs text-gray-400">
-              <span>Platform fee (8%, min $2.00)</span>
-              <span>${fee}</span>
-            </div>
+            {shipping != null && (
+              <div className="flex justify-between items-center text-sm">
+                <span className="text-gray-600">Shipping</span>
+                <span className="font-medium">${shipping}</span>
+              </div>
+            )}
             <div className="border-t border-gray-100 pt-3 flex justify-between items-center">
               <span className="font-semibold text-gray-900">Total charged</span>
               <span className="text-xl font-bold text-brand-700">${total}</span>

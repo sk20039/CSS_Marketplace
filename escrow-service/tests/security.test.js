@@ -43,6 +43,12 @@ process.env.RATE_LIMIT_ADMIN_RECOVERY_MAX = TEST_LIMIT;
 
 const http = require('http');
 const jwt  = require('jsonwebtoken');
+const { makeRateToken } = require('../src/shippoClient');
+
+// Stub shipping constants (must match STUB_RATES in shippoClient.js)
+const STUB_RATE_ID        = 'stub_rate_usps_first_class';
+const SELLER_SHIP_ZIP     = '77001';
+const TEST_PARCEL         = { weight_oz: 64, length_in: 36, width_in: 6, height_in: 6 };
 
 // ---- Mock listing-service (needed for message validation tests) ----
 
@@ -352,8 +358,9 @@ async function runMessageValidationTests() {
       `INSERT INTO users (name, email, role) VALUES ('Sec Buyer', 'sec_buyer@test', 'buyer') RETURNING id`
     );
     const { rows: [seller] } = await pool.query(
-      `INSERT INTO users (name, email, role, stripe_account_id)
-       VALUES ('Sec Seller', 'sec_seller@test', 'seller', 'acct_stub_sec') RETURNING id`
+      `INSERT INTO users (name, email, role, stripe_account_id, ship_from_address)
+       VALUES ('Sec Seller', 'sec_seller@test', 'seller', 'acct_stub_sec', $1) RETURNING id`,
+      [JSON.stringify({ name: 'Sec Seller', line1: '1 Seller Rd', city: 'Houston', state: 'TX', zip: SELLER_SHIP_ZIP, phone: '5550001111' })]
     );
     buyerId  = buyer.id;
     sellerId = seller.id;
@@ -367,12 +374,20 @@ async function runMessageValidationTests() {
       title: 'Security Test Bat',
       price_cents: 5000,
       status: 'active',
+      weight_oz:     TEST_PARCEL.weight_oz,
+      pkg_length_in: TEST_PARCEL.length_in,
+      pkg_width_in:  TEST_PARCEL.width_in,
+      pkg_height_in: TEST_PARCEL.height_in,
     };
 
     // Drive order to HELD state via API (stub Stripe, no real calls)
+    const secAddr = { name: 'Sec Buyer', line1: '1 Test St', city: 'Austin', state: 'TX', zip: '78701' };
+    const rateToken = makeRateToken(STUB_RATE_ID, 888, SELLER_SHIP_ZIP, secAddr, TEST_PARCEL);
     const created = await post(server, '/orders', buyerToken, {
       listing_id: 888,
-      shipping_address: { name: 'Sec Buyer', line1: '1 Test St', city: 'Austin', state: 'TX', zip: '78701' },
+      shipping_address: secAddr,
+      shippo_rate_id: STUB_RATE_ID,
+      rate_token: rateToken,
     });
     assertEqual(created.status, 201, `createOrder failed: ${JSON.stringify(created.body)}`);
     const captured = await post(server, `/orders/${created.body.id}/capture`, buyerToken);

@@ -37,6 +37,9 @@ const sellerToken = makeToken(SELLER_ID, 'seller', true);
 const otherToken = makeToken(OTHER_ID, 'seller', true);
 const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET; // 'test-internal-svc-secret-32chars!!'
 
+// Required package dimensions for every listing create
+const PKG_DIMS = { weight_oz: 16, pkg_length_in: 30, pkg_width_in: 5, pkg_height_in: 3 };
+
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS listings (
     id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -108,6 +111,13 @@ async function run() {
   console.log('Listing service — PostgreSQL integration tests\n');
 
   await pool.query(SCHEMA_SQL);
+  // Ensure package dim columns exist (idempotent for pre-existing test DBs)
+  await pool.query(`
+    ALTER TABLE listings ADD COLUMN IF NOT EXISTS weight_oz      INTEGER;
+    ALTER TABLE listings ADD COLUMN IF NOT EXISTS pkg_length_in  NUMERIC(5,1);
+    ALTER TABLE listings ADD COLUMN IF NOT EXISTS pkg_width_in   NUMERIC(5,1);
+    ALTER TABLE listings ADD COLUMN IF NOT EXISTS pkg_height_in  NUMERIC(5,1);
+  `);
 
   // POST /listings
   console.log('POST /listings');
@@ -117,7 +127,7 @@ async function run() {
     const res = await request(app)
       .post('/listings')
       .set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Gray-Nicolls Bat', price_cents: 9995, category: 'bat', condition: 'new', description: 'Top quality' });
+      .send({ title: 'Gray-Nicolls Bat', price_cents: 9995, category: 'bat', condition: 'new', description: 'Top quality', ...PKG_DIMS });
     assert(res.status === 201, `expected 201, got ${res.status}: ${JSON.stringify(res.body)}`);
     assert(res.body.id > 0, 'id should be positive integer');
     assert(res.body.title === 'Gray-Nicolls Bat', 'title mismatch');
@@ -169,7 +179,7 @@ async function run() {
     const res = await request(app)
       .post('/listings')
       .set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Under Min', price_cents: 999, category: 'bat', condition: 'new' });
+      .send({ title: 'Under Min', price_cents: 999, category: 'bat', condition: 'new', ...PKG_DIMS });
     assert(res.status === 400, `expected 400, got ${res.status}`);
     assert(res.body.error && res.body.error.includes('1000'), `error should mention 1000: ${res.body.error}`);
   });
@@ -179,7 +189,7 @@ async function run() {
     const res = await request(app)
       .post('/listings')
       .set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'At Min', price_cents: 1000, category: 'bat', condition: 'new' });
+      .send({ title: 'At Min', price_cents: 1000, category: 'bat', condition: 'new', ...PKG_DIMS });
     assert(res.status === 201, `expected 201, got ${res.status}: ${JSON.stringify(res.body)}`);
     assert(res.body.price_cents === 1000, 'price_cents should be 1000');
   });
@@ -189,7 +199,7 @@ async function run() {
     const res = await request(app)
       .post('/listings')
       .set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Above Min', price_cents: 1001, category: 'bat', condition: 'new' });
+      .send({ title: 'Above Min', price_cents: 1001, category: 'bat', condition: 'new', ...PKG_DIMS });
     assert(res.status === 201, `expected 201, got ${res.status}: ${JSON.stringify(res.body)}`);
     assert(res.body.price_cents === 1001, 'price_cents should be 1001');
   });
@@ -199,7 +209,7 @@ async function run() {
     const res = await request(app)
       .post('/listings')
       .set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Negative', price_cents: -100, category: 'bat', condition: 'new' });
+      .send({ title: 'Negative', price_cents: -100, category: 'bat', condition: 'new', ...PKG_DIMS });
     assert(res.status === 400, `expected 400, got ${res.status}`);
   });
 
@@ -208,7 +218,7 @@ async function run() {
     const res = await request(app)
       .post('/listings')
       .set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Zero', price_cents: 0, category: 'bat', condition: 'new' });
+      .send({ title: 'Zero', price_cents: 0, category: 'bat', condition: 'new', ...PKG_DIMS });
     assert(res.status === 400, `expected 400, got ${res.status}`);
   });
 
@@ -217,7 +227,7 @@ async function run() {
     const res = await request(app)
       .post('/listings')
       .set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'No Price', category: 'bat', condition: 'new' });
+      .send({ title: 'No Price', category: 'bat', condition: 'new', ...PKG_DIMS });
     assert(res.status === 400, `expected 400, got ${res.status}`);
   });
 
@@ -226,7 +236,7 @@ async function run() {
     const res = await request(app)
       .post('/listings')
       .set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Text Price', price_cents: 'abc', category: 'bat', condition: 'new' });
+      .send({ title: 'Text Price', price_cents: 'abc', category: 'bat', condition: 'new', ...PKG_DIMS });
     assert(res.status === 400, `expected 400, got ${res.status}`);
   });
 
@@ -235,7 +245,7 @@ async function run() {
     const res = await request(app)
       .post('/listings')
       .set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Float Price', price_cents: 9.99, category: 'bat', condition: 'new' });
+      .send({ title: 'Float Price', price_cents: 9.99, category: 'bat', condition: 'new', ...PKG_DIMS });
     assert(res.status === 400, `expected 400, got ${res.status}`);
   });
 
@@ -244,7 +254,7 @@ async function run() {
     const res = await request(app)
       .post('/listings')
       .set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Null Price', price_cents: null, category: 'bat', condition: 'new' });
+      .send({ title: 'Null Price', price_cents: null, category: 'bat', condition: 'new', ...PKG_DIMS });
     assert(res.status === 400, `expected 400, got ${res.status}`);
   });
 
@@ -256,7 +266,7 @@ async function run() {
     const create = await request(app)
       .post('/listings')
       .set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Helmet', price_cents: 2000, category: 'helmet', condition: 'used_good' });
+      .send({ title: 'Helmet', price_cents: 2000, category: 'helmet', condition: 'used_good', ...PKG_DIMS });
     const { id } = create.body;
     const res = await request(app).get(`/listings/${id}`);
     assert(res.status === 200, `expected 200, got ${res.status}`);
@@ -276,7 +286,7 @@ async function run() {
   await cleanup();
   await test('returns only active listings', async () => {
     await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Active Bat', price_cents: 1000, category: 'bat', condition: 'new' });
+      .send({ title: 'Active Bat', price_cents: 1000, category: 'bat', condition: 'new', ...PKG_DIMS });
     const res = await request(app).get('/listings');
     assert(res.status === 200, `expected 200, got ${res.status}`);
     assert(res.body.total >= 1, 'total should be at least 1');
@@ -287,9 +297,9 @@ async function run() {
   await cleanup();
   await test('filters by category', async () => {
     await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'My Bat', price_cents: 1000, category: 'bat', condition: 'new' });
+      .send({ title: 'My Bat', price_cents: 1000, category: 'bat', condition: 'new', ...PKG_DIMS });
     await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'My Helmet', price_cents: 2000, category: 'helmet', condition: 'new' });
+      .send({ title: 'My Helmet', price_cents: 2000, category: 'helmet', condition: 'new', ...PKG_DIMS });
     const res = await request(app).get('/listings?category=bat');
     assert(res.status === 200, `expected 200, got ${res.status}`);
     assert(res.body.listings.length >= 1, 'should have at least 1 result');
@@ -299,9 +309,9 @@ async function run() {
   await cleanup();
   await test('filters by price range', async () => {
     await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Cheap', price_cents: 1000, category: 'other', condition: 'new' });
+      .send({ title: 'Cheap', price_cents: 1000, category: 'other', condition: 'new', ...PKG_DIMS });
     await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Expensive', price_cents: 10000, category: 'other', condition: 'new' });
+      .send({ title: 'Expensive', price_cents: 10000, category: 'other', condition: 'new', ...PKG_DIMS });
     const res = await request(app).get('/listings?min_price=900&max_price=1500');
     assert(res.status === 200, `expected 200, got ${res.status}`);
     assert(res.body.listings.every(l => l.price_cents >= 900 && l.price_cents <= 1500), 'price range filter failed');
@@ -311,7 +321,7 @@ async function run() {
   await test('paginates results', async () => {
     for (let i = 0; i < 5; i++) {
       await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-        .send({ title: `Bat ${i}`, price_cents: 1000, category: 'bat', condition: 'new' });
+        .send({ title: `Bat ${i}`, price_cents: 1000, category: 'bat', condition: 'new', ...PKG_DIMS });
     }
     const res = await request(app).get('/listings?limit=2&page=1');
     assert(res.status === 200, `expected 200, got ${res.status}`);
@@ -326,9 +336,9 @@ async function run() {
   await cleanup();
   await test("returns only the caller's own listings", async () => {
     await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Seller Bat', price_cents: 1000, category: 'bat', condition: 'new' });
+      .send({ title: 'Seller Bat', price_cents: 1000, category: 'bat', condition: 'new', ...PKG_DIMS });
     await request(app).post('/listings').set('Authorization', `Bearer ${otherToken}`)
-      .send({ title: 'Other Bat', price_cents: 1500, category: 'bat', condition: 'new' });
+      .send({ title: 'Other Bat', price_cents: 1500, category: 'bat', condition: 'new', ...PKG_DIMS });
     const res = await request(app).get('/listings/mine').set('Authorization', `Bearer ${sellerToken}`);
     assert(res.status === 200, `expected 200, got ${res.status}`);
     assert(res.body.listings.every(l => String(l.seller_id) === String(SELLER_ID)), 'should only see own listings');
@@ -337,7 +347,7 @@ async function run() {
   await cleanup();
   await test('includes sold and inactive listings for the owner', async () => {
     const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'My Bat', price_cents: 1000, category: 'bat', condition: 'new' });
+      .send({ title: 'My Bat', price_cents: 1000, category: 'bat', condition: 'new', ...PKG_DIMS });
     const id = create.body.id;
     await request(app).patch(`/listings/${id}/mark-sold`).set('x-internal-secret', INTERNAL_SECRET);
     const res = await request(app).get('/listings/mine').set('Authorization', `Bearer ${sellerToken}`);
@@ -352,7 +362,7 @@ async function run() {
   await cleanup();
   await test('updates title and price_cents', async () => {
     const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Old Title', price_cents: 1000, category: 'bat', condition: 'new' });
+      .send({ title: 'Old Title', price_cents: 1000, category: 'bat', condition: 'new', ...PKG_DIMS });
     const id = create.body.id;
     const res = await request(app).patch(`/listings/${id}`)
       .set('Authorization', `Bearer ${sellerToken}`)
@@ -365,7 +375,7 @@ async function run() {
   await cleanup();
   await test('returns 403 for non-owner update', async () => {
     const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'My Bat', price_cents: 1000, category: 'bat', condition: 'new' });
+      .send({ title: 'My Bat', price_cents: 1000, category: 'bat', condition: 'new', ...PKG_DIMS });
     const id = create.body.id;
     const res = await request(app).patch(`/listings/${id}`)
       .set('Authorization', `Bearer ${otherToken}`)
@@ -376,7 +386,7 @@ async function run() {
   await cleanup();
   await test('returns 400 when no valid fields provided', async () => {
     const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'My Bat', price_cents: 1000, category: 'bat', condition: 'new' });
+      .send({ title: 'My Bat', price_cents: 1000, category: 'bat', condition: 'new', ...PKG_DIMS });
     const id = create.body.id;
     const res = await request(app).patch(`/listings/${id}`)
       .set('Authorization', `Bearer ${sellerToken}`)
@@ -390,7 +400,7 @@ async function run() {
   await cleanup();
   await test('editing price to $9.99 (999 cents) is rejected with 400', async () => {
     const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Bat', price_cents: 5000, category: 'bat', condition: 'new' });
+      .send({ title: 'Bat', price_cents: 5000, category: 'bat', condition: 'new', ...PKG_DIMS });
     const id = create.body.id;
     const res = await request(app).patch(`/listings/${id}`)
       .set('Authorization', `Bearer ${sellerToken}`)
@@ -402,7 +412,7 @@ async function run() {
   await cleanup();
   await test('editing price to $10.00 (1000 cents) is accepted', async () => {
     const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Bat', price_cents: 5000, category: 'bat', condition: 'new' });
+      .send({ title: 'Bat', price_cents: 5000, category: 'bat', condition: 'new', ...PKG_DIMS });
     const id = create.body.id;
     const res = await request(app).patch(`/listings/${id}`)
       .set('Authorization', `Bearer ${sellerToken}`)
@@ -414,7 +424,7 @@ async function run() {
   await cleanup();
   await test('editing price to $10.01 (1001 cents) is accepted', async () => {
     const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Bat', price_cents: 5000, category: 'bat', condition: 'new' });
+      .send({ title: 'Bat', price_cents: 5000, category: 'bat', condition: 'new', ...PKG_DIMS });
     const id = create.body.id;
     const res = await request(app).patch(`/listings/${id}`)
       .set('Authorization', `Bearer ${sellerToken}`)
@@ -426,7 +436,7 @@ async function run() {
   await cleanup();
   await test('editing a non-price field does not require price re-validation', async () => {
     const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Bat', price_cents: 2000, category: 'bat', condition: 'new' });
+      .send({ title: 'Bat', price_cents: 2000, category: 'bat', condition: 'new', ...PKG_DIMS });
     const id = create.body.id;
     const res = await request(app).patch(`/listings/${id}`)
       .set('Authorization', `Bearer ${sellerToken}`)
@@ -442,7 +452,7 @@ async function run() {
   await cleanup();
   await test('mark-sold sets status=sold', async () => {
     const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'For Sale', price_cents: 5000, category: 'bat', condition: 'new' });
+      .send({ title: 'For Sale', price_cents: 5000, category: 'bat', condition: 'new', ...PKG_DIMS });
     const id = create.body.id;
     const res = await request(app).patch(`/listings/${id}/mark-sold`)
       .set('x-internal-secret', INTERNAL_SECRET);
@@ -453,7 +463,7 @@ async function run() {
   await cleanup();
   await test('mark-active restores status=active after sold', async () => {
     const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'For Sale', price_cents: 5000, category: 'bat', condition: 'new' });
+      .send({ title: 'For Sale', price_cents: 5000, category: 'bat', condition: 'new', ...PKG_DIMS });
     const id = create.body.id;
     await request(app).patch(`/listings/${id}/mark-sold`).set('x-internal-secret', INTERNAL_SECRET);
     const res = await request(app).patch(`/listings/${id}/mark-active`)
@@ -465,7 +475,7 @@ async function run() {
   await cleanup();
   await test('mark-sold returns 401 without internal secret', async () => {
     const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'For Sale', price_cents: 5000, category: 'bat', condition: 'new' });
+      .send({ title: 'For Sale', price_cents: 5000, category: 'bat', condition: 'new', ...PKG_DIMS });
     const id = create.body.id;
     const res = await request(app).patch(`/listings/${id}/mark-sold`);
     assert(res.status === 401, `expected 401, got ${res.status}`);
@@ -477,7 +487,7 @@ async function run() {
   await cleanup();
   await test('correct INTERNAL_SERVICE_SECRET allows mark-sold', async () => {
     const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Auth Test Bat', price_cents: 7500, category: 'bat', condition: 'new' });
+      .send({ title: 'Auth Test Bat', price_cents: 7500, category: 'bat', condition: 'new', ...PKG_DIMS });
     const id = create.body.id;
     const res = await request(app).patch(`/listings/${id}/mark-sold`)
       .set('x-internal-secret', INTERNAL_SECRET);
@@ -488,7 +498,7 @@ async function run() {
   await cleanup();
   await test('correct INTERNAL_SERVICE_SECRET allows mark-active', async () => {
     const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Auth Test Bat', price_cents: 7500, category: 'bat', condition: 'new' });
+      .send({ title: 'Auth Test Bat', price_cents: 7500, category: 'bat', condition: 'new', ...PKG_DIMS });
     const id = create.body.id;
     await request(app).patch(`/listings/${id}/mark-sold`).set('x-internal-secret', INTERNAL_SECRET);
     const res = await request(app).patch(`/listings/${id}/mark-active`)
@@ -500,7 +510,7 @@ async function run() {
   await cleanup();
   await test('missing x-internal-secret header is rejected with 401', async () => {
     const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Auth Test Bat', price_cents: 7500, category: 'bat', condition: 'new' });
+      .send({ title: 'Auth Test Bat', price_cents: 7500, category: 'bat', condition: 'new', ...PKG_DIMS });
     const id = create.body.id;
     const res = await request(app).patch(`/listings/${id}/mark-sold`);
     assert(res.status === 401, `expected 401, got ${res.status}`);
@@ -509,7 +519,7 @@ async function run() {
   await cleanup();
   await test('incorrect x-internal-secret is rejected with 401', async () => {
     const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Auth Test Bat', price_cents: 7500, category: 'bat', condition: 'new' });
+      .send({ title: 'Auth Test Bat', price_cents: 7500, category: 'bat', condition: 'new', ...PKG_DIMS });
     const id = create.body.id;
     const res = await request(app).patch(`/listings/${id}/mark-sold`)
       .set('x-internal-secret', 'wrong-secret-value');
@@ -519,7 +529,7 @@ async function run() {
   await cleanup();
   await test('valid user JWT in x-internal-secret cannot replace INTERNAL_SERVICE_SECRET', async () => {
     const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Auth Test Bat', price_cents: 7500, category: 'bat', condition: 'new' });
+      .send({ title: 'Auth Test Bat', price_cents: 7500, category: 'bat', condition: 'new', ...PKG_DIMS });
     const id = create.body.id;
     // Passing a valid JWT token where an internal secret is expected must be rejected
     const res = await request(app).patch(`/listings/${id}/mark-sold`)
@@ -530,7 +540,7 @@ async function run() {
   await cleanup();
   await test('mismatched internal secrets (simulating different service configs) are rejected', async () => {
     const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'Auth Test Bat', price_cents: 7500, category: 'bat', condition: 'new' });
+      .send({ title: 'Auth Test Bat', price_cents: 7500, category: 'bat', condition: 'new', ...PKG_DIMS });
     const id = create.body.id;
     // Simulate escrow-service configured with a different INTERNAL_SERVICE_SECRET
     const escrowServiceSecret = 'different-escrow-svc-secret-32chars!!';
@@ -545,7 +555,7 @@ async function run() {
   await cleanup();
   await test('soft-deletes by setting status=inactive', async () => {
     const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'To Delete', price_cents: 1000, category: 'bat', condition: 'new' });
+      .send({ title: 'To Delete', price_cents: 1000, category: 'bat', condition: 'new', ...PKG_DIMS });
     const id = create.body.id;
     const delRes = await request(app).delete(`/listings/${id}`)
       .set('Authorization', `Bearer ${sellerToken}`);
@@ -562,7 +572,7 @@ async function run() {
   await cleanup();
   await test('returns 403 when non-owner tries to delete', async () => {
     const create = await request(app).post('/listings').set('Authorization', `Bearer ${sellerToken}`)
-      .send({ title: 'My Bat', price_cents: 1000, category: 'bat', condition: 'new' });
+      .send({ title: 'My Bat', price_cents: 1000, category: 'bat', condition: 'new', ...PKG_DIMS });
     const id = create.body.id;
     const res = await request(app).delete(`/listings/${id}`)
       .set('Authorization', `Bearer ${otherToken}`);
@@ -589,7 +599,7 @@ async function run() {
     const res = await request(app)
       .post('/listings')
       .set('Authorization', `Bearer ${withAddrToken}`)
-      .send({ title: 'Test Bat', price_cents: 5000 });
+      .send({ title: 'Test Bat', price_cents: 5000, ...PKG_DIMS });
     assert(res.status === 201, `expected 201, got ${res.status}: ${JSON.stringify(res.body)}`);
   });
 
@@ -599,7 +609,7 @@ async function run() {
     const res = await request(app)
       .post('/listings')
       .set('Authorization', `Bearer ${buyerToken}`)
-      .send({ title: 'Buyer Bat', price_cents: 5000 });
+      .send({ title: 'Buyer Bat', price_cents: 5000, ...PKG_DIMS });
     // buyer role is not gated — they should pass the gate (though in prod buyers don't create listings)
     assert(res.status === 201 || res.status === 400, `unexpected status ${res.status}`);
   });
@@ -610,7 +620,7 @@ async function run() {
     const res = await request(app)
       .post('/listings')
       .set('Authorization', `Bearer ${adminToken}`)
-      .send({ title: 'Admin Bat', price_cents: 5000 });
+      .send({ title: 'Admin Bat', price_cents: 5000, ...PKG_DIMS });
     // admin is not gated
     assert(res.status === 201, `expected 201, got ${res.status}: ${JSON.stringify(res.body)}`);
   });

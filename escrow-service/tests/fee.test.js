@@ -24,6 +24,13 @@ delete process.env.MIN_PLATFORM_FEE_CENTS;
 
 const http = require('http');
 const jwt  = require('jsonwebtoken');
+const { makeRateToken } = require('../src/shippoClient');
+
+// Stub shipping: cheapest stub rate used by all integration tests.
+const STUB_RATE_ID        = 'stub_rate_usps_first_class';
+const STUB_SHIPPING_CENTS = 425;  // must match STUB_RATES in shippoClient.js
+const SELLER_SHIP_ZIP     = '77001';
+const TEST_PARCEL         = { weight_oz: 64, length_in: 36, width_in: 6, height_in: 6 };
 
 // ── Test harness ──────────────────────────────────────────────────────────
 
@@ -164,8 +171,9 @@ async function setup() {
     `INSERT INTO users (name, email, role) VALUES ('Fee Buyer', 'feebuyer@fee.test', 'buyer') RETURNING id`
   );
   const { rows: [seller] } = await pool.query(
-    `INSERT INTO users (name, email, role, stripe_account_id)
-     VALUES ('Fee Seller', 'feeseller@fee.test', 'seller', 'acct_fee_test_seller') RETURNING id`
+    `INSERT INTO users (name, email, role, stripe_account_id, ship_from_address)
+     VALUES ('Fee Seller', 'feeseller@fee.test', 'seller', 'acct_fee_test_seller', $1) RETURNING id`,
+    [JSON.stringify({ name: 'Fee Seller', line1: '123 Fee Rd', city: 'Houston', state: 'TX', zip: SELLER_SHIP_ZIP, phone: '5550001111' })]
   );
   const { rows: [admin] } = await pool.query(
     `INSERT INTO users (name, email, role) VALUES ('Fee Admin', 'feeadmin@fee.test', 'admin') RETURNING id`
@@ -202,10 +210,17 @@ async function createOrderWithPrice(priceCents) {
     title: 'Fee Test Item',
     price_cents: priceCents,
     status: 'active',
+    weight_oz:    TEST_PARCEL.weight_oz,
+    pkg_length_in: TEST_PARCEL.length_in,
+    pkg_width_in:  TEST_PARCEL.width_in,
+    pkg_height_in: TEST_PARCEL.height_in,
   };
+  const rateToken = makeRateToken(STUB_RATE_ID, LISTING_ID, SELLER_SHIP_ZIP, VALID_SHIPPING_ADDRESS, TEST_PARCEL);
   const res = await post(appServer, '/orders', buyerToken, {
     listing_id: LISTING_ID,
     shipping_address: VALID_SHIPPING_ADDRESS,
+    shippo_rate_id: STUB_RATE_ID,
+    rate_token: rateToken,
   });
   if (res.status !== 201) throw new Error(`createOrder failed (${res.status}): ${JSON.stringify(res.body)}`);
   return res.body;
@@ -369,15 +384,15 @@ async function runFeeAmountTests() {
   for (const { priceCents, expectedFee, expectedPayout, label } of cases) {
     await testAsync(`Order at ${label}: fee=${expectedFee}¢, payout=${expectedPayout}¢`, async () => {
       const order = await createOrderWithPrice(priceCents);
-      assertEqual(order.item_price_cents,    priceCents,     'item_price_cents must match listing price');
-      assertEqual(order.shipping_cents,      0,              'shipping_cents must be 0 (Phase 2)');
-      assertEqual(order.amount_cents,        priceCents,     'amount_cents must equal item_price_cents when shipping=0');
-      assertEqual(order.platform_fee_cents,  expectedFee,    'platform_fee_cents must match expected');
-      assertEqual(order.seller_payout_cents, expectedPayout, 'seller_payout_cents must match expected');
+      assertEqual(order.item_price_cents,    priceCents,                       'item_price_cents must match listing price');
+      assertEqual(order.shipping_cents,      STUB_SHIPPING_CENTS,               'shipping_cents must equal selected stub rate');
+      assertEqual(order.amount_cents,        priceCents + STUB_SHIPPING_CENTS,  'amount_cents = item_price_cents + shipping_cents');
+      assertEqual(order.platform_fee_cents,  expectedFee,                       'platform_fee_cents must be based on item price only');
+      assertEqual(order.seller_payout_cents, expectedPayout,                    'seller_payout_cents must match expected');
       assertEqual(
         order.platform_fee_cents + order.seller_payout_cents,
         order.item_price_cents,
-        'fee + payout must equal item_price_cents'
+        'fee + payout must equal item_price_cents (not amount_cents)'
       );
     });
   }
@@ -395,7 +410,8 @@ async function runCancellationTests() {
     assertEqual(res.body.cancellation_cause, 'buyer_change_of_mind', 'cancellation_cause must be buyer_change_of_mind');
     const event = res.body.events.find((e) => e.event_type === 'CANCELLED');
     assert(event, 'CANCELLED event required');
-    assertEqual(event.payload.refundAmountCents,    9200, 'refundAmountCents must be 9200');
+    // Refund = amount_cents - platform_fee = (10000 + shipping) - 800
+    assertEqual(event.payload.refundAmountCents,    10000 + STUB_SHIPPING_CENTS - 800, 'refundAmountCents must cover item payout + full shipping');
     assertEqual(event.payload.platformFeeKeptCents,  800, 'platformFeeKeptCents must be 800');
     assert(res.body.stripe_refund_id, 'stripe_refund_id must be set');
   });
@@ -406,7 +422,8 @@ async function runCancellationTests() {
     const res = await post(appServer, `/orders/${held.id}/cancel`, buyerToken, { reason: 'oops' });
     assertEqual(res.status, 200, `cancel failed: ${JSON.stringify(res.body)}`);
     const event = res.body.events.find((e) => e.event_type === 'CANCELLED');
-    assertEqual(event.payload.refundAmountCents,    1800, 'refundAmountCents must be 1800');
+    // Refund = amount_cents - platform_fee = (2000 + shipping) - 200
+    assertEqual(event.payload.refundAmountCents,    2000 + STUB_SHIPPING_CENTS - 200, 'refundAmountCents must cover item payout + full shipping');
     assertEqual(event.payload.platformFeeKeptCents,  200, 'platformFeeKeptCents must be 200');
   });
 
@@ -416,10 +433,12 @@ async function runCancellationTests() {
     const res = await post(appServer, `/orders/${held.id}/cancel`, buyerToken, { reason: 'tiny order' });
     assertEqual(res.status, 200, `cancel failed: ${JSON.stringify(res.body)}`);
     const event = res.body.events.find((e) => e.event_type === 'CANCELLED');
-    assertEqual(event.payload.refundAmountCents,    0,   'refundAmountCents must be 0');
-    assertEqual(event.payload.platformFeeKeptCents, 100, 'platformFeeKeptCents must be 100');
-    // stripe_refund_id is null because no Stripe call was needed
-    assert(res.body.stripe_refund_id == null, 'stripe_refund_id must be null for $0 refund');
+    // Refund = amount_cents - platform_fee = (100 + shipping) - 100 = shipping_cents
+    // Platform fee is capped at item price ($1.00), so buyer gets full shipping back.
+    assertEqual(event.payload.refundAmountCents,    STUB_SHIPPING_CENTS, 'refundAmountCents must equal shipping (item fee capped, shipping returned)');
+    assertEqual(event.payload.platformFeeKeptCents, 100, 'platformFeeKeptCents must be 100 (capped at item price)');
+    // stripe_refund_id IS set — shipping amount is refunded even though item fee is full
+    assert(res.body.stripe_refund_id, 'stripe_refund_id must be set (shipping is refunded)');
   });
 }
 
@@ -437,8 +456,8 @@ async function runDisputeRefundTests() {
     assertEqual(resolveRes.body.status, 'REFUNDED');
     assert(resolveRes.body.stripe_refund_id, 'stripe_refund_id must be set');
     assert(resolveRes.body.events.some((e) => e.event_type === 'REFUNDED'), 'REFUNDED event required');
-    // amount_cents is the full buyer charge — refund covers the whole amount
-    assertEqual(resolveRes.body.amount_cents, 5000, 'order amount_cents must be 5000');
+    // amount_cents is the full buyer charge (item + shipping) — refund covers the whole amount
+    assertEqual(resolveRes.body.amount_cents, 5000 + STUB_SHIPPING_CENTS, 'order amount_cents must be item + shipping');
   });
 }
 

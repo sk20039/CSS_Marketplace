@@ -64,6 +64,10 @@ function NewListingForm() {
   const [condition, setCondition] = useState('used_good');
   const [photos, setPhotos] = useState<File[]>([]);
   const [previews, setPreviews] = useState<string[]>([]);
+  const [weightOz, setWeightOz] = useState('');
+  const [pkgLength, setPkgLength] = useState('');
+  const [pkgWidth, setPkgWidth] = useState('');
+  const [pkgHeight, setPkgHeight] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -96,7 +100,13 @@ function NewListingForm() {
       return createdListingId;
     }
 
-    const res = await createListing({ title, description, price_cents, category, condition });
+    const res = await createListing({
+      title, description, price_cents, category, condition,
+      weight_oz: parseFloat(weightOz),
+      pkg_length_in: parseFloat(pkgLength),
+      pkg_width_in: parseFloat(pkgWidth),
+      pkg_height_in: parseFloat(pkgHeight),
+    });
     const data = await res.json();
     if (!res.ok) { setError(data.error || 'Failed to create listing'); return null; }
     const id: number = data.id;
@@ -513,6 +523,72 @@ function NewListingForm() {
             }
             return <p className="text-xs text-gray-400 mt-2">8% platform fee, $2.00 minimum — deducted from your payout at sale.</p>;
           })()}
+        </div>
+
+        {/* Package Details — required for shipping rate calculation */}
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">
+              Package Details <span className="text-red-500">*</span>
+            </h2>
+            <p className="text-xs text-gray-400 mt-2">
+              Required to calculate shipping rates at checkout. Enter the dimensions of the packed item including packaging.
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              Weight <span className="text-red-500">*</span>
+              <span className="ml-1 text-xs font-normal text-gray-400">(ounces, including packaging)</span>
+            </label>
+            <div className="relative max-w-xs">
+              <input
+                type="number" required min="0.1" step="0.1"
+                value={weightOz} onChange={(e) => setWeightOz(e.target.value)}
+                placeholder="e.g. 64"
+                className="w-full border-2 border-gray-200 rounded-xl px-4 py-2.5 pr-12 text-sm focus:outline-none focus:border-brand-600 transition-colors"
+              />
+              <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 text-sm">oz</span>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              Dimensions <span className="text-red-500">*</span>
+              <span className="ml-1 text-xs font-normal text-gray-400">(inches, outer box)</span>
+            </label>
+            <div className="grid grid-cols-3 gap-3 max-w-sm">
+              <div>
+                <div className="relative">
+                  <input
+                    type="number" required min="0.1" step="0.1"
+                    value={pkgLength} onChange={(e) => setPkgLength(e.target.value)}
+                    placeholder="Length"
+                    className="w-full border-2 border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-brand-600 transition-colors"
+                  />
+                </div>
+                <p className="text-xs text-gray-400 mt-1 text-center">Length</p>
+              </div>
+              <div>
+                <input
+                  type="number" required min="0.1" step="0.1"
+                  value={pkgWidth} onChange={(e) => setPkgWidth(e.target.value)}
+                  placeholder="Width"
+                  className="w-full border-2 border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-brand-600 transition-colors"
+                />
+                <p className="text-xs text-gray-400 mt-1 text-center">Width</p>
+              </div>
+              <div>
+                <input
+                  type="number" required min="0.1" step="0.1"
+                  value={pkgHeight} onChange={(e) => setPkgHeight(e.target.value)}
+                  placeholder="Height"
+                  className="w-full border-2 border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-brand-600 transition-colors"
+                />
+                <p className="text-xs text-gray-400 mt-1 text-center">Height</p>
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Photos */}

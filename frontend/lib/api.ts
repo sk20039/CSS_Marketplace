@@ -216,7 +216,34 @@ export async function getOrder(id: string | number) {
   return res.json();
 }
 
-export async function createOrder(body: { listing_id: number; shipping_address: ShippingAddress }) {
+export interface ShippingRate {
+  rate_id: string;
+  carrier: string;
+  service: string;
+  price_cents: number;
+  est_days: number | null;
+  est_delivery: string | null;
+  rate_token: string;
+}
+
+export async function getShippingRates(listing_id: number, shipping_address: ShippingAddress): Promise<{ rates: ShippingRate[]; stub: boolean }> {
+  const res = await escrowFetch('/shipping-rates', {
+    method: 'POST',
+    body: JSON.stringify({ listing_id, shipping_address }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error((data as { error?: string }).error || 'Failed to fetch shipping rates');
+  }
+  return res.json();
+}
+
+export async function createOrder(body: {
+  listing_id: number;
+  shipping_address: ShippingAddress;
+  shippo_rate_id: string;
+  rate_token: string;
+}) {
   // buyer_id is derived server-side from the auth token now, not sent by the client.
   return escrowFetch('/orders', { method: 'POST', body: JSON.stringify(body) });
 }

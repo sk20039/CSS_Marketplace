@@ -35,6 +35,13 @@ delete process.env.STRIPE_SECRET_KEY; // force stub mode
 // Start mock listing server before loading src/ (LISTING_SERVICE_URL must be set before require)
 const http = require('http');
 const jwt  = require('jsonwebtoken');
+const { makeRateToken } = require('../src/shippoClient');
+
+// Stub shipping constants (must match STUB_RATES in shippoClient.js)
+const STUB_RATE_ID        = 'stub_rate_usps_first_class';
+const STUB_SHIPPING_CENTS = 425;
+const SELLER_SHIP_ZIP     = '77001';
+const TEST_PARCEL         = { weight_oz: 64, length_in: 36, width_in: 6, height_in: 6 };
 
 // ---------------------------------------------------------------------------
 // Mock listing-service
@@ -172,8 +179,9 @@ async function setup() {
     `INSERT INTO users (name, email, role) VALUES ('Test Buyer', 'buyer@escrow.test', 'buyer') RETURNING id`
   );
   const { rows: [seller] } = await pool.query(
-    `INSERT INTO users (name, email, role, stripe_account_id)
-     VALUES ('Test Seller', 'seller@escrow.test', 'seller', 'acct_stub_test_seller') RETURNING id`
+    `INSERT INTO users (name, email, role, stripe_account_id, ship_from_address)
+     VALUES ('Test Seller', 'seller@escrow.test', 'seller', 'acct_stub_test_seller', $1) RETURNING id`,
+    [JSON.stringify({ name: 'Test Seller', line1: '1 Seller Rd', city: 'Houston', state: 'TX', zip: SELLER_SHIP_ZIP, phone: '5550001111' })]
   );
   const { rows: [admin] } = await pool.query(
     `INSERT INTO users (name, email, role) VALUES ('Test Admin', 'admin@escrow.test', 'admin') RETURNING id`
@@ -195,6 +203,10 @@ async function setup() {
     title: 'Test Cricket Bat',
     price_cents: 9999,
     status: 'active',
+    weight_oz:     TEST_PARCEL.weight_oz,
+    pkg_length_in: TEST_PARCEL.length_in,
+    pkg_width_in:  TEST_PARCEL.width_in,
+    pkg_height_in: TEST_PARCEL.height_in,
   };
   mockMarkSoldOk   = true;
   mockMarkActiveOk = true;
@@ -216,9 +228,12 @@ async function teardown() {
 // ---------------------------------------------------------------------------
 
 async function createOrder() {
+  const rateToken = makeRateToken(STUB_RATE_ID, LISTING_ID, SELLER_SHIP_ZIP, VALID_SHIPPING_ADDRESS, TEST_PARCEL);
   const res = await post(appServer, '/orders', buyerToken, {
     listing_id: LISTING_ID,
     shipping_address: VALID_SHIPPING_ADDRESS,
+    shippo_rate_id: STUB_RATE_ID,
+    rate_token: rateToken,
   });
   assertEqual(res.status, 201, `createOrder failed: ${JSON.stringify(res.body)}`);
   return res.body;
@@ -287,9 +302,9 @@ async function runOrderCreationTests() {
   await test('POST /orders creates order in CREATED status with correct amounts', async () => {
     const order = await createOrder();
     assertEqual(order.status, 'CREATED', 'status must be CREATED');
-    assertEqual(order.amount_cents, 9999, 'amount_cents must match listing price');
+    assertEqual(order.amount_cents, 9999 + STUB_SHIPPING_CENTS, 'amount_cents must be item + shipping');
     assert(order.platform_fee_cents > 0, 'platform_fee_cents must be set');
-    assertEqual(order.platform_fee_cents + order.seller_payout_cents, 9999, 'fee + payout must equal amount');
+    assertEqual(order.platform_fee_cents + order.seller_payout_cents, 9999, 'fee + payout must equal item price (not amount_cents)');
     assert(order.stripe_payment_intent_id, 'stripe_payment_intent_id must be set');
     assertEqual(order.buyer_id, buyerId, 'buyer_id must match token user');
     assertEqual(order.seller_id, sellerId, 'seller_id must match listing seller');

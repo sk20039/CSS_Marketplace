@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { getListing, createOrder, getUserReviews, type ShippingAddress } from '@/lib/api';
+import { getListing, createOrder, getShippingRates, getUserReviews, type ShippingAddress, type ShippingRate } from '@/lib/api';
 import { useUser } from '@/lib/auth';
 import { CONDITION_LABELS, CATEGORY_LABELS } from '@/lib/constants';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -15,91 +15,238 @@ const US_STATES = [
   'VA','WA','WV','WI','WY','DC',
 ];
 
-interface ShippingModalProps {
-  onSubmit: (addr: ShippingAddress) => Promise<void>;
-  onCancel: () => void;
-  submitting: boolean;
-  error: string;
+// ── Multi-step checkout modal ─────────────────────────────────────────────
+// Step 1: ship-to address entry
+// Step 2: carrier rate selection (fetched from escrow-service / Shippo)
+// Step 3: confirmation + place order
+
+type CheckoutStep = 'address' | 'rates' | 'confirm';
+
+interface CheckoutModalProps {
+  listingId: number;
+  onClose: () => void;
+  onOrderCreated: (orderId: number) => void;
 }
 
-function ShippingAddressModal({ onSubmit, onCancel, submitting, error }: ShippingModalProps) {
+function CheckoutModal({ listingId, onClose, onOrderCreated }: CheckoutModalProps) {
+  const [step, setStep] = useState<CheckoutStep>('address');
   const [form, setForm] = useState<ShippingAddress>({
     name: '', line1: '', line2: '', city: '', state: '', zip: '', phone: '',
   });
+  const [rates, setRates] = useState<ShippingRate[]>([]);
+  const [selectedRate, setSelectedRate] = useState<ShippingRate | null>(null);
+  const [loadingRates, setLoadingRates] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  const [stubMode, setStubMode] = useState(false);
 
-  function set(field: keyof ShippingAddress, value: string) {
+  function setField(field: keyof ShippingAddress, value: string) {
     setForm((f) => ({ ...f, [field]: value }));
   }
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleAddressSubmit(e: React.FormEvent) {
     e.preventDefault();
-    await onSubmit(form);
+    setError('');
+    setLoadingRates(true);
+    try {
+      const data = await getShippingRates(listingId, form);
+      setRates(data.rates);
+      setStubMode(data.stub);
+      setSelectedRate(data.rates[0] ?? null);
+      setStep('rates');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch shipping rates');
+    } finally {
+      setLoadingRates(false);
+    }
   }
+
+  async function handlePlaceOrder() {
+    if (!selectedRate) return;
+    setSubmitting(true);
+    setError('');
+    try {
+      const res = await createOrder({
+        listing_id: listingId,
+        shipping_address: form,
+        shippo_rate_id: selectedRate.rate_id,
+        rate_token: selectedRate.rate_token,
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || 'Could not create order');
+        setSubmitting(false);
+        return;
+      }
+      onOrderCreated(data.id);
+    } catch {
+      setError('Network error');
+      setSubmitting(false);
+    }
+  }
+
+  const inputCls = 'w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-brand-600';
+  const halfCls  = 'border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-brand-600';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6">
-        <h2 className="text-lg font-bold text-gray-900 mb-1">Ship-to Address</h2>
-        <p className="text-sm text-gray-500 mb-5">Enter the address where you want this item delivered.</p>
-        <form onSubmit={handleSubmit} className="space-y-3">
-          <input
-            required placeholder="Full name"
-            className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-brand-600"
-            value={form.name} onChange={(e) => set('name', e.target.value)}
-          />
-          <input
-            required placeholder="Address line 1"
-            className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-brand-600"
-            value={form.line1} onChange={(e) => set('line1', e.target.value)}
-          />
-          <input
-            placeholder="Address line 2 (optional)"
-            className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-brand-600"
-            value={form.line2 ?? ''} onChange={(e) => set('line2', e.target.value)}
-          />
-          <div className="grid grid-cols-2 gap-3">
-            <input
-              required placeholder="City"
-              className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-brand-600"
-              value={form.city} onChange={(e) => set('city', e.target.value)}
-            />
-            <select
-              required
-              className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-brand-600 bg-white"
-              value={form.state} onChange={(e) => set('state', e.target.value)}
-            >
-              <option value="">State</option>
-              {US_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <input
-              required placeholder="ZIP code" pattern="\d{5}(-\d{4})?"
-              className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-brand-600"
-              value={form.zip} onChange={(e) => set('zip', e.target.value)}
-            />
-            <input
-              placeholder="Phone (optional)"
-              className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-brand-600"
-              value={form.phone ?? ''} onChange={(e) => set('phone', e.target.value)}
-            />
-          </div>
-          {error && <p className="text-red-600 text-sm">{error}</p>}
-          <div className="flex gap-3 pt-1">
-            <button
-              type="button" onClick={onCancel}
-              className="flex-1 border border-gray-200 text-gray-700 py-2.5 rounded-xl font-semibold text-sm hover:bg-gray-50 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit" disabled={submitting}
-              className="flex-1 bg-brand-700 text-white py-2.5 rounded-xl font-bold text-sm hover:bg-brand-800 disabled:opacity-50 transition-colors"
-            >
-              {submitting ? 'Processing...' : 'Continue to Payment'}
-            </button>
-          </div>
-        </form>
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 max-h-[90vh] overflow-y-auto">
+
+        {/* ── Step 1: Address ── */}
+        {step === 'address' && (
+          <>
+            <h2 className="text-lg font-bold text-gray-900 mb-1">Ship-to Address</h2>
+            <p className="text-sm text-gray-500 mb-5">Enter the address where you want this item delivered.</p>
+            <form onSubmit={handleAddressSubmit} className="space-y-3">
+              <input required placeholder="Full name" className={inputCls}
+                value={form.name} onChange={(e) => setField('name', e.target.value)} />
+              <input required placeholder="Address line 1" className={inputCls}
+                value={form.line1} onChange={(e) => setField('line1', e.target.value)} />
+              <input placeholder="Address line 2 (optional)" className={inputCls}
+                value={form.line2 ?? ''} onChange={(e) => setField('line2', e.target.value)} />
+              <div className="grid grid-cols-2 gap-3">
+                <input required placeholder="City" className={halfCls}
+                  value={form.city} onChange={(e) => setField('city', e.target.value)} />
+                <select required className={halfCls + ' bg-white'}
+                  value={form.state} onChange={(e) => setField('state', e.target.value)}>
+                  <option value="">State</option>
+                  {US_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <input required placeholder="ZIP code" pattern="\d{5}(-\d{4})?" className={halfCls}
+                  value={form.zip} onChange={(e) => setField('zip', e.target.value)} />
+                <input placeholder="Phone (optional)" className={halfCls}
+                  value={form.phone ?? ''} onChange={(e) => setField('phone', e.target.value)} />
+              </div>
+              {error && <p className="text-red-600 text-sm">{error}</p>}
+              <div className="flex gap-3 pt-1">
+                <button type="button" onClick={onClose}
+                  className="flex-1 border border-gray-200 text-gray-700 py-2.5 rounded-xl font-semibold text-sm hover:bg-gray-50 transition-colors">
+                  Cancel
+                </button>
+                <button type="submit" disabled={loadingRates}
+                  className="flex-1 bg-brand-700 text-white py-2.5 rounded-xl font-bold text-sm hover:bg-brand-800 disabled:opacity-50 transition-colors flex items-center justify-center gap-2">
+                  {loadingRates ? (
+                    <>
+                      <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                      </svg>
+                      Fetching rates…
+                    </>
+                  ) : 'Get Shipping Rates'}
+                </button>
+              </div>
+            </form>
+          </>
+        )}
+
+        {/* ── Step 2: Rate selection ── */}
+        {step === 'rates' && (
+          <>
+            <h2 className="text-lg font-bold text-gray-900 mb-1">Select Shipping</h2>
+            <p className="text-sm text-gray-500 mb-4">
+              Shipping to <span className="font-medium text-gray-700">{form.city}, {form.state} {form.zip}</span>.{' '}
+              <button onClick={() => { setStep('address'); setError(''); }}
+                className="text-brand-700 underline text-xs">Change address</button>
+            </p>
+            {stubMode && (
+              <div className="mb-3 flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                <svg className="w-4 h-4 text-amber-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <p className="text-xs text-amber-800"><span className="font-semibold">Stub mode</span> — sample rates, not real carrier quotes.</p>
+              </div>
+            )}
+            {rates.length === 0 ? (
+              <p className="text-sm text-gray-500 py-4 text-center">No shipping rates available for this address.</p>
+            ) : (
+              <div className="space-y-2 mb-4">
+                {rates.map((r) => (
+                  <button
+                    key={r.rate_id}
+                    onClick={() => setSelectedRate(r)}
+                    className={`w-full flex items-center justify-between rounded-xl border-2 px-4 py-3 text-left transition-all ${
+                      selectedRate?.rate_id === r.rate_id
+                        ? 'border-brand-600 bg-brand-50'
+                        : 'border-gray-200 hover:border-gray-300'
+                    }`}
+                  >
+                    <div>
+                      <p className="text-sm font-semibold text-gray-800">{r.carrier} — {r.service}</p>
+                      {r.est_days != null && (
+                        <p className="text-xs text-gray-500 mt-0.5">{r.est_days} business day{r.est_days !== 1 ? 's' : ''} estimated</p>
+                      )}
+                      {r.est_delivery && !r.est_days && (
+                        <p className="text-xs text-gray-500 mt-0.5">{r.est_delivery}</p>
+                      )}
+                    </div>
+                    <span className="text-sm font-bold text-gray-900 ml-4 shrink-0">
+                      ${(r.price_cents / 100).toFixed(2)}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {error && <p className="text-red-600 text-sm mb-3">{error}</p>}
+            <div className="flex gap-3">
+              <button onClick={() => { setStep('address'); setError(''); }}
+                className="flex-1 border border-gray-200 text-gray-700 py-2.5 rounded-xl font-semibold text-sm hover:bg-gray-50 transition-colors">
+                Back
+              </button>
+              <button
+                onClick={() => { setError(''); setStep('confirm'); }}
+                disabled={!selectedRate}
+                className="flex-1 bg-brand-700 text-white py-2.5 rounded-xl font-bold text-sm hover:bg-brand-800 disabled:opacity-50 transition-colors">
+                Continue
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* ── Step 3: Confirm & place order ── */}
+        {step === 'confirm' && selectedRate && (
+          <>
+            <h2 className="text-lg font-bold text-gray-900 mb-4">Order Summary</h2>
+            <div className="bg-gray-50 rounded-xl p-4 space-y-2 mb-4 text-sm">
+              <div className="flex justify-between text-gray-600">
+                <span>Ship to</span>
+                <span className="font-medium text-gray-800 text-right max-w-[60%]">
+                  {form.name}, {form.line1}, {form.city} {form.state} {form.zip}
+                </span>
+              </div>
+              <div className="flex justify-between text-gray-600">
+                <span>Shipping</span>
+                <span className="font-medium text-gray-800">
+                  {selectedRate.carrier} {selectedRate.service} — ${(selectedRate.price_cents / 100).toFixed(2)}
+                </span>
+              </div>
+              <button onClick={() => { setStep('rates'); setError(''); }}
+                className="text-xs text-brand-700 underline">Change shipping</button>
+            </div>
+            {error && <p className="text-red-600 text-sm mb-3">{error}</p>}
+            <div className="flex gap-3">
+              <button onClick={() => { setStep('rates'); setError(''); }}
+                className="flex-1 border border-gray-200 text-gray-700 py-2.5 rounded-xl font-semibold text-sm hover:bg-gray-50 transition-colors">
+                Back
+              </button>
+              <button onClick={handlePlaceOrder} disabled={submitting}
+                className="flex-1 bg-brand-700 text-white py-2.5 rounded-xl font-bold text-sm hover:bg-brand-800 disabled:opacity-50 transition-colors flex items-center justify-center gap-2">
+                {submitting ? (
+                  <>
+                    <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                    </svg>
+                    Processing…
+                  </>
+                ) : 'Continue to Payment'}
+              </button>
+            </div>
+          </>
+        )}
+
       </div>
     </div>
   );
@@ -139,12 +286,10 @@ export default function ListingDetailClient({ initialListing }: ListingDetailCli
   const user = useUser();
   const [listing, setListing] = useState<Listing | null>(initialListing ?? null);
   const [loading, setLoading] = useState(!initialListing);
-  const [buying, setBuying] = useState(false);
   const [error, setError] = useState('');
   const [activePhoto, setActivePhoto] = useState(0);
   const [sellerRating, setSellerRating] = useState<{ average_rating: number | null; count: number } | null>(null);
-  const [showAddressModal, setShowAddressModal] = useState(false);
-  const [addrError, setAddrError] = useState('');
+  const [showCheckout, setShowCheckout] = useState(false);
 
   useEffect(() => {
     if (initialListing) {
@@ -166,29 +311,7 @@ export default function ListingDetailClient({ initialListing }: ListingDetailCli
   function handleBuy() {
     if (!user) { router.push('/login'); return; }
     if (!listing) return;
-    setAddrError('');
-    setShowAddressModal(true);
-  }
-
-  async function handleAddressSubmit(addr: ShippingAddress) {
-    if (!listing) return;
-    setBuying(true);
-    setAddrError('');
-    setError('');
-    try {
-      const res = await createOrder({ listing_id: listing.id, shipping_address: addr });
-      const data = await res.json();
-      if (!res.ok) {
-        setAddrError(data.error || 'Could not create order');
-        return;
-      }
-      setShowAddressModal(false);
-      router.push(`/checkout/${data.id}`);
-    } catch {
-      setAddrError('Network error');
-    } finally {
-      setBuying(false);
-    }
+    setShowCheckout(true);
   }
 
   if (loading) {
@@ -231,12 +354,11 @@ export default function ListingDetailClient({ initialListing }: ListingDetailCli
 
   return (
     <div className="max-w-5xl mx-auto">
-      {showAddressModal && (
-        <ShippingAddressModal
-          onSubmit={handleAddressSubmit}
-          onCancel={() => { setShowAddressModal(false); setAddrError(''); }}
-          submitting={buying}
-          error={addrError}
+      {showCheckout && listing && (
+        <CheckoutModal
+          listingId={listing.id}
+          onClose={() => setShowCheckout(false)}
+          onOrderCreated={(orderId) => router.push(`/checkout/${orderId}`)}
         />
       )}
       {/* Breadcrumb */}
@@ -346,25 +468,12 @@ export default function ListingDetailClient({ initialListing }: ListingDetailCli
               {user?.role === 'buyer' ? (
                 <button
                   onClick={handleBuy}
-                  disabled={buying}
-                  className="w-full bg-brand-700 text-white py-3.5 rounded-xl font-bold text-lg hover:bg-brand-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+                  className="w-full bg-brand-700 text-white py-3.5 rounded-xl font-bold text-lg hover:bg-brand-800 transition-colors flex items-center justify-center gap-2"
                 >
-                  {buying ? (
-                    <>
-                      <svg className="animate-spin w-5 h-5" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-                      </svg>
-                      Processing...
-                    </>
-                  ) : (
-                    <>
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
-                      </svg>
-                      Buy Now
-                    </>
-                  )}
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
+                  </svg>
+                  Buy Now
                 </button>
               ) : !user ? (
                 <Link
