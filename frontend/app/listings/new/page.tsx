@@ -2,11 +2,26 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import AuthGuard from '@/components/AuthGuard';
 import { createListing, uploadPhoto, syncListingToEscrow, auditListing, applySeoSuggestions, patchListing } from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
-import { useUser } from '@/lib/auth';
+import { useAuth } from '@/lib/auth';
 import type { SeoAuditResult, SeoFields } from '@/lib/types';
+
+// Decode the has_ship_from_address claim from the access token without
+// verifying the signature (the server already verified it on login/refresh).
+// Returns true when the claim is set, false when explicitly absent.
+// Falls back to true (no banner) if the token is missing or unparseable.
+function parseHasShipFrom(token: string | null): boolean {
+  if (!token) return true;
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+    return !!payload.has_ship_from_address;
+  } catch {
+    return true;
+  }
+}
 
 const CATEGORIES = [
   { value: 'bat',     label: 'Cricket Bat' },
@@ -40,7 +55,8 @@ export default function NewListingPage() {
 
 function NewListingForm() {
   const router = useRouter();
-  const user = useUser();
+  const { user, accessToken } = useAuth();
+  const hasShipFrom = parseHasShipFrom(accessToken);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [priceStr, setPriceStr] = useState('');
@@ -178,6 +194,32 @@ function NewListingForm() {
         <h1 className="text-2xl font-bold text-gray-900">List an Item</h1>
         <p className="text-gray-500 text-sm mt-1">Fill in the details below. Your listing goes live immediately.</p>
       </div>
+
+      {/* Ship-from address prerequisite banner */}
+      {!hasShipFrom && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-5 flex items-start justify-between gap-4 mb-6">
+          <div className="flex items-start gap-3">
+            <div className="w-9 h-9 bg-amber-200 rounded-full flex items-center justify-center shrink-0 mt-0.5">
+              <svg className="w-5 h-5 text-amber-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+            </div>
+            <div>
+              <p className="font-semibold text-amber-900 text-sm">Ship-from Address Required</p>
+              <p className="text-xs text-amber-700 mt-0.5">
+                You must add a ship-from address before publishing a listing. Add it on your Seller Dashboard, then return here to continue.
+              </p>
+            </div>
+          </div>
+          <Link
+            href="/dashboard/seller"
+            className="shrink-0 bg-amber-600 text-white text-sm font-semibold px-4 py-2 rounded-lg hover:bg-amber-700 transition-colors"
+          >
+            Add Address
+          </Link>
+        </div>
+      )}
 
       <form onSubmit={handleSubmit} className="space-y-5">
         <ErrorAlert message={error} />
