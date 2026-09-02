@@ -73,6 +73,30 @@ function assertEqual(a, b, msg) {
     );
   });
 
+  await test('permanent production domain allowed independently of FRONTEND_ORIGIN (via regex)', async () => {
+    // Build a fresh app instance with FRONTEND_ORIGIN pointing elsewhere, so the
+    // production domain is only allowed if VERCEL_PROD_RE covers it.
+    const saved = process.env.FRONTEND_ORIGIN;
+    process.env.FRONTEND_ORIGIN = 'http://localhost:3003';
+    const app2 = buildApp();
+    process.env.FRONTEND_ORIGIN = saved;
+    const origin = 'https://css-marketplace-frontend.vercel.app';
+    const res = await request(app2).get('/health/live').set('Origin', origin);
+    assertEqual(
+      res.headers['access-control-allow-origin'], origin,
+      `expected ACAO=${origin}, got: ${res.headers['access-control-allow-origin']}`
+    );
+  });
+
+  await test('Vercel team alias (css-marketplace-frontend-sk20039s-projects.vercel.app) is allowed', async () => {
+    const origin = 'https://css-marketplace-frontend-sk20039s-projects.vercel.app';
+    const res = await request(app).get('/health/live').set('Origin', origin);
+    assertEqual(
+      res.headers['access-control-allow-origin'], origin,
+      `expected ACAO=${origin}, got: ${res.headers['access-control-allow-origin']}`
+    );
+  });
+
   await test('unrelated Vercel project with same team is rejected', async () => {
     const origin = 'https://evil-project-abc123-sk20039s-projects.vercel.app';
     const res = await request(app).get('/health/live').set('Origin', origin);
