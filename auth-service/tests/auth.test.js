@@ -3,8 +3,7 @@
 // Requires:
 //   1. PostgreSQL running (pg_isready on 127.0.0.1:5432)
 //   2. auth_db_test database created and schema migrated (or trust beforeAll)
-//   3. auth-service/data/auth.sqlite3 present (for imported-account tests)
-//   4. DATABASE_URL_TEST env var (default: postgres://auth_user:auth_pass@...)
+//   3. DATABASE_URL_TEST env var (default: postgres://auth_user:auth_pass@...)
 //
 // Run: node tests/auth.test.js
 'use strict';
@@ -24,8 +23,6 @@ delete process.env.ADMIN_JWT_SECRET;
 const request = require('supertest');
 const { Pool } = require('pg');
 const jwt = require('jsonwebtoken');
-const path = require('path');
-const Database = require('better-sqlite3');
 const { buildApp } = require('../src/app');
 const crypto = require('crypto');
 const bcryptjs = require('bcryptjs');
@@ -54,7 +51,7 @@ function assert(condition, message) {
   if (!condition) throw new Error(message || 'Assertion failed');
 }
 
-// ── Schema + import helpers ───────────────────────────────────────────────────
+// ── Schema + seed helpers ─────────────────────────────────────────────────────
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS users (
@@ -100,45 +97,30 @@ const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user ON password_reset_tokens(user_id);
 `;
 
-async function importSqliteUsers(client) {
-  const sqlitePath = path.join(__dirname, '..', 'data', 'auth.sqlite3');
-  const sqlite = new Database(sqlitePath, { readonly: true });
-  try {
-    const users = sqlite.prepare('SELECT * FROM users').all();
-    const tokens = sqlite
-      .prepare("SELECT * FROM refresh_tokens WHERE expires_at > datetime('now')")
-      .all();
+// Demo users seeded directly — same IDs, emails, roles, passwords, and
+// Stripe account ID as the former SQLite import. No native module needed.
+const DEMO_USERS = [
+  { id: 3, name: 'Demo Seller', email: 'demo.seller@cricket.test', password: 'Demo1234!',  role: 'seller', stripe_account_id: 'acct_1U590xBKfStkw42B' },
+  { id: 4, name: 'Test Buyer',  email: 'buyer@cricket.test',       password: 'Buyer1234!', role: 'buyer',  stripe_account_id: null },
+  { id: 5, name: 'Test Admin',  email: 'admin@cricket.test',       password: 'Admin1234!', role: 'admin',  stripe_account_id: null },
+];
 
-    for (const row of users) {
-      await client.query(
-        `INSERT INTO users
-           (id, name, email, password_hash, role, stripe_account_id, email_verified, created_at)
-         OVERRIDING SYSTEM VALUE
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         ON CONFLICT (id) DO NOTHING`,
-        [row.id, row.name, row.email, row.password_hash, row.role || 'buyer',
-         row.stripe_account_id || null, row.email_verified === 1, row.created_at]
-      );
-    }
-    for (const row of tokens) {
-      await client.query(
-        `INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, created_at)
-         OVERRIDING SYSTEM VALUE
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (id) DO NOTHING`,
-        [row.id, row.user_id, row.token_hash, row.expires_at, row.created_at]
-      );
-    }
+async function seedDemoUsers(client) {
+  for (const u of DEMO_USERS) {
+    const hash = await bcryptjs.hash(u.password, 4); // cost 4: fast for tests
     await client.query(
-      `SELECT setval(pg_get_serial_sequence('users','id'), GREATEST(COALESCE((SELECT MAX(id) FROM users), 0), 1))`
+      `INSERT INTO users
+         (id, name, email, password_hash, role, stripe_account_id, email_verified)
+       OVERRIDING SYSTEM VALUE
+       VALUES ($1, $2, $3, $4, $5, $6, true)
+       ON CONFLICT (id) DO NOTHING`,
+      [u.id, u.name, u.email, hash, u.role, u.stripe_account_id]
     );
-    await client.query(
-      `SELECT setval(pg_get_serial_sequence('refresh_tokens','id'), GREATEST(COALESCE((SELECT MAX(id) FROM refresh_tokens), 0), 1))`
-    );
-    return { users: users.length, tokens: tokens.length };
-  } finally {
-    sqlite.close();
   }
+  await client.query(
+    `SELECT setval(pg_get_serial_sequence('users','id'), GREATEST(COALESCE((SELECT MAX(id) FROM users), 0), 1))`
+  );
+  return { users: DEMO_USERS.length, tokens: 0 };
 }
 
 // ── Unique email helper ───────────────────────────────────────────────────────
@@ -153,17 +135,17 @@ function uniqueEmail() {
 async function run() {
   console.log('Auth service — PostgreSQL integration tests\n');
 
-  // Setup: apply schema and import real SQLite data once
+  // Setup: apply schema and seed demo users
   await pool.query('TRUNCATE TABLE password_reset_tokens, email_verification_tokens, refresh_tokens, users RESTART IDENTITY CASCADE');
   await pool.query(SCHEMA_SQL);
   const client = await pool.connect();
-  let imported;
+  let seeded;
   try {
-    imported = await importSqliteUsers(client);
+    seeded = await seedDemoUsers(client);
   } finally {
     client.release();
   }
-  console.log(`Setup: imported ${imported.users} user(s), ${imported.tokens} refresh token(s) from SQLite\n`);
+  console.log(`Setup: seeded ${seeded.users} demo user(s)\n`);
 
   // ── POST /auth/register ───────────────────────────────────────────────────
   // NOTE: registerLimiter allows max 5 requests per IP per hour.
@@ -348,13 +330,13 @@ async function run() {
     assert(new Date(newRows[0].expires_at) > new Date(), 'replacement token should not be expired');
   });
 
-  // ── POST /auth/login — imported real accounts ─────────────────────────────
-  console.log('\nPOST /auth/login — imported accounts');
+  // ── POST /auth/login — seeded demo accounts ───────────────────────────────
+  console.log('\nPOST /auth/login — seeded accounts');
 
   let buyerToken, sellerToken, adminToken;
   let buyerRefreshCookie, sellerRefreshCookie;
 
-  await test('imported buyer (buyer@cricket.test) can log in', async () => {
+  await test('seeded buyer (buyer@cricket.test) can log in', async () => {
     const res = await request(app).post('/auth/login')
       .send({ email: 'buyer@cricket.test', password: 'Buyer1234!' });
     assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
@@ -364,7 +346,7 @@ async function run() {
     buyerRefreshCookie = res.headers['set-cookie'];
   });
 
-  await test('imported seller (demo.seller@cricket.test) can log in', async () => {
+  await test('seeded seller (demo.seller@cricket.test) can log in', async () => {
     const res = await request(app).post('/auth/login')
       .send({ email: 'demo.seller@cricket.test', password: 'Demo1234!' });
     assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
@@ -374,7 +356,7 @@ async function run() {
     sellerRefreshCookie = res.headers['set-cookie'];
   });
 
-  await test('imported admin (admin@cricket.test) can log in', async () => {
+  await test('seeded admin (admin@cricket.test) can log in', async () => {
     const res = await request(app).post('/auth/login')
       .send({ email: 'admin@cricket.test', password: 'Admin1234!' });
     assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);

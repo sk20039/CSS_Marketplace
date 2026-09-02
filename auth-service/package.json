@@ -26,7 +26,6 @@
     "stripe": "^16.12.0"
   },
   "devDependencies": {
-    "better-sqlite3": "^13.0.3",
     "supertest": "^7.0.0"
   }
 }
