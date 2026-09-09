@@ -4,18 +4,21 @@
 
 const pool = require('./db');
 const { stripeClient } = require('./stripeClient');
+const shippoClient = require('./shippoClient');
 const {
   FinalizeConflictError,
   finalizeCaptured,
   finalizeReleased,
   finalizeRefunded,
   finalizeCancelled,
+  finalizeLabeled,
+  revertLabelPurchase,
 } = require('./orderService');
 
 const STALE_THRESHOLD_MINUTES = Number(process.env.STALE_THRESHOLD_MINUTES || 10);
 const CLAIM_EXPIRY_MINUTES    = STALE_THRESHOLD_MINUTES * 2;
 
-const TRANSIENT_STATUSES = ['CAPTURING', 'RELEASING', 'REFUNDING', 'CANCELLING'];
+const TRANSIENT_STATUSES = ['CAPTURING', 'RELEASING', 'REFUNDING', 'CANCELLING', 'LABELING'];
 
 let recoveryInProgress = false;
 
@@ -149,6 +152,7 @@ async function _recoverOrder(order) {
     case 'RELEASING':  return _reconcileReleasing(order);
     case 'REFUNDING':  return _reconcileRefunding(order);
     case 'CANCELLING': return _reconcileCancelling(order);
+    case 'LABELING':   return _reconcileLabeling(order);
     default:
       throw new Error(`Unexpected status for recovery: ${order.status}`);
   }
@@ -394,6 +398,84 @@ async function _reconcileCancelling(order) {
   }
 
   await recordEvent(order.id, 'RECOVERY_CANCELLED', { stripeRefundId: stripeRefund.id });
+  return { outcome: 'finalized' };
+}
+
+// ---------------------------------------------------------------------------
+// LABELING
+// ---------------------------------------------------------------------------
+//
+// An order stuck in LABELING means either:
+//   (a) The Shippo call succeeded but the process crashed before finalizeLabeled
+//       wrote to the DB — we must find and finalize that transaction.
+//   (b) The Shippo call was in-flight when the network dropped — we query Shippo
+//       to determine whether a transaction was created.
+//
+// Idempotency: the recovery_claimed_at atomic claim in _sweep() ensures only one
+// worker reaches this function per order.  finalizeLabeled()'s WHERE status='LABELING'
+// guard provides a second layer in case of clock skew between claim expiry and a
+// concurrent sweep.
+
+async function _reconcileLabeling(order) {
+  // Query Shippo for any transaction created for this rate and order.
+  let shippoResult;
+  try {
+    shippoResult = await shippoClient.findTransactionByRate(order.shippo_rate_id, order.id);
+  } catch (queryErr) {
+    // Cannot reach Shippo — outcome unknown, retry next sweep.
+    return _ambiguous(order, `Cannot query Shippo to verify label purchase: ${queryErr.message}`);
+  }
+
+  // null → positive confirmation no transaction was created → safe to revert.
+  if (shippoResult === null) {
+    await revertLabelPurchase(order.id, {
+      reason: 'Shippo returned no transaction for this rate — label was never created',
+    });
+    await recordEvent(order.id, 'RECOVERY_LABEL_REVERTED', {
+      reason: 'no Shippo transaction found', rateId: order.shippo_rate_id,
+    });
+    return { outcome: 'finalized' };
+  }
+
+  // error → Shippo created a transaction record but the label failed → revert.
+  if (shippoResult.error) {
+    await revertLabelPurchase(order.id, {
+      reason: 'Shippo transaction has ERROR status — label purchase definitively failed',
+    });
+    await recordEvent(order.id, 'RECOVERY_LABEL_REVERTED', {
+      reason: 'Shippo transaction status ERROR', rateId: order.shippo_rate_id,
+    });
+    return { outcome: 'finalized' };
+  }
+
+  // pending → QUEUED/WAITING (should not occur with async:false; leave in LABELING).
+  if (shippoResult.pending) {
+    return _ambiguous(
+      order,
+      `Shippo transaction is still pending (status: ${shippoResult.status}) — will retry`
+    );
+  }
+
+  // SUCCESS → finalize using the found transaction.
+  try {
+    await finalizeLabeled(order, shippoResult);
+  } catch (err) {
+    if (err instanceof FinalizeConflictError) {
+      await recordEvent(order.id, 'RECOVERY_LABEL_FINALIZE_CONFLICT', {
+        note: 'finalize conflict — order already finalized by concurrent path',
+        labelId: shippoResult.label_id,
+      });
+      return { outcome: 'finalized' };
+    }
+    throw err;
+  }
+
+  await recordEvent(order.id, 'RECOVERY_LABEL_PURCHASED', {
+    labelId:        shippoResult.label_id,
+    trackingNumber: shippoResult.tracking_number,
+    note:           'finalized existing Shippo transaction during recovery',
+  });
+
   return { outcome: 'finalized' };
 }
 

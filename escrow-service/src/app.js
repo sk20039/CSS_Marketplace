@@ -6,7 +6,7 @@ const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const pool = require('./db');
 const orderService = require('./orderService');
-const { runReleaseCheck, cancelOrder } = require('./orderService');
+const { runReleaseCheck, cancelOrder, purchaseLabelForOrder } = require('./orderService');
 const { runRecovery } = require('./recoveryService');
 const { OrderError } = orderService;
 const requireAuth = require('./middleware/requireAuth');
@@ -20,6 +20,15 @@ function isParty(user, order) {
     String(user.id) === String(order.buyer_id) ||
     String(user.id) === String(order.seller_id)
   );
+}
+
+// Strip seller-only label fields from order objects returned to buyers.
+// label_url is a presigned PDF download link — buyers should not have direct
+// access (they receive tracking info separately).
+function redactLabelFields(order) {
+  // eslint-disable-next-line no-unused-vars
+  const { label_url, label_voided_at, label_void_refund_cents, ...rest } = order;
+  return rest;
 }
 
 function buildApp() {
@@ -107,6 +116,13 @@ function buildApp() {
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many recovery requests from this IP, please try again later' },
+  });
+  const labelPurchaseLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: Number(process.env.RATE_LIMIT_LABEL_PURCHASE_MAX || 20),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many label purchase requests from this IP, please try again later' },
   });
 
   // Health checks — no auth required.
@@ -240,6 +256,12 @@ function buildApp() {
         const wanted = String(status).split(',').map((s) => s.trim().toUpperCase());
         orders = orders.filter((o) => wanted.includes(o.status));
       }
+      // Redact seller-only label fields for buyers (list may mix buyer+seller orders).
+      if (req.user.role !== 'admin') {
+        orders = orders.map((o) =>
+          String(req.user.id) === String(o.seller_id) ? o : redactLabelFields(o)
+        );
+      }
       res.json(orders);
     } catch (err) { next(err); }
   });
@@ -248,7 +270,9 @@ function buildApp() {
     try {
       const order = await orderService.getOrderWithTimeline(req.params.id);
       if (!isParty(req.user, order)) throw new OrderError('Forbidden: not a party to this order', 403);
-      res.json(order);
+      const isSeller = String(req.user.id) === String(order.seller_id);
+      const isAdmin  = req.user.role === 'admin';
+      res.json((isSeller || isAdmin) ? order : redactLabelFields(order));
     } catch (err) { next(err); }
   });
 
@@ -277,6 +301,21 @@ function buildApp() {
         throw new OrderError('Forbidden: only the buyer can pay for this order', 403);
       }
       res.json(await orderService.captureOrder(req.params.id));
+    } catch (err) { next(err); }
+  });
+
+  // POST /orders/:id/purchase-label
+  // Seller purchases a Shippo shipping label for a HELD order.
+  // Returns the updated order (with label_id, label_url, tracking_number).
+  // Idempotent: if a label is already purchased, returns the current state.
+  // Concurrency-safe: HELD→LABELING state transition prevents duplicate calls.
+  app.post('/orders/:id/purchase-label', labelPurchaseLimiter, requireAuth, async (req, res, next) => {
+    try {
+      const order = await orderService.getOrderWithTimeline(req.params.id);
+      if (req.user.role !== 'admin' && String(req.user.id) !== String(order.seller_id)) {
+        throw new OrderError('Forbidden: only the seller can purchase a label for this order', 403);
+      }
+      res.json(await purchaseLabelForOrder(req.params.id));
     } catch (err) { next(err); }
   });
 

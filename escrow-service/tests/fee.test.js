@@ -239,6 +239,9 @@ async function driveToHeld(priceCents) {
 
 async function driveToDelivered(priceCents) {
   const held = await driveToHeld(priceCents);
+  // Phase 3: purchase label before ship.
+  const label = await post(appServer, `/orders/${held.id}/purchase-label`, sellerToken);
+  if (label.status !== 200) throw new Error(`purchaseLabel failed: ${JSON.stringify(label.body)}`);
   const shipped = await post(appServer, `/orders/${held.id}/ship`, sellerToken);
   if (shipped.status !== 200) throw new Error(`ship failed`);
   const delivered = await post(appServer, `/orders/${held.id}/deliver`, sellerToken);

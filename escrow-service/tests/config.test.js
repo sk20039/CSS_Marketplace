@@ -41,6 +41,7 @@ const VALID = {
   JWT_SECRET:               'a-very-long-jwt-secret-that-is-at-least-32-chars!!',
   ADMIN_JWT_SECRET:         'another-long-admin-secret-at-least-32-characters!!',
   STRIPE_SECRET_KEY:        'sk_test_FAKE_KEY_FOR_CONFIG_TESTS_ONLY',
+  SHIPPO_API_KEY:           'shippo_test_FAKE_KEY_FOR_CONFIG_TESTS_ONLY',
   LISTING_SERVICE_URL:      'http://listing.railway.internal:3002',
   APP_BASE_URL:             'https://api.example.com',
   FRONTEND_ORIGIN:          'https://example.com',

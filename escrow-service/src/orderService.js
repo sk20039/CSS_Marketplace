@@ -59,6 +59,20 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+// Compute ship-by date = 3 business days from fromDate (calendar days only,
+// no US-holiday adjustment in Phase 3).  Called at HELD so the clock starts
+// the moment payment is captured.
+function computeShipByDate(fromDate) {
+  const d = new Date(fromDate);
+  let bdays = 0;
+  while (bdays < 3) {
+    d.setDate(d.getDate() + 1);
+    const dow = d.getDay(); // 0=Sun, 6=Sat
+    if (dow !== 0 && dow !== 6) bdays++;
+  }
+  return d.toISOString();
+}
+
 // Serialize a TIMESTAMPTZ column returned by pg (Date object or ISO string) to ISO string.
 function ts(v) {
   if (v == null) return null;
@@ -75,13 +89,15 @@ function normalizeOrder(row) {
   const { shipping_address, ...rest } = row;
   return {
     ...rest,
-    shipped_at:           ts(row.shipped_at),
-    delivered_at:         ts(row.delivered_at),
-    window_expires_at:    ts(row.window_expires_at),
-    created_at:           ts(row.created_at),
-    updated_at:           ts(row.updated_at),
+    shipped_at:            ts(row.shipped_at),
+    delivered_at:          ts(row.delivered_at),
+    window_expires_at:     ts(row.window_expires_at),
+    ship_by_date:          ts(row.ship_by_date),
+    label_voided_at:       ts(row.label_voided_at),
+    created_at:            ts(row.created_at),
+    updated_at:            ts(row.updated_at),
     transition_started_at: ts(row.transition_started_at),
-    recovery_claimed_at:  ts(row.recovery_claimed_at),
+    recovery_claimed_at:   ts(row.recovery_claimed_at),
   };
 }
 
@@ -477,8 +493,9 @@ async function captureOrder(id) {
 
 // Shared capture finalization — called by captureOrder and by recoveryService.
 async function finalizeCaptured(order, stripeCapture, { triggeredBy }) {
-  const ts_now = nowIso();
-  const client = await pool.connect();
+  const ts_now    = nowIso();
+  const shipByDate = computeShipByDate(ts_now); // 3 business days from capture
+  const client    = await pool.connect();
   let conflict = false;
 
   try {
@@ -486,9 +503,10 @@ async function finalizeCaptured(order, stripeCapture, { triggeredBy }) {
     const result = await client.query(
       `UPDATE orders
        SET status = 'HELD', stripe_payment_intent_id = $1, stripe_charge_id = $2,
-           updated_at = $3, transition_started_at = NULL, recovery_claimed_at = NULL
-       WHERE id = $4 AND status = 'CAPTURING'`,
-      [stripeCapture.id, stripeCapture.chargeId || null, ts_now, order.id]
+           ship_by_date = $3, updated_at = $4,
+           transition_started_at = NULL, recovery_claimed_at = NULL
+       WHERE id = $5 AND status = 'CAPTURING'`,
+      [stripeCapture.id, stripeCapture.chargeId || null, shipByDate, ts_now, order.id]
     );
     if (result.rowCount === 0) {
       conflict = true;
@@ -500,7 +518,8 @@ async function finalizeCaptured(order, stripeCapture, { triggeredBy }) {
       [order.id, 'PAYMENT_CAPTURED', JSON.stringify({
         triggeredBy,
         stripePaymentIntentId: stripeCapture.id,
-        chargeId: stripeCapture.chargeId || null,
+        chargeId:    stripeCapture.chargeId || null,
+        shipByDate,
       }), ts_now]
     );
     await client.query('COMMIT');
@@ -535,6 +554,17 @@ async function finalizeCaptured(order, stripeCapture, { triggeredBy }) {
 async function shipOrder(id) {
   const order = await getOrder(id);
   assertStatus(order, 'HELD');
+
+  // Phase 3: platform-purchased label is required before marking shipped.
+  // The label guarantees the carrier charge is correct and the seller has a
+  // scannable label ready to affix.
+  if (!order.label_id) {
+    throw new OrderError(
+      `Order ${id} requires a shipping label before it can be marked shipped. ` +
+      'Use POST /orders/:id/purchase-label first.',
+      422
+    );
+  }
 
   const ts_now = nowIso();
   const client = await pool.connect();
@@ -1033,6 +1063,184 @@ async function runReleaseCheck() {
 }
 
 // ---------------------------------------------------------------------------
+// POST /orders/:id/purchase-label
+// ---------------------------------------------------------------------------
+
+/**
+ * purchaseLabelForOrder — buy a Shippo shipping label for a HELD order.
+ *
+ * Idempotency:
+ *   • If label_id is already set, returns the current order state immediately
+ *     (no Shippo call, no status change).
+ *   • The HELD→LABELING transition uses AND label_id IS NULL so concurrent
+ *     callers cannot both reach Shippo — only the first UPDATE winner proceeds.
+ *
+ * Failure handling (per approved Phase 3 architecture):
+ *   • Definitive failure (Shippo 4xx / transaction ERROR):
+ *     revert LABELING → HELD immediately; caller may retry.
+ *   • Ambiguous failure (network error / Shippo 5xx):
+ *     leave in LABELING; recovery sweep will query Shippo to resolve.
+ *     Caller receives 503 and must wait.
+ *
+ * Authorization: caller must verify the user is the seller or admin before
+ * calling this function (matching the pattern used by shipOrder, cancelOrder).
+ */
+async function purchaseLabelForOrder(orderId) {
+  const order = await getOrder(orderId);
+
+  // Short-circuit: label already purchased — idempotent response.
+  if (order.label_id) {
+    return getOrderWithTimeline(orderId);
+  }
+
+  if (order.status === 'LABELING') {
+    throw new OrderError(
+      `Order ${orderId} label purchase is already in progress or awaiting recovery. ` +
+      'Please try again in a few minutes, or contact support if this persists.',
+      409
+    );
+  }
+
+  if (order.status !== 'HELD') {
+    throw new OrderError(
+      `Label can only be purchased when order is HELD (current status: ${order.status})`,
+      409
+    );
+  }
+
+  // Atomic reservation: HELD → LABELING.
+  // AND label_id IS NULL is the compound idempotency guard — a concurrent
+  // winner that finalized before us would have set label_id, causing this
+  // UPDATE to match zero rows and preventing a duplicate Shippo call.
+  const ts_now = nowIso();
+  const reserved = await pool.query(
+    `UPDATE orders
+     SET status = 'LABELING', updated_at = $1,
+         prior_status = status, transition_started_at = $2
+     WHERE id = $3 AND status = 'HELD' AND label_id IS NULL`,
+    [ts_now, ts_now, orderId]
+  );
+  if (reserved.rowCount === 0) {
+    throw await reservationConflictError(orderId, 'HELD', 'label purchased');
+  }
+
+  // Call Shippo.  Outcome determines whether we revert or stay in LABELING.
+  let labelData;
+  try {
+    labelData = await shippoClient.purchaseLabel(order.shippo_rate_id, orderId);
+  } catch (err) {
+    if (err.definitive) {
+      // Definitive failure: Shippo said no — revert to HELD and allow retry.
+      await revertTransition(orderId, 'LABELING', 'HELD');
+      await recordEvent(orderId, 'LABEL_PURCHASE_FAILED', {
+        error: err.message, definitive: true, rateId: order.shippo_rate_id,
+      });
+      throw new OrderError(`Label purchase failed: ${err.message}`, err.statusCode || 502);
+    }
+    // Ambiguous outcome (network error / 5xx): leave in LABELING.
+    // Recovery sweep will query Shippo to determine if a transaction was
+    // created and will finalize or revert accordingly.
+    await recordEvent(orderId, 'LABEL_PURCHASE_AMBIGUOUS', {
+      error: err.message, rateId: order.shippo_rate_id,
+    });
+    throw new OrderError(
+      'Label purchase outcome is uncertain due to a network error. ' +
+      'The system will verify and recover this order automatically. ' +
+      'Please try again in a few minutes.',
+      503
+    );
+  }
+
+  return finalizeLabeled(order, labelData);
+}
+
+// Shared label finalization — called by purchaseLabelForOrder and recovery.
+// Atomically transitions LABELING → HELD and writes all label fields.
+// The WHERE status='LABELING' guard is the second-layer idempotency check:
+// if two recovery workers both reach this point, only one UPDATE wins.
+async function finalizeLabeled(order, labelData) {
+  const ts_now = nowIso();
+  const client = await pool.connect();
+  let conflict = false;
+
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      `UPDATE orders
+       SET status          = 'HELD',
+           label_id         = $1,
+           label_url        = $2,
+           label_cost_cents = $3,
+           tracking_number  = $4,
+           carrier          = $5,
+           carrier_service  = $6,
+           updated_at       = $7,
+           transition_started_at = NULL,
+           recovery_claimed_at   = NULL
+       WHERE id = $8 AND status = 'LABELING'`,
+      [
+        labelData.label_id,
+        labelData.label_url,
+        order.shipping_cents,  // locked at order creation — authoritative cost
+        labelData.tracking_number,
+        labelData.carrier,
+        labelData.carrier_service,
+        ts_now,
+        order.id,
+      ]
+    );
+    if (result.rowCount === 0) {
+      conflict = true;
+      throw new FinalizeConflictError(order.id, 'label', labelData.label_id);
+    }
+    await client.query(
+      `INSERT INTO order_events (order_id, event_type, payload_json, created_at)
+       VALUES ($1, $2, $3, $4)`,
+      [order.id, 'LABEL_PURCHASED', JSON.stringify({
+        labelId:        labelData.label_id,
+        trackingNumber: labelData.tracking_number,
+        carrier:        labelData.carrier,
+        carrierService: labelData.carrier_service,
+        labelCostCents: order.shipping_cents,
+      }), ts_now]
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    if (conflict) {
+      await pool.query(
+        `INSERT INTO order_events (order_id, event_type, payload_json, created_at)
+         VALUES ($1, $2, $3, $4)`,
+        [order.id, 'LABEL_FINALIZE_CONFLICT',
+         JSON.stringify({ labelId: labelData.label_id }), ts_now]
+      );
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  return getOrderWithTimeline(order.id);
+}
+
+// Revert a LABELING order back to HELD when recovery confirms no label was
+// created.  Guarded by AND label_id IS NULL — never reverts an order that
+// was successfully finalized (which would have set label_id).
+async function revertLabelPurchase(orderId, { reason }) {
+  const ts_now = nowIso();
+  await pool.query(
+    `UPDATE orders
+     SET status = 'HELD', updated_at = $1,
+         transition_started_at = NULL, recovery_claimed_at = NULL
+     WHERE id = $2 AND status = 'LABELING' AND label_id IS NULL`,
+    [ts_now, orderId]
+  );
+  await recordEvent(orderId, 'LABEL_PURCHASE_REVERTED', {
+    triggeredBy: 'recovery', reason,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
@@ -1055,6 +1263,10 @@ module.exports = {
   finalizeReleased,
   finalizeRefunded,
   finalizeCancelled,
+  // Phase 3: label purchase
+  purchaseLabelForOrder,
+  finalizeLabeled,
+  revertLabelPurchase,
   // Exported for use by the /shipping-rates route in app.js.
   validateShippingAddressPublic,
   fetchListingPublic,

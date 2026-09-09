@@ -245,7 +245,15 @@ async function captureOrder(orderId) {
   return res.body;
 }
 
+async function purchaseLabel(orderId) {
+  const res = await post(appServer, `/orders/${orderId}/purchase-label`, sellerToken);
+  assertEqual(res.status, 200, `purchaseLabel failed: ${JSON.stringify(res.body)}`);
+  return res.body;
+}
+
 async function shipOrder(orderId) {
+  // Phase 3: label is required before shipping.
+  await purchaseLabel(orderId);
   const res = await post(appServer, `/orders/${orderId}/ship`, sellerToken);
   assertEqual(res.status, 200, `shipOrder failed: ${JSON.stringify(res.body)}`);
   return res.body;

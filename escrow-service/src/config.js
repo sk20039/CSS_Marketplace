@@ -82,6 +82,7 @@ function validateProductionEnv(env) {
   needMinLen('JWT_SECRET', MIN_SECRET_LENGTH);
   needMinLen('ADMIN_JWT_SECRET', MIN_SECRET_LENGTH);
   need('STRIPE_SECRET_KEY');
+  need('SHIPPO_API_KEY');
   needInternalUrl('LISTING_SERVICE_URL');
   needHttpsUrl('APP_BASE_URL');
   needHttpsUrl('FRONTEND_ORIGIN');

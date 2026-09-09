@@ -144,6 +144,40 @@ function _normalizeRate(r, listingId, sellerZip, buyerAddr, parcel) {
   };
 }
 
+// ── Label purchase error types ─────────────────────────────────────────────
+//
+// Callers (purchaseLabelForOrder) branch on err.definitive:
+//   true  → Shippo definitively rejected or reported ERROR; safe to revert.
+//   false → Ambiguous (network / 5xx); unknown whether label was created;
+//            leave order in LABELING and let recovery resolve.
+
+class ShippoDefinitiveError extends Error {
+  constructor(message, statusCode) {
+    super(message);
+    this.definitive  = true;
+    this.statusCode  = statusCode || 502;
+  }
+}
+
+class ShippoAmbiguousError extends Error {
+  constructor(message) {
+    super(message);
+    this.definitive  = false;
+    this.statusCode  = 503;
+  }
+}
+
+// Normalize a Shippo Transaction object into our internal label shape.
+function _normalizeLabelResult(t) {
+  return {
+    label_id:        t.object_id,
+    label_url:       t.label_url || null,
+    tracking_number: t.tracking_number || null,
+    carrier:         t.tracking_carrier || null,
+    carrier_service: t.servicelevel_token || null,
+  };
+}
+
 // ── Public API ─────────────────────────────────────────────────────────────
 
 /**
@@ -272,9 +306,172 @@ async function getRate(rateId) {
   };
 }
 
+/**
+ * purchaseLabel — buy a shipping label from Shippo for the given rate.
+ *
+ * Uses async:false so Shippo processes the purchase synchronously.
+ * Sets metadata:"order:<orderId>" for crash-recovery lookup.
+ *
+ * Throws ShippoDefinitiveError for:
+ *   - HTTP 4xx (Shippo rejected the request)
+ *   - Transaction status ERROR (Shippo processed but label failed)
+ *   - Unexpected non-SUCCESS status with async:false
+ *
+ * Throws ShippoAmbiguousError for:
+ *   - Network-level errors (timeout, ECONNRESET, etc.)
+ *   - HTTP 5xx (Shippo may have started processing)
+ *
+ * Caller must handle the two error types differently:
+ *   definitive → revert LABELING → HELD (retry is safe)
+ *   ambiguous  → leave in LABELING (recovery will query Shippo to resolve)
+ */
+async function purchaseLabel(rateId, orderId) {
+  if (!SHIPPO_API_KEY) {
+    if (IS_PRODUCTION) {
+      throw new ShippoDefinitiveError('Shippo is not configured (SHIPPO_API_KEY missing)', 503);
+    }
+    // Stub mode — return synthetic label data for local dev and tests.
+    const stubRate = STUB_RATE_MAP[rateId] || { carrier: 'USPS', service: 'Priority Mail' };
+    return {
+      label_id:        `stub_txn_${rateId}_order_${orderId}`,
+      label_url:       'https://example.com/stub-label-sample.pdf',
+      tracking_number: `STUB${Date.now()}`,
+      carrier:         stubRate.carrier,
+      carrier_service: stubRate.service,
+    };
+  }
+
+  let res;
+  try {
+    res = await _shippoFetch('/transactions/', 'POST', {
+      rate:            rateId,
+      label_file_type: 'PDF',
+      async:           false,
+      metadata:        `order:${orderId}`,
+    });
+  } catch (networkErr) {
+    // Network-level failure: the request may or may not have reached Shippo.
+    throw new ShippoAmbiguousError(
+      `Network error contacting Shippo during label purchase: ${networkErr.message}`
+    );
+  }
+
+  // HTTP 4xx — definitive: Shippo rejected the request before creating anything.
+  if (res.status >= 400 && res.status < 500) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new ShippoDefinitiveError(
+      `Shippo label purchase rejected (HTTP ${res.status}): ` +
+      (errBody.detail || errBody.non_field_errors || JSON.stringify(errBody)),
+      502
+    );
+  }
+
+  // HTTP 5xx — ambiguous: Shippo may have begun processing the transaction.
+  if (res.status >= 500) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new ShippoAmbiguousError(
+      `Shippo returned HTTP ${res.status} during label purchase: ` +
+      (errBody.detail || String(res.status))
+    );
+  }
+
+  const t = await res.json();
+
+  // status ERROR — definitive: Shippo created a record but the label failed.
+  if (t.status === 'ERROR') {
+    const msgs = (t.messages || [])
+      .map(m => m.text || m.message || JSON.stringify(m))
+      .join('; ');
+    throw new ShippoDefinitiveError(
+      `Shippo transaction created but label purchase failed (status ERROR): ${msgs || 'no detail'}`,
+      502
+    );
+  }
+
+  // With async:false, any status other than SUCCESS is unexpected.
+  if (t.status !== 'SUCCESS') {
+    throw new ShippoDefinitiveError(
+      `Shippo label purchase returned unexpected status: ${t.status}`,
+      502
+    );
+  }
+
+  console.log(`[shippo] purchaseLabel: txn=${t.object_id} tracking=${t.tracking_number} order=${orderId}`);
+  return _normalizeLabelResult(t);
+}
+
+/**
+ * findTransactionByRate — query Shippo for any transaction created for this
+ * rate+order combination.  Used by crash recovery to determine whether a
+ * label was purchased during an ambiguous failure (network timeout, 5xx).
+ *
+ * Returns one of:
+ *   { label_id, label_url, tracking_number, carrier, carrier_service }
+ *       → SUCCESS transaction found; caller should finalize the order.
+ *   { error: true }
+ *       → ERROR transaction found; definitive failure, safe to revert.
+ *   { pending: true, status }
+ *       → QUEUED/WAITING; still in progress, retry next sweep.
+ *   null
+ *       → No transaction found; positive confirmation, safe to revert.
+ *
+ * Throws on network/API errors (caller should treat as ambiguous).
+ *
+ * NOTE: Shippo does not support server-side filtering by rate or metadata.
+ * We fetch the most-recent 50 transactions and filter client-side using:
+ *   primary   — t.rate === rateId
+ *   secondary — t.metadata === 'order:<orderId>'  (exact match)
+ * This covers all practical recovery scenarios (label purchased within
+ * minutes of the ambiguous failure).
+ */
+async function findTransactionByRate(rateId, orderId) {
+  if (!SHIPPO_API_KEY) {
+    // Stub mode has no persistent transaction store.
+    return null;
+  }
+
+  let res;
+  try {
+    res = await _shippoFetch('/transactions/?results=50', 'GET');
+  } catch (networkErr) {
+    throw new Error(`Cannot query Shippo transactions for recovery: ${networkErr.message}`);
+  }
+
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(
+      `Shippo transactions list returned HTTP ${res.status}: ` +
+      (errBody.detail || String(res.status))
+    );
+  }
+
+  const data = await res.json();
+  const transactions = data.results || [];
+
+  const expectedMeta = `order:${orderId}`;
+  const match = transactions.find(
+    t => t.rate === rateId && t.metadata === expectedMeta
+  );
+
+  if (!match) return null;
+
+  if (match.status === 'SUCCESS') {
+    return _normalizeLabelResult(match);
+  }
+
+  if (match.status === 'ERROR') {
+    return { error: true };
+  }
+
+  // QUEUED or WAITING — still in progress (should not happen with async:false).
+  return { pending: true, status: match.status };
+}
+
 module.exports = {
   getRates,
   getRate,
+  purchaseLabel,
+  findTransactionByRate,
   makeRateToken,
   verifyRateToken,
   STUB_MODE,
