@@ -471,6 +471,35 @@ async function findTransactionByRate(rateId, orderId) {
   return { pending: true, status: match.status };
 }
 
+// ── Webhook token verification ─────────────────────────────────────────────
+
+/**
+ * verifyWebhookToken — constant-time comparison of a provided URL query token
+ * against the expected SHIPPO_WEBHOOK_TOKEN env var value.
+ *
+ * Uses HMAC-SHA256 digests of both values so that timingSafeEqual always
+ * receives equal-length (32-byte) buffers regardless of token length.
+ * This avoids leaking token length via a timing side-channel on the
+ * length-check branch that Buffer.from comparisons would require.
+ *
+ * @param {string|undefined} provided  — value from req.query.token
+ * @param {string}           expected  — value from process.env.SHIPPO_WEBHOOK_TOKEN
+ * @returns {boolean}
+ */
+function verifyWebhookToken(provided, expected) {
+  if (!provided || !expected) return false;
+  // Digest both values with a fixed comparison key so timingSafeEqual always
+  // gets 32-byte buffers regardless of input length.
+  const CMP_KEY = 'shippo-wh-tok-cmp';
+  const h1 = crypto.createHmac('sha256', CMP_KEY).update(String(provided)).digest();
+  const h2 = crypto.createHmac('sha256', CMP_KEY).update(String(expected)).digest();
+  try {
+    return crypto.timingSafeEqual(h1, h2);
+  } catch {
+    return false;
+  }
+}
+
 module.exports = {
   getRates,
   getRate,
@@ -478,5 +507,6 @@ module.exports = {
   findTransactionByRate,
   makeRateToken,
   verifyRateToken,
+  verifyWebhookToken,
   STUB_MODE,
 };

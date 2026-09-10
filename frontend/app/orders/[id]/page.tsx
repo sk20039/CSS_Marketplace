@@ -23,6 +23,8 @@ interface Order {
   label_id: string | null;
   label_url: string | null;
   tracking_number: string | null;
+  tracking_status: string | null;
+  last_tracking_event_at: string | null;
   carrier: string | null;
   carrier_service: string | null;
   ship_by_date: string | null;
@@ -30,6 +32,30 @@ interface Order {
   shipping_address: ShippingAddress | null;
   created_at: string;
   events: { id: number; event_type: string; payload_json: string | null; created_at: string }[];
+}
+
+// Tracking status display metadata
+const TRACKING_STATUS_META: Record<string, { label: string; cls: string }> = {
+  UNKNOWN:     { label: 'Status unknown',    cls: 'bg-gray-100 text-gray-500' },
+  PRE_TRANSIT: { label: 'Label created',     cls: 'bg-blue-50  text-blue-600' },
+  TRANSIT:     { label: 'In transit',        cls: 'bg-amber-100 text-amber-700' },
+  DELIVERED:   { label: 'Delivered',         cls: 'bg-green-100 text-green-700' },
+  RETURNED:    { label: 'Returned to sender', cls: 'bg-orange-100 text-orange-700' },
+  FAILURE:     { label: 'Delivery issue',    cls: 'bg-red-100 text-red-700' },
+};
+
+// Carrier tracking page URLs for known safe carriers only.
+const CARRIER_TRACKING_URLS: Record<string, string> = {
+  usps:  'https://tools.usps.com/go/TrackConfirmAction?tLabels=',
+  ups:   'https://www.ups.com/track?tracknum=',
+  fedex: 'https://www.fedex.com/fedextrack/?trknbr=',
+  dhl:   'https://www.dhl.com/en/express/tracking.html?AWB=',
+};
+
+function carrierTrackingUrl(carrier: string | null, trackingNumber: string | null): string | null {
+  if (!carrier || !trackingNumber) return null;
+  const base = CARRIER_TRACKING_URLS[carrier.toLowerCase()];
+  return base ? `${base}${encodeURIComponent(trackingNumber)}` : null;
 }
 
 interface Message {
@@ -339,6 +365,19 @@ function OrderContent() {
                     <p className="text-sm font-mono text-gray-800">{order.tracking_number}</p>
                   </div>
                 )}
+                {order.tracking_status ? (
+                  <div>
+                    <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-0.5">Carrier status</p>
+                    <span className={`inline-block text-xs font-semibold px-2.5 py-1 rounded-full ${(TRACKING_STATUS_META[order.tracking_status] ?? TRACKING_STATUS_META.UNKNOWN).cls}`}>
+                      {(TRACKING_STATUS_META[order.tracking_status] ?? TRACKING_STATUS_META.UNKNOWN).label}
+                    </span>
+                    {(order.tracking_status === 'PRE_TRANSIT' || order.tracking_status === 'UNKNOWN') && (
+                      <p className="text-xs text-gray-400 italic mt-1">Waiting for carrier scan…</p>
+                    )}
+                  </div>
+                ) : order.status === 'HELD' ? (
+                  <p className="text-xs text-gray-400 italic">Waiting for carrier scan…</p>
+                ) : null}
                 {order.label_url && (
                   <a
                     href={order.label_url}
@@ -360,11 +399,37 @@ function OrderContent() {
 
             {/* Buyer: show tracking number if label was purchased */}
             {isBuyer && order.tracking_number && (
-              <div>
-                <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-0.5">Tracking number</p>
-                <p className="text-sm font-mono text-gray-800">{order.tracking_number}</p>
-                {(order.carrier || order.carrier_service) && (
-                  <p className="text-xs text-gray-500 mt-0.5">{[order.carrier, order.carrier_service].filter(Boolean).join(' — ')}</p>
+              <div className="space-y-3">
+                <div>
+                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-0.5">Tracking number</p>
+                  <p className="text-sm font-mono text-gray-800">{order.tracking_number}</p>
+                  {(order.carrier || order.carrier_service) && (
+                    <p className="text-xs text-gray-500 mt-0.5">{[order.carrier, order.carrier_service].filter(Boolean).join(' — ')}</p>
+                  )}
+                </div>
+                {order.tracking_status && (
+                  <div>
+                    <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-0.5">Carrier status</p>
+                    <span className={`inline-block text-xs font-semibold px-2.5 py-1 rounded-full ${(TRACKING_STATUS_META[order.tracking_status] ?? TRACKING_STATUS_META.UNKNOWN).cls}`}>
+                      {(TRACKING_STATUS_META[order.tracking_status] ?? TRACKING_STATUS_META.UNKNOWN).label}
+                    </span>
+                  </div>
+                )}
+                {(!order.tracking_status || order.tracking_status === 'PRE_TRANSIT' || order.tracking_status === 'UNKNOWN') && (
+                  <p className="text-xs text-gray-400 italic">Waiting for carrier scan…</p>
+                )}
+                {carrierTrackingUrl(order.carrier, order.tracking_number) && (
+                  <a
+                    href={carrierTrackingUrl(order.carrier, order.tracking_number)!}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-700 font-medium"
+                  >
+                    Track on carrier website
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                    </svg>
+                  </a>
                 )}
               </div>
             )}
@@ -375,14 +440,20 @@ function OrderContent() {
       {/* Action buttons */}
       <ErrorAlert message={actionError} />
 
-      {(isSeller && ['HELD', 'SHIPPED'].includes(order.status)) ||
-       (isBuyer && ['DELIVERED', 'HELD'].includes(order.status)) ? (
+      {/* Show the Actions card only when at least one action is available.
+          Sellers with a platform label in HELD status have no manual actions
+          (the carrier TRANSIT scan drives HELD→SHIPPED automatically). */}
+      {((isSeller && order.status === 'HELD' && !order.label_id) ||
+        (isSeller && order.status === 'SHIPPED') ||
+        (isBuyer && ['DELIVERED', 'HELD'].includes(order.status))) ? (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
           <div className="px-6 py-4 border-b border-gray-100">
             <p className="text-sm font-semibold text-gray-700">Actions</p>
           </div>
           <div className="px-6 py-4 flex flex-wrap gap-3">
-            {isSeller && order.status === 'HELD' && (
+            {/* Mark as Shipped: only for non-label orders (legacy / non-Shippo flow).
+                Platform label orders transition via Shippo carrier webhook. */}
+            {isSeller && order.status === 'HELD' && !order.label_id && (
               <ActionButton
                 onClick={() => act(() => shipOrder(id))}
                 disabled={acting}

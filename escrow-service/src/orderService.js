@@ -93,11 +93,12 @@ function normalizeOrder(row) {
     delivered_at:          ts(row.delivered_at),
     window_expires_at:     ts(row.window_expires_at),
     ship_by_date:          ts(row.ship_by_date),
-    label_voided_at:       ts(row.label_voided_at),
-    created_at:            ts(row.created_at),
-    updated_at:            ts(row.updated_at),
-    transition_started_at: ts(row.transition_started_at),
-    recovery_claimed_at:   ts(row.recovery_claimed_at),
+    label_voided_at:        ts(row.label_voided_at),
+    last_tracking_event_at: ts(row.last_tracking_event_at),
+    created_at:             ts(row.created_at),
+    updated_at:             ts(row.updated_at),
+    transition_started_at:  ts(row.transition_started_at),
+    recovery_claimed_at:    ts(row.recovery_claimed_at),
   };
 }
 
@@ -557,14 +558,16 @@ async function shipOrder(id) {
   const order = await getOrder(id);
   assertStatus(order, 'HELD');
 
-  // Phase 3: platform-purchased label is required before marking shipped.
-  // The label guarantees the carrier charge is correct and the seller has a
-  // scannable label ready to affix.
-  if (!order.label_id) {
+  // Platform label orders must transition to SHIPPED via the Shippo tracking
+  // webhook (carrier TRANSIT scan), not via manual seller action.  The webhook
+  // handler uses the same atomic DB guard so there is no race between the two
+  // paths.  This endpoint remains available for non-Shippo flows (label_id IS
+  // NULL) and for admin/recovery use via direct API calls.
+  if (order.label_id) {
     throw new OrderError(
-      `Order ${id} requires a shipping label before it can be marked shipped. ` +
-      'Use POST /orders/:id/purchase-label first.',
-      422
+      `Order ${id} has a platform shipping label; shipped status is set by ` +
+      'carrier webhook (TRANSIT scan), not manual seller action.',
+      409
     );
   }
 
@@ -1252,6 +1255,207 @@ async function revertLabelPurchase(orderId, { reason }) {
 // Exports
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// POST /webhooks/shippo — Shippo track_updated event handler
+// ---------------------------------------------------------------------------
+//
+// Called by app.js after token auth.  Receives the parsed Shippo data object:
+//   { tracking_number, carrier, tracking_status: { status, status_date, … }, test }
+//
+// State machine:
+//   PRE_TRANSIT         → update tracking_status only
+//   TRANSIT + HELD + label_id  → HELD → SHIPPED  (set shipped_at)
+//   DELIVERED + SHIPPED        → SHIPPED → DELIVERED  (set delivered_at, window)
+//   DELIVERED + HELD + label_id (carrier skipped TRANSIT scan)
+//                       → HELD → DELIVERED  (set shipped_at + delivered_at + window)
+//   RETURNED / FAILURE / UNKNOWN → update tracking_status only
+//   DISPUTED (any)      → update tracking_status only; never change dispute state
+//   Terminal states     → update tracking_status only; no backward transitions
+//
+// Idempotency:
+//   tracking_status update uses a status_date timestamp guard so older events
+//   cannot overwrite a newer status:
+//     WHERE last_tracking_event_at IS NULL OR last_tracking_event_at < $status_date
+//   State transitions use the existing atomic WHERE status = 'X' guards.
+//
+// Carrier normalisation:
+//   Shippo sends lowercase carrier codes ('usps', 'fedex').
+//   Our DB stores mixed-case from the Shippo rate provider ('USPS', 'FedEx').
+//   Lookup uses LOWER(carrier) = LOWER(incoming) for case-insensitive match.
+
+async function handleTrackingWebhook({ tracking_number, carrier, tracking_status: tsObj }) {
+  if (!tracking_number || !tsObj) {
+    return { action: 'skipped', reason: 'missing tracking_number or tracking_status' };
+  }
+
+  const { status, status_date, status_details, substatus } = tsObj;
+  if (!status) {
+    return { action: 'skipped', reason: 'missing status in tracking_status object' };
+  }
+
+  // Normalise incoming carrier to lowercase for case-insensitive DB lookup.
+  const carrierLower = carrier ? carrier.toLowerCase() : null;
+
+  // Find the active order with this tracking number.
+  // No status filter — handler inspects order.status to decide what to do.
+  const { rows } = await pool.query(
+    `SELECT * FROM orders
+     WHERE tracking_number = $1
+       AND LOWER(carrier) = $2
+     ORDER BY id DESC
+     LIMIT 1`,
+    [tracking_number, carrierLower]
+  );
+
+  if (!rows[0]) {
+    return { action: 'skipped', reason: `no order found for tracking_number=${tracking_number} carrier=${carrier}` };
+  }
+
+  const order = normalizeOrder(rows[0]);
+  const orderId = order.id;
+
+  // Log every event for observability regardless of what we do with it.
+  await recordEvent(orderId, 'TRACKING_UPDATE', {
+    tracking_number,
+    carrier,
+    status,
+    status_date:    status_date || null,
+    status_details: status_details || null,
+    substatus_code: substatus?.code || null,
+  });
+
+  // ── tracking_status update with forward-only timestamp guard ──────────────
+  // Use status_date (carrier-recorded time) as the fence.
+  // If status_date is absent, update unconditionally (can't compare).
+  let trackingUpdated = false;
+  const now = nowIso();
+
+  if (status_date) {
+    const result = await pool.query(
+      `UPDATE orders
+       SET tracking_status        = $1,
+           last_tracking_event_at = $2,
+           updated_at             = $3
+       WHERE id = $4
+         AND (last_tracking_event_at IS NULL OR last_tracking_event_at < $2)`,
+      [status, status_date, now, orderId]
+    );
+    trackingUpdated = result.rowCount > 0;
+  } else {
+    // No status_date: always update tracking_status.
+    await pool.query(
+      `UPDATE orders SET tracking_status = $1, updated_at = $2 WHERE id = $3`,
+      [status, now, orderId]
+    );
+    trackingUpdated = true;
+  }
+
+  if (!trackingUpdated) {
+    // Event is older than what we already have — do not attempt state transitions.
+    return { action: 'stale', orderId, status,
+      reason: 'incoming status_date is not newer than stored last_tracking_event_at' };
+  }
+
+  // ── State transition guard ────────────────────────────────────────────────
+  // DISPUTED and terminal financial states must never transition backward.
+  const PROTECTED_STATUSES = new Set([
+    'DISPUTED',
+    'RELEASING', 'RELEASING',
+    'RELEASED',
+    'REFUNDING',
+    'REFUNDED',
+    'CANCELLING',
+    'CANCELLED',
+  ]);
+
+  if (PROTECTED_STATUSES.has(order.status)) {
+    return { action: 'tracking_only', orderId, status, orderStatus: order.status,
+      reason: 'order is in a protected state; tracking_status updated, no state change' };
+  }
+
+  // ── State transitions ────────────────────────────────────────────────────
+  const windowExpiresAt = new Date(Date.now() + DELIVERY_WINDOW_MS).toISOString();
+  let stateTransition = 'none';
+
+  if (status === 'TRANSIT') {
+    // HELD + platform label → SHIPPED
+    const result = await pool.query(
+      `UPDATE orders
+       SET status    = 'SHIPPED',
+           shipped_at = $1,
+           updated_at = $2
+       WHERE id = $3
+         AND status   = 'HELD'
+         AND label_id IS NOT NULL`,
+      [now, now, orderId]
+    );
+    if (result.rowCount > 0) {
+      await recordEvent(orderId, 'SHIPPED', {
+        shippedAt:      now,
+        triggeredBy:    'shippo_tracking_webhook',
+        trackingStatus: status,
+      });
+      stateTransition = 'HELD\u2192SHIPPED';
+      notifications.notifyShipped(order).catch(() => {});
+    }
+
+  } else if (status === 'DELIVERED') {
+    // Try SHIPPED → DELIVERED first (normal flow).
+    let result = await pool.query(
+      `UPDATE orders
+       SET status           = 'DELIVERED',
+           delivered_at     = $1,
+           window_expires_at = $2,
+           updated_at       = $3
+       WHERE id = $4
+         AND status = 'SHIPPED'`,
+      [now, windowExpiresAt, now, orderId]
+    );
+
+    if (result.rowCount > 0) {
+      await recordEvent(orderId, 'DELIVERED', {
+        deliveredAt:    now,
+        windowExpiresAt,
+        triggeredBy:    'shippo_tracking_webhook',
+        trackingStatus: status,
+      });
+      stateTransition = 'SHIPPED\u2192DELIVERED';
+      notifications.notifyDelivered(order).catch(() => {});
+    } else {
+      // HELD + platform label → DELIVERED (carrier skipped TRANSIT scan).
+      // Set shipped_at = COALESCE(existing, now) so we don't overwrite if somehow
+      // the field was already set by a prior manual action.
+      result = await pool.query(
+        `UPDATE orders
+         SET status            = 'DELIVERED',
+             shipped_at        = COALESCE(shipped_at, $1),
+             delivered_at      = $1,
+             window_expires_at = $2,
+             updated_at        = $3
+         WHERE id = $4
+           AND status   = 'HELD'
+           AND label_id IS NOT NULL`,
+        [now, windowExpiresAt, now, orderId]
+      );
+      if (result.rowCount > 0) {
+        await recordEvent(orderId, 'DELIVERED', {
+          deliveredAt:    now,
+          windowExpiresAt,
+          triggeredBy:    'shippo_tracking_webhook',
+          trackingStatus: status,
+          note:           'direct_held_to_delivered_no_transit_scan',
+        });
+        stateTransition = 'HELD\u2192DELIVERED';
+        notifications.notifyDelivered(order).catch(() => {});
+      }
+    }
+  }
+  // RETURNED, FAILURE, UNKNOWN, PRE_TRANSIT → no state transition.
+  // tracking_status was already updated above.
+
+  return { action: 'processed', orderId, status, trackingUpdated, stateTransition };
+}
+
 module.exports = {
   OrderError,
   FinalizeConflictError,
@@ -1278,4 +1482,6 @@ module.exports = {
   // Exported for use by the /shipping-rates route in app.js.
   validateShippingAddressPublic,
   fetchListingPublic,
+  // Phase 3 (tracking): Shippo webhook handler.
+  handleTrackingWebhook,
 };

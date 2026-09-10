@@ -252,11 +252,35 @@ async function purchaseLabel(orderId) {
 }
 
 async function shipOrder(orderId) {
-  // Phase 3: label is required before shipping.
-  await purchaseLabel(orderId);
-  const res = await post(appServer, `/orders/${orderId}/ship`, sellerToken);
-  assertEqual(res.status, 200, `shipOrder failed: ${JSON.stringify(res.body)}`);
-  return res.body;
+  // Phase 3: platform label orders transition HELD→SHIPPED via a Shippo TRANSIT webhook,
+  // not by calling POST /ship directly (that now returns 409 for labeled orders).
+  const labeledOrder = await purchaseLabel(orderId);
+  assert(labeledOrder.tracking_number, 'purchaseLabel must return tracking_number');
+  assert(labeledOrder.carrier, 'purchaseLabel must return carrier');
+
+  // Fire the carrier TRANSIT event.  SHIPPO_WEBHOOK_TOKEN is unset in escrow tests
+  // so the webhook endpoint is open (no token required in non-production dev mode).
+  const whRes = await post(appServer, '/webhooks/shippo', null, {
+    event: 'track_updated',
+    test:  false,
+    data: {
+      tracking_number:  labeledOrder.tracking_number,
+      carrier:          labeledOrder.carrier.toLowerCase(),
+      tracking_status: {
+        status:         'TRANSIT',
+        status_date:    new Date(Date.now() - 500).toISOString(),
+        status_details: 'In transit (test)',
+        substatus:      null,
+      },
+    },
+  });
+  assert(whRes.status === 200 && whRes.body.ok,
+    `TRANSIT webhook failed: ${JSON.stringify(whRes.body)}`);
+
+  // Return the full order so tests can inspect status and events.
+  const getRes = await get(appServer, `/orders/${orderId}`, sellerToken);
+  assertEqual(getRes.status, 200, `GET order after ship failed: ${JSON.stringify(getRes.body)}`);
+  return getRes.body;
 }
 
 async function deliverOrder(orderId) {
@@ -394,7 +418,7 @@ async function runCaptureTests() {
 async function runShipDeliverTests() {
   console.log('\nShip and deliver');
 
-  await test('POST /orders/:id/ship transitions HELD → SHIPPED', async () => {
+  await test('carrier TRANSIT webhook transitions HELD → SHIPPED (label order)', async () => {
     const held = await driveToHeld();
     const shipped = await shipOrder(held.id);
     assertEqual(shipped.status, 'SHIPPED', 'status must be SHIPPED');

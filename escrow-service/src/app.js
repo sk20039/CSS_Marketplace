@@ -69,6 +69,63 @@ function buildApp() {
     },
     credentials: true,
   }));
+
+  // ── Shippo tracking webhook ──────────────────────────────────────────────
+  // Registered BEFORE express.json() so express.raw() captures the raw body.
+  // Raw body is stored as req.body (Buffer) for HMAC verification if we ever
+  // upgrade from URL-token auth.  The handler JSON-parses it manually.
+  //
+  // Authentication: URL token (constant-time HMAC-digest comparison).
+  //   Set SHIPPO_WEBHOOK_TOKEN to a 32+ character random secret and append
+  //   ?token=<value> to the webhook URL registered in the Shippo dashboard.
+  //
+  //   If SHIPPO_WEBHOOK_TOKEN is unset and NODE_ENV !== 'production':
+  //     the endpoint is open (local dev / integration tests).
+  //   If SHIPPO_WEBHOOK_TOKEN is unset and NODE_ENV === 'production':
+  //     all requests get 401 (prevents accidental open production endpoint).
+  {
+    const SHIPPO_WEBHOOK_TOKEN = process.env.SHIPPO_WEBHOOK_TOKEN || '';
+    const IS_PROD_ENV = process.env.NODE_ENV === 'production';
+
+    app.post('/webhooks/shippo', express.raw({ type: 'application/json' }), async (req, res) => {
+      // Token auth: required when token is configured OR we are in production.
+      if (SHIPPO_WEBHOOK_TOKEN || IS_PROD_ENV) {
+        if (!shippoClient.verifyWebhookToken(req.query.token, SHIPPO_WEBHOOK_TOKEN)) {
+          return res.status(401).json({ error: 'Invalid or missing webhook token' });
+        }
+      }
+
+      // Parse raw body (Buffer from express.raw).
+      let payload;
+      try {
+        payload = JSON.parse(req.body.toString());
+      } catch {
+        return res.status(400).json({ error: 'Invalid JSON body' });
+      }
+
+      // Ignore non-tracking events — return 200 so Shippo does not retry.
+      if (payload.event !== 'track_updated') {
+        return res.status(200).json({ ok: true, skipped: true, reason: 'event type not track_updated' });
+      }
+
+      const data = payload.data || {};
+
+      try {
+        const result = await orderService.handleTrackingWebhook({
+          tracking_number:  data.tracking_number  || null,
+          carrier:          data.carrier           || null,
+          tracking_status:  data.tracking_status   || null,
+        });
+        return res.status(200).json({ ok: true, ...result });
+      } catch (err) {
+        // Log the error but return 200 — our internal error should not cause
+        // Shippo to retry the same event (which would loop endlessly).
+        console.error('[webhook/shippo] handleTrackingWebhook error:', err);
+        return res.status(200).json({ ok: false, error: err.message });
+      }
+    });
+  }
+
   app.use(express.json({ limit: '100kb' }));
 
   // Rate limiters — same library and style as auth-service.
