@@ -76,7 +76,7 @@ function OrderContent() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [msgInput, setMsgInput] = useState('');
   const [sending, setSending] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const [existingReview, setExistingReview] = useState<{ id: number; rating: number; body: string | null } | null | undefined>(undefined);
   const [reviewRating, setReviewRating] = useState(0);
   const [reviewBody, setReviewBody] = useState('');
@@ -106,7 +106,8 @@ function OrderContent() {
   }, [refreshMessages]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const el = messagesContainerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
   async function act(fn: () => Promise<Response>) {
@@ -581,7 +582,7 @@ function OrderContent() {
           <p className="text-sm font-semibold text-gray-700">Messages</p>
         </div>
         <div className="px-6 py-4">
-          <div className="space-y-3 max-h-72 overflow-y-auto mb-4 pr-1">
+          <div ref={messagesContainerRef} className="space-y-3 max-h-72 overflow-y-auto mb-4 pr-1">
             {messages.length === 0 ? (
               <div className="text-center py-8">
                 <svg className="w-10 h-10 text-gray-200 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -606,7 +607,6 @@ function OrderContent() {
                 </div>
               );
             })}
-            <div ref={messagesEndRef} />
           </div>
           <form onSubmit={handleSendMessage} className="flex gap-2">
             <input
