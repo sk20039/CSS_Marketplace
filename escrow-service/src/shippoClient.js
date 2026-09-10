@@ -183,7 +183,7 @@ function _normalizeLabelResult(t) {
 /**
  * getRates — create a Shippo shipment and return available rates.
  *
- * @param {object} from       seller ship-from address { name, line1, line2?, city, state, zip }
+ * @param {object} from       seller ship-from address { name, line1, line2?, city, state, zip, phone?, email? }
  * @param {object} to         buyer  ship-to  address  { name, line1, line2?, city, state, zip }
  * @param {object} parcel     { weight_oz, length_in, width_in, height_in }
  * @param {number} listingId  used to bind the rate token to this specific listing
@@ -216,6 +216,8 @@ async function getRates(from, to, parcel, listingId, buyerAddr) {
       state:   from.state,
       zip:     from.zip,
       country: 'US',
+      phone:   from.phone   || '',
+      email:   from.email   || '',
     },
     address_to: {
       name:    to.name      || 'Buyer',
