@@ -569,6 +569,71 @@ async function createHeldOrder(app) {
     assert(res.body.label_id, 'label_id must be set after admin purchase');
   });
 
+  // ── 17. carrier and carrier_service stored at order creation ─────────────
+
+  await test('carrier and carrier_service are populated from rate at order creation', async () => {
+    const { order } = await createOrderViaApi(app);
+    assert(order.carrier != null, `carrier must be set at order creation (got ${JSON.stringify(order.carrier)})`);
+    assert(order.carrier_service != null, `carrier_service must be set at order creation (got ${JSON.stringify(order.carrier_service)})`);
+  });
+
+  // ── 18. finalizeLabeled falls back to order carrier when label data is null ─
+
+  await test('finalizeLabeled falls back to order.carrier/carrier_service when labelData has null values', async () => {
+    const held = await createHeldOrder(app);
+
+    // Verify order has carrier from the rate (set at createOrder).
+    assert(held.carrier != null, `order.carrier must be set before label purchase (got ${JSON.stringify(held.carrier)})`);
+
+    // Force LABELING state.
+    await pool.query(
+      `UPDATE orders SET status = 'LABELING', prior_status = 'HELD', transition_started_at = NOW() WHERE id = $1`,
+      [held.id]
+    );
+
+    // Call finalizeLabeled with null carrier/service (simulates USPS Ground Advantage transaction).
+    const result = await finalizeLabeled(
+      { id: held.id, shipping_cents: held.shipping_cents, carrier: held.carrier, carrier_service: held.carrier_service },
+      {
+        label_id:        'test_fallback_label_' + held.id,
+        label_url:       'https://example.com/fallback.pdf',
+        tracking_number: 'STUB_FALLBACK_' + held.id,
+        carrier:         null,
+        carrier_service: null,
+      }
+    );
+
+    assert(result.carrier != null, `carrier must not be null after finalize (should fall back to order carrier '${held.carrier}')`);
+    assertEqual(result.carrier, held.carrier, 'carrier must match the rate carrier stored at order creation');
+    assert(result.carrier_service != null, 'carrier_service must not be null after finalize');
+    assertEqual(result.carrier_service, held.carrier_service, 'carrier_service must match the rate carrier_service stored at order creation');
+  });
+
+  // ── 19. seller sees shipping_address in GET /orders/:id ──────────────────
+
+  await test('GET /orders/:id includes shipping_address for seller', async () => {
+    const held = await createHeldOrder(app);
+    const res = await request(app)
+      .get(`/orders/${held.id}`)
+      .set('Authorization', `Bearer ${sellerToken}`);
+    assertEqual(res.status, 200, `expected 200, got ${res.status}`);
+    assert(res.body.shipping_address != null, 'seller must see shipping_address');
+    assertEqual(res.body.shipping_address.city, BUYER_ADDR.city,
+      `shipping_address.city must be '${BUYER_ADDR.city}', got '${res.body.shipping_address?.city}'`);
+  });
+
+  // ── 20. buyer does not see shipping_address in GET /orders/:id ───────────
+
+  await test('GET /orders/:id does not include shipping_address for buyer', async () => {
+    const held = await createHeldOrder(app);
+    const res = await request(app)
+      .get(`/orders/${held.id}`)
+      .set('Authorization', `Bearer ${buyerToken}`);
+    assertEqual(res.status, 200, `expected 200, got ${res.status}`);
+    assert(res.body.shipping_address == null || !('shipping_address' in res.body),
+      'buyer must not see shipping_address');
+  });
+
   // ── Cleanup ────────────────────────────────────────────────────────────────
 
   mockServer.close();

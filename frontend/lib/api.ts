@@ -262,6 +262,10 @@ export async function cancelOrder(id: string | number) {
   return escrowFetch(`/orders/${id}/cancel`, { method: 'POST' });
 }
 
+export async function purchaseLabel(id: string | number) {
+  return escrowFetch(`/orders/${id}/purchase-label`, { method: 'POST' });
+}
+
 export async function shipOrder(id: string | number) {
   return escrowFetch(`/orders/${id}/ship`, { method: 'POST' });
 }

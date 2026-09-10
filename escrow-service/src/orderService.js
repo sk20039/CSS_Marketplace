@@ -400,7 +400,9 @@ async function createOrder({ listingId, buyerId, shippingAddress, shippoRateId, 
       422
     );
   }
-  const shippingCents = rateData.price_cents;
+  const shippingCents      = rateData.price_cents;
+  const rateCarrier        = rateData.carrier        || null;
+  const rateCarrierService = rateData.carrier_service || null;
 
   const amountCents = itemPriceCents + shippingCents;
   // Platform fee is based on item price only — shipping passes through to carrier.
@@ -430,9 +432,9 @@ async function createOrder({ listingId, buyerId, shippingAddress, shippoRateId, 
        listing_id, buyer_id, seller_id, amount_cents, item_price_cents, shipping_cents,
        platform_fee_cents, seller_payout_cents,
        status, stripe_payment_intent_id, stripe_client_secret, shipping_address,
-       shippo_rate_id,
+       shippo_rate_id, carrier, carrier_service,
        created_at, updated_at
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'CREATED', $9, $10, $11, $12, $13, $14)
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'CREATED', $9, $10, $11, $12, $13, $14, $15, $16)
      RETURNING id`,
     [
       normalizedListingId, normalizedBuyerId, sellerId,
@@ -440,7 +442,7 @@ async function createOrder({ listingId, buyerId, shippingAddress, shippoRateId, 
       platformFeeCents, sellerPayoutCents,
       intent.id, intent.client_secret || null,
       JSON.stringify(sanitizedAddr),
-      shippoRateId,
+      shippoRateId, rateCarrier, rateCarrierService,
       ts_now, ts_now,
     ]
   );
@@ -1159,6 +1161,12 @@ async function purchaseLabelForOrder(orderId) {
 // The WHERE status='LABELING' guard is the second-layer idempotency check:
 // if two recovery workers both reach this point, only one UPDATE wins.
 async function finalizeLabeled(order, labelData) {
+  // Use label-derived carrier/service; fall back to the rate values stored at
+  // order creation when Shippo transaction fields are null (e.g., USPS Ground
+  // Advantage returns null tracking_carrier and servicelevel_token).
+  const effectiveCarrier        = labelData.carrier        || order.carrier        || null;
+  const effectiveCarrierService = labelData.carrier_service || order.carrier_service || null;
+
   const ts_now = nowIso();
   const client = await pool.connect();
   let conflict = false;
@@ -1183,8 +1191,8 @@ async function finalizeLabeled(order, labelData) {
         labelData.label_url,
         order.shipping_cents,  // locked at order creation — authoritative cost
         labelData.tracking_number,
-        labelData.carrier,
-        labelData.carrier_service,
+        effectiveCarrier,
+        effectiveCarrierService,
         ts_now,
         order.id,
       ]
@@ -1199,8 +1207,8 @@ async function finalizeLabeled(order, labelData) {
       [order.id, 'LABEL_PURCHASED', JSON.stringify({
         labelId:        labelData.label_id,
         trackingNumber: labelData.tracking_number,
-        carrier:        labelData.carrier,
-        carrierService: labelData.carrier_service,
+        carrier:        effectiveCarrier,
+        carrierService: effectiveCarrierService,
         labelCostCents: order.shipping_cents,
       }), ts_now]
     );

@@ -272,7 +272,13 @@ function buildApp() {
       if (!isParty(req.user, order)) throw new OrderError('Forbidden: not a party to this order', 403);
       const isSeller = String(req.user.id) === String(order.seller_id);
       const isAdmin  = req.user.role === 'admin';
-      res.json((isSeller || isAdmin) ? order : redactLabelFields(order));
+      if (isSeller || isAdmin) {
+        // Expose shipping_address to seller and admin so the seller knows where to ship.
+        const { rows } = await pool.query('SELECT shipping_address FROM orders WHERE id = $1', [req.params.id]);
+        res.json({ ...order, shipping_address: rows[0]?.shipping_address || null });
+      } else {
+        res.json(redactLabelFields(order));
+      }
     } catch (err) { next(err); }
   });
 

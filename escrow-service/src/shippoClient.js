@@ -290,7 +290,7 @@ async function getRate(rateId) {
     // Stub mode.
     const r = STUB_RATE_MAP[rateId];
     if (!r) return null;
-    return { rate_id: r.rate_id, price_cents: r.price_cents };
+    return { rate_id: r.rate_id, price_cents: r.price_cents, carrier: r.carrier, carrier_service: r.service };
   }
 
   const res = await _shippoFetch(`/rates/${rateId}`);
@@ -303,8 +303,10 @@ async function getRate(rateId) {
   }
   const r = await res.json();
   return {
-    rate_id:     r.object_id,
-    price_cents: Math.round(parseFloat(r.amount_local || r.amount) * 100),
+    rate_id:         r.object_id,
+    price_cents:     Math.round(parseFloat(r.amount_local || r.amount) * 100),
+    carrier:         r.provider || null,
+    carrier_service: r.servicelevel ? r.servicelevel.name : (r.service_level_name || null),
   };
 }
 

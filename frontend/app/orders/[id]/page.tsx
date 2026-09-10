@@ -5,13 +5,30 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import AuthGuard from '@/components/AuthGuard';
 import OrderTimeline from '@/components/OrderTimeline';
-import { getOrder, cancelOrder, shipOrder, deliverOrder, confirmOrder, disputeOrder, getMessages, sendMessage, submitReview, getOrderReview } from '@/lib/api';
+import { getOrder, cancelOrder, purchaseLabel, shipOrder, deliverOrder, confirmOrder, disputeOrder, getMessages, sendMessage, submitReview, getOrderReview } from '@/lib/api';
 import { useUser } from '@/lib/auth';
 import ErrorAlert from '@/components/ErrorAlert';
+
+interface ShippingAddress {
+  name: string; line1: string; line2?: string | null;
+  city: string; state: string; zip: string;
+}
 
 interface Order {
   id: number; status: string; amount_cents: number;
   listing_id: number; buyer_id: number; seller_id: number;
+  item_price_cents: number | null;
+  shipping_cents: number | null;
+  label_cost_cents: number | null;
+  label_id: string | null;
+  label_url: string | null;
+  tracking_number: string | null;
+  carrier: string | null;
+  carrier_service: string | null;
+  ship_by_date: string | null;
+  shippo_rate_id: string | null;
+  shipping_address: ShippingAddress | null;
+  created_at: string;
   events: { id: number; event_type: string; payload_json: string | null; created_at: string }[];
 }
 
@@ -23,6 +40,7 @@ const STATUS_META: Record<string, { label: string; cls: string }> = {
   CREATED:   { label: 'Created',                  cls: 'bg-purple-100 text-purple-700' },
   CAPTURING: { label: 'Capturing payment',         cls: 'bg-gray-100 text-gray-600' },
   HELD:      { label: 'Payment held securely',    cls: 'bg-blue-100 text-blue-700' },
+  LABELING:  { label: 'Purchasing label',          cls: 'bg-blue-50 text-blue-500' },
   SHIPPED:   { label: 'Shipped',                   cls: 'bg-amber-100 text-amber-700' },
   DELIVERED: { label: 'Delivered',                 cls: 'bg-orange-100 text-orange-700' },
   DISPUTED:  { label: 'Under dispute',             cls: 'bg-red-100 text-red-700' },
@@ -53,6 +71,8 @@ function OrderContent() {
   const [disputeReason, setDisputeReason] = useState('');
   const [showDispute, setShowDispute] = useState(false);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  const [purchasingLabel, setPurchasingLabel] = useState(false);
+  const [labelError, setLabelError] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [msgInput, setMsgInput] = useState('');
   const [sending, setSending] = useState(false);
@@ -110,6 +130,23 @@ function OrderContent() {
     await act(() => disputeOrder(id, disputeReason));
     setShowDispute(false);
     setDisputeReason('');
+  }
+
+  async function handlePurchaseLabel() {
+    if (purchasingLabel) return;
+    setPurchasingLabel(true);
+    setLabelError('');
+    try {
+      const res = await purchaseLabel(id);
+      const data = await res.json();
+      if (!res.ok) { setLabelError(data.error || 'Label purchase failed'); return; }
+      setOrder(data.order || data);
+      refresh();
+    } catch {
+      setLabelError('Network error — please try again');
+    } finally {
+      setPurchasingLabel(false);
+    }
   }
 
   async function handleSubmitReview(e: React.FormEvent) {
@@ -212,6 +249,127 @@ function OrderContent() {
           </div>
         </div>
       </div>
+
+      {/* Shipping section — seller sees buy-label UI; buyer sees tracking if available */}
+      {(isSeller && ['HELD', 'LABELING', 'SHIPPED', 'DELIVERED'].includes(order.status)) ||
+       (isBuyer && order.tracking_number) ? (
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-2">
+            <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10" />
+            </svg>
+            <p className="text-sm font-semibold text-gray-700">Shipping</p>
+          </div>
+          <div className="px-6 py-4 space-y-4">
+            {isSeller && order.shipping_address && (
+              <div>
+                <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-1">Ship to</p>
+                <p className="text-sm text-gray-800 font-medium">{order.shipping_address.name}</p>
+                <p className="text-sm text-gray-600">{order.shipping_address.line1}{order.shipping_address.line2 ? `, ${order.shipping_address.line2}` : ''}</p>
+                <p className="text-sm text-gray-600">{order.shipping_address.city}, {order.shipping_address.state} {order.shipping_address.zip}</p>
+              </div>
+            )}
+
+            {(order.carrier || order.carrier_service || order.shipping_cents != null) && (
+              <div className="flex flex-wrap gap-x-6 gap-y-2">
+                {(order.carrier || order.carrier_service) && (
+                  <div>
+                    <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-0.5">Service</p>
+                    <p className="text-sm text-gray-800">
+                      {[order.carrier, order.carrier_service].filter(Boolean).join(' — ')}
+                    </p>
+                  </div>
+                )}
+                {order.shipping_cents != null && (
+                  <div>
+                    <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-0.5">Shipping</p>
+                    <p className="text-sm text-gray-800">${(order.shipping_cents / 100).toFixed(2)}</p>
+                  </div>
+                )}
+                {isSeller && order.ship_by_date && (
+                  <div>
+                    <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-0.5">Ship by</p>
+                    <p className="text-sm text-gray-800">{new Date(order.ship_by_date).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}</p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Seller: label purchase or label info */}
+            {isSeller && order.status === 'LABELING' && (
+              <div className="flex items-center gap-2 text-sm text-blue-600">
+                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
+                Label purchase in progress…
+              </div>
+            )}
+
+            {isSeller && order.status === 'HELD' && !order.label_id && (
+              <div className="space-y-2">
+                {labelError && (
+                  <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{labelError}</p>
+                )}
+                <button
+                  onClick={handlePurchaseLabel}
+                  disabled={purchasingLabel}
+                  className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2.5 rounded-lg disabled:opacity-50 transition-colors"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
+                  </svg>
+                  {purchasingLabel ? 'Purchasing…' : 'Purchase Shipping Label'}
+                </button>
+              </div>
+            )}
+
+            {isSeller && order.label_id && (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 text-sm text-green-700 font-medium">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  Label purchased
+                </div>
+                {order.tracking_number && (
+                  <div>
+                    <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-0.5">Tracking</p>
+                    <p className="text-sm font-mono text-gray-800">{order.tracking_number}</p>
+                  </div>
+                )}
+                {order.label_url && (
+                  <a
+                    href={order.label_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-800 text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+                    </svg>
+                    View / Print Shipping Label
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                    </svg>
+                  </a>
+                )}
+              </div>
+            )}
+
+            {/* Buyer: show tracking number if label was purchased */}
+            {isBuyer && order.tracking_number && (
+              <div>
+                <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-0.5">Tracking number</p>
+                <p className="text-sm font-mono text-gray-800">{order.tracking_number}</p>
+                {(order.carrier || order.carrier_service) && (
+                  <p className="text-xs text-gray-500 mt-0.5">{[order.carrier, order.carrier_service].filter(Boolean).join(' — ')}</p>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
 
       {/* Action buttons */}
       <ErrorAlert message={actionError} />
