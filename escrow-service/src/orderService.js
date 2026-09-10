@@ -839,6 +839,47 @@ async function cancelOrder(id, { cancelledBy, reason }) {
     [normalizedReason, 'buyer_change_of_mind', id, 'CANCELLING']
   );
 
+  // ── Label void ───────────────────────────────────────────────────────────
+  // If a Shippo label was purchased, void it so the platform recovers the cost.
+  // Definitive failure: Shippo rejected the void — record the event and continue
+  //   with cancellation (buyer refund is not blocked by a void that can never succeed).
+  // Ambiguous failure: network/5xx — outcome unknown.
+  //   Leave order in CANCELLING and let recovery reconcile via findRefundByTransaction
+  //   before retrying.  The 503 response tells the caller to retry in a few minutes.
+  if (order.label_id && !order.label_voided_at) {
+    try {
+      const voidResult = await shippoClient.voidLabel(order.label_id);
+      const ts_void = nowIso();
+      await pool.query(
+        `UPDATE orders SET label_voided_at = $1, label_void_refund_cents = $2 WHERE id = $3`,
+        [ts_void, voidResult.refund_cents, id]
+      );
+      await recordEvent(id, 'LABEL_VOIDED', {
+        cancelledBy,
+        voidId:      voidResult.void_id,
+        refundCents: voidResult.refund_cents,
+        labelId:     order.label_id,
+      });
+    } catch (voidErr) {
+      if (voidErr.definitive) {
+        // Shippo definitively rejected the void — record and continue.
+        await recordEvent(id, 'LABEL_VOID_FAILED', {
+          cancelledBy, error: voidErr.message, definitive: true, labelId: order.label_id,
+        });
+      } else {
+        // Ambiguous outcome — leave in CANCELLING for recovery.
+        await recordEvent(id, 'LABEL_VOID_AMBIGUOUS', {
+          cancelledBy, error: voidErr.message, labelId: order.label_id,
+        });
+        throw new OrderError(
+          `Label void outcome is unknown for order ${id}: ${voidErr.message}. ` +
+          'The cancellation will resume automatically. Please try again in a few minutes.',
+          503
+        );
+      }
+    }
+  }
+
   let refund;
   if (refundAmountCents === 0) {
     // Platform fee equals the entire order amount; no Stripe refund needed.
@@ -1040,7 +1081,8 @@ async function runReleaseCheck() {
     `SELECT * FROM orders
      WHERE status = 'DELIVERED'
        AND window_expires_at IS NOT NULL
-       AND window_expires_at <= $1`,
+       AND window_expires_at <= $1
+       AND (tracking_status IS NULL OR tracking_status NOT IN ('RETURNED', 'FAILURE'))`,
     [nowIsoStr]
   );
 
@@ -1450,8 +1492,11 @@ async function handleTrackingWebhook({ tracking_number, carrier, tracking_status
       }
     }
   }
-  // RETURNED, FAILURE, UNKNOWN, PRE_TRANSIT → no state transition.
-  // tracking_status was already updated above.
+  // RETURNED, FAILURE → no state transition, but notify both parties so they can act.
+  // UNKNOWN, PRE_TRANSIT → no state transition, no notification.
+  if ((status === 'RETURNED' || status === 'FAILURE') && trackingUpdated) {
+    notifications.notifyTrackingException(order, status).catch(() => {});
+  }
 
   return { action: 'processed', orderId, status, trackingUpdated, stateTransition };
 }

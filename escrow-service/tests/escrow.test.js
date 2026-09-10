@@ -677,6 +677,139 @@ async function runReviewTests() {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 4: Label void on cancellation
+// ---------------------------------------------------------------------------
+
+async function runCancelWithVoidTests() {
+  console.log('\nPhase 4 — Cancel with label void');
+
+  await test('cancel HELD+labeled order: label voided, CANCELLED, LABEL_VOIDED event', async () => {
+    const held = await driveToHeld();
+    await purchaseLabel(held.id);
+
+    const res = await post(appServer, `/orders/${held.id}/cancel`, buyerToken, { reason: 'changed mind' });
+    assertEqual(res.status, 200, `cancel must succeed: ${JSON.stringify(res.body)}`);
+    assertEqual(res.body.status, 'CANCELLED', 'order must be CANCELLED');
+
+    const { rows } = await pool.query(
+      'SELECT label_voided_at, label_void_refund_cents FROM orders WHERE id = $1',
+      [held.id]
+    );
+    assert(rows[0].label_voided_at != null, 'label_voided_at must be set after void');
+
+    const { rows: events } = await pool.query(
+      `SELECT payload_json FROM order_events WHERE order_id = $1 AND event_type = 'LABEL_VOIDED'`,
+      [held.id]
+    );
+    assert(events.length > 0, 'LABEL_VOIDED event must be recorded');
+    const voidPayload = JSON.parse(events[0].payload_json);
+    assertEqual(voidPayload.cancelledBy, 'buyer', 'event.cancelledBy must be buyer');
+  });
+
+  await test('cancel HELD without label: void skipped, CANCELLED, no LABEL_VOIDED event', async () => {
+    const held = await driveToHeld();
+    // No purchaseLabel — order has no label_id
+
+    const res = await post(appServer, `/orders/${held.id}/cancel`, buyerToken, { reason: 'no label test' });
+    assertEqual(res.status, 200, `cancel must succeed: ${JSON.stringify(res.body)}`);
+    assertEqual(res.body.status, 'CANCELLED', 'order must be CANCELLED');
+
+    const { rows } = await pool.query(
+      'SELECT label_voided_at FROM orders WHERE id = $1',
+      [held.id]
+    );
+    assertEqual(rows[0].label_voided_at, null, 'label_voided_at must remain null');
+
+    const { rows: events } = await pool.query(
+      `SELECT 1 FROM order_events WHERE order_id = $1 AND event_type = 'LABEL_VOIDED'`,
+      [held.id]
+    );
+    assertEqual(events.length, 0, 'no LABEL_VOIDED event for non-labeled order');
+  });
+
+  await test('cancel with definitive void failure: LABEL_VOID_FAILED event, cancel still completes', async () => {
+    process.env.STUB_VOID_MODE = 'definitive';
+    try {
+      const held = await driveToHeld();
+      await purchaseLabel(held.id);
+
+      const res = await post(appServer, `/orders/${held.id}/cancel`, buyerToken, { reason: 'test' });
+      assertEqual(res.status, 200, `cancel must complete despite definitive void failure: ${JSON.stringify(res.body)}`);
+      assertEqual(res.body.status, 'CANCELLED', 'order must reach CANCELLED');
+
+      const { rows } = await pool.query(
+        'SELECT label_voided_at FROM orders WHERE id = $1', [held.id]
+      );
+      assertEqual(rows[0].label_voided_at, null, 'label_voided_at must be null (void definitively failed)');
+
+      const { rows: events } = await pool.query(
+        `SELECT payload_json FROM order_events WHERE order_id = $1 AND event_type = 'LABEL_VOID_FAILED'`,
+        [held.id]
+      );
+      assert(events.length > 0, 'LABEL_VOID_FAILED event must be recorded');
+      const failPayload = JSON.parse(events[0].payload_json);
+      assert(failPayload.definitive === true, 'event must record definitive=true');
+    } finally {
+      delete process.env.STUB_VOID_MODE;
+    }
+  });
+
+  await test('cancel with ambiguous void: 503, order stays CANCELLING, recovery completes cancel', async () => {
+    process.env.STUB_VOID_MODE = 'ambiguous';
+    let orderId;
+    try {
+      const held = await driveToHeld();
+      orderId = held.id;
+      await purchaseLabel(orderId);
+
+      // Ambiguous void → cancel returns 503, order stays CANCELLING
+      const res = await post(appServer, `/orders/${orderId}/cancel`, buyerToken, { reason: 'test ambiguous' });
+      assertEqual(res.status, 503, `cancel must return 503 on ambiguous void: ${JSON.stringify(res.body)}`);
+
+      const { rows: mid } = await pool.query('SELECT status FROM orders WHERE id = $1', [orderId]);
+      assertEqual(mid[0].status, 'CANCELLING', 'order must remain CANCELLING after ambiguous void');
+
+      const { rows: ambEvents } = await pool.query(
+        `SELECT 1 FROM order_events WHERE order_id = $1 AND event_type = 'LABEL_VOID_AMBIGUOUS'`,
+        [orderId]
+      );
+      assert(ambEvents.length > 0, 'LABEL_VOID_AMBIGUOUS event must be recorded');
+    } finally {
+      delete process.env.STUB_VOID_MODE;
+    }
+
+    // Backdate transition_started_at so recovery sweep picks it up
+    await pool.query(
+      `UPDATE orders SET transition_started_at = NOW() - INTERVAL '15 minutes' WHERE id = $1`,
+      [orderId]
+    );
+
+    // Recovery: STUB_VOID_MODE unset → findRefundByTransaction returns null (stub) →
+    // retry voidLabel → success → write label_voided_at → Stripe refund → CANCELLED
+    const { runRecovery } = require('../src/recoveryService');
+    const result = await runRecovery();
+    assert(
+      result.recoveredOrderIds.includes(orderId),
+      `order ${orderId} must appear in recoveredOrderIds; got: ${JSON.stringify(result)}`
+    );
+
+    const { rows: final } = await pool.query(
+      'SELECT status, label_voided_at FROM orders WHERE id = $1', [orderId]
+    );
+    assertEqual(final[0].status, 'CANCELLED', 'order must be CANCELLED after recovery');
+    assert(final[0].label_voided_at != null, 'label_voided_at must be set by recovery');
+
+    const { rows: voidedEvents } = await pool.query(
+      `SELECT payload_json FROM order_events WHERE order_id = $1 AND event_type = 'LABEL_VOIDED'`,
+      [orderId]
+    );
+    assert(voidedEvents.length > 0, 'LABEL_VOIDED event must be recorded by recovery');
+    const recoveryVoidPayload = JSON.parse(voidedEvents[0].payload_json);
+    assertEqual(recoveryVoidPayload.triggeredBy, 'recovery', 'triggeredBy must be recovery');
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -696,6 +829,7 @@ async function runReviewTests() {
     await runConcurrencyTests();
     await runMessagesTests();
     await runReviewTests();
+    await runCancelWithVoidTests();
   } finally {
     await teardown();
   }

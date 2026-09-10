@@ -22,6 +22,8 @@ interface Order {
   label_cost_cents: number | null;
   label_id: string | null;
   label_url: string | null;
+  label_voided_at: string | null;
+  label_void_refund_cents: number | null;
   tracking_number: string | null;
   tracking_status: string | null;
   last_tracking_event_at: string | null;
@@ -378,7 +380,19 @@ function OrderContent() {
                 ) : order.status === 'HELD' ? (
                   <p className="text-xs text-gray-400 italic">Waiting for carrier scan…</p>
                 ) : null}
-                {order.label_url && (
+                {order.label_voided_at && (
+                  <div className="text-xs text-gray-500">
+                    <span className="font-medium text-gray-600">Label voided</span>
+                    {' '}on {new Date(order.label_voided_at).toLocaleDateString()}
+                    {order.label_void_refund_cents != null && order.label_void_refund_cents > 0 && (
+                      <span> · Shippo credit: ${(order.label_void_refund_cents / 100).toFixed(2)}</span>
+                    )}
+                  </div>
+                )}
+                {!order.label_voided_at && order.status === 'CANCELLED' && (
+                  <p className="text-xs text-amber-600 italic">Label void pending — contact support if this persists.</p>
+                )}
+                {order.label_url && !order.label_voided_at && (
                   <a
                     href={order.label_url}
                     target="_blank"
@@ -436,6 +450,40 @@ function OrderContent() {
           </div>
         </div>
       ) : null}
+
+      {/* Shipping exception banner (RETURNED / FAILURE) — buyer-facing CTA */}
+      {isBuyer &&
+        (order.tracking_status === 'RETURNED' || order.tracking_status === 'FAILURE') &&
+        ['SHIPPED', 'DELIVERED'].includes(order.status) && (
+        <div className="bg-red-50 border border-red-200 rounded-2xl overflow-hidden">
+          <div className="px-6 py-4 border-b border-red-200 flex items-center gap-2">
+            <svg className="w-4 h-4 text-red-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            <p className="text-sm font-semibold text-red-800">
+              {order.tracking_status === 'RETURNED' ? 'Package returned to sender' : 'Delivery failed'}
+            </p>
+          </div>
+          <div className="px-6 py-4 space-y-3">
+            <p className="text-sm text-red-700">
+              {order.tracking_status === 'RETURNED'
+                ? 'The carrier returned this package to the seller. If you have not received your item, you can file a dispute below.'
+                : 'The carrier was unable to deliver this package. If you have not received your item, you can file a dispute below.'}
+            </p>
+            {!showDispute && order.status !== 'DISPUTED' && (
+              <button
+                onClick={() => setShowDispute(true)}
+                className="inline-flex items-center gap-2 bg-red-600 text-white text-sm font-semibold px-4 py-2.5 rounded-lg hover:bg-red-700 transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+                File a Dispute
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Action buttons */}
       <ErrorAlert message={actionError} />
@@ -514,7 +562,14 @@ function OrderContent() {
             <p className="text-sm font-semibold text-gray-700">Cancel this order?</p>
           </div>
           <div className="px-6 py-4 space-y-3">
-            <p className="text-sm text-gray-600">The payment hold will be voided and both parties will be notified. This cannot be undone.</p>
+            <p className="text-sm text-gray-600">
+              The payment hold will be voided and both parties will be notified. This cannot be undone.
+              {order.label_id && (
+                <span className="block mt-1 text-xs text-gray-500">
+                  A shipping label was purchased for this order — it will be voided and the cost credited to the platform&apos;s Shippo account.
+                </span>
+              )}
+            </p>
             <div className="flex gap-3">
               <button
                 onClick={() => { act(() => cancelOrder(id)); setShowCancelConfirm(false); }}

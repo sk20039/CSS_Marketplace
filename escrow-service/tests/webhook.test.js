@@ -621,6 +621,118 @@ async function runTests() {
     assert('label_url' in res.body, 'seller response should contain label_url');
   });
 
+  // ── Phase 4: RETURNED / FAILURE tracking exceptions ────────────────────────
+  process.stdout.write('\n-- Phase 4: Shipping exceptions --\n');
+
+  await run('RETURNED webhook on SHIPPED order: tracking_status updated, order stays SHIPPED', async () => {
+    const orderId = await insertOrder({
+      status: 'SHIPPED', label_id: 'lbl_ret_ex_1', tracking_number: 'WHRETEX001', carrier: 'USPS',
+      shipped_at: new Date(Date.now() - 86400000).toISOString(),
+    });
+    const result = await handleTrackingWebhook({
+      tracking_number: 'WHRETEX001', carrier: 'usps',
+      tracking_status: { status: 'RETURNED', status_date: new Date(Date.now() - 1000).toISOString() },
+    });
+    const row = await getOrderDb(orderId);
+    assertEqual(row.status,             'SHIPPED',   'order must stay SHIPPED');
+    assertEqual(row.tracking_status,    'RETURNED',  'tracking_status must be RETURNED');
+    assertEqual(result.action,          'processed', 'action must be processed');
+    assertEqual(result.stateTransition, 'none',      'no state transition');
+  });
+
+  await run('FAILURE webhook on SHIPPED order: tracking_status updated, order stays SHIPPED', async () => {
+    const orderId = await insertOrder({
+      status: 'SHIPPED', label_id: 'lbl_fail_ex_1', tracking_number: 'WHFAILEX001', carrier: 'USPS',
+      shipped_at: new Date(Date.now() - 86400000).toISOString(),
+    });
+    const result = await handleTrackingWebhook({
+      tracking_number: 'WHFAILEX001', carrier: 'usps',
+      tracking_status: { status: 'FAILURE', status_date: new Date(Date.now() - 1000).toISOString() },
+    });
+    const row = await getOrderDb(orderId);
+    assertEqual(row.status,             'SHIPPED',   'order must stay SHIPPED');
+    assertEqual(row.tracking_status,    'FAILURE',   'tracking_status must be FAILURE');
+    assertEqual(result.action,          'processed', 'action must be processed');
+    assertEqual(result.stateTransition, 'none',      'no state transition');
+  });
+
+  await run('auto-release guard: DELIVERED+RETURNED order is skipped by sweep', async () => {
+    // Insert a DELIVERED order with RETURNED tracking and an expired window.
+    const orderId = await insertOrder({
+      status:           'DELIVERED',
+      label_id:         'lbl_guard_1',
+      tracking_number:  'WHGUARD001',
+      carrier:          'USPS',
+      tracking_status:  'RETURNED',
+      shipped_at:       new Date(Date.now() - 86400000 * 3).toISOString(),
+      delivered_at:     new Date(Date.now() - 86400000).toISOString(),
+      window_expires_at: new Date(Date.now() - 3600000).toISOString(), // expired 1 hour ago
+    });
+
+    const { runReleaseCheck } = require('../src/orderService');
+    const sweepResult = await runReleaseCheck();
+
+    // The order must NOT appear in the released list.
+    assert(
+      !sweepResult.releasedOrderIds.includes(orderId),
+      `Order ${orderId} with RETURNED tracking must not be auto-released`
+    );
+
+    const row = await getOrderDb(orderId);
+    assertEqual(row.status, 'DELIVERED', 'order must remain DELIVERED (not auto-released)');
+  });
+
+  await run('auto-release guard: DELIVERED+FAILURE order is skipped by sweep', async () => {
+    const orderId = await insertOrder({
+      status:           'DELIVERED',
+      label_id:         'lbl_guard_2',
+      tracking_number:  'WHGUARD002',
+      carrier:          'USPS',
+      tracking_status:  'FAILURE',
+      shipped_at:       new Date(Date.now() - 86400000 * 3).toISOString(),
+      delivered_at:     new Date(Date.now() - 86400000).toISOString(),
+      window_expires_at: new Date(Date.now() - 3600000).toISOString(),
+    });
+
+    const { runReleaseCheck } = require('../src/orderService');
+    const sweepResult = await runReleaseCheck();
+
+    assert(
+      !sweepResult.releasedOrderIds.includes(orderId),
+      `Order ${orderId} with FAILURE tracking must not be auto-released`
+    );
+    const row = await getOrderDb(orderId);
+    assertEqual(row.status, 'DELIVERED', 'order must remain DELIVERED (not auto-released)');
+  });
+
+  await run('auto-release sweep: DELIVERED+null tracking IS released (normal path)', async () => {
+    const orderId = await insertOrder({
+      status:           'DELIVERED',
+      label_id:         'lbl_guard_3',
+      tracking_number:  'WHGUARD003',
+      carrier:          'USPS',
+      tracking_status:  null,  // no exception
+      shipped_at:       new Date(Date.now() - 86400000 * 3).toISOString(),
+      delivered_at:     new Date(Date.now() - 86400000).toISOString(),
+      window_expires_at: new Date(Date.now() - 3600000).toISOString(),
+    });
+    // performRelease requires both stripe_charge_id and seller.stripe_account_id.
+    await pool.query(
+      `UPDATE orders SET stripe_charge_id = 'ch_stub_guard_3' WHERE id = $1`,
+      [orderId]
+    );
+    await pool.query(
+      `UPDATE users SET stripe_account_id = 'acct_stub_wh_test' WHERE id = $1`,
+      [SELLER_ID]
+    );
+
+    const { runReleaseCheck } = require('../src/orderService');
+    const sweepResult = await runReleaseCheck();
+
+    const row = await getOrderDb(orderId);
+    assertEqual(row.status, 'RELEASED', 'DELIVERED+null tracking must be auto-released');
+  });
+
   // ── Summary ──────────────────────────────────────────────────────────────────
   const total = passed + failed;
   process.stdout.write('\n' + '='.repeat(55) + '\n');

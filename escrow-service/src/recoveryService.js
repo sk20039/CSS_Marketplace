@@ -354,6 +354,86 @@ async function _reconcileRefunding(order) {
 // ---------------------------------------------------------------------------
 
 async function _reconcileCancelling(order) {
+  // ── Label void reconciliation ─────────────────────────────────────────────
+  // If a label was purchased but the void outcome was ambiguous (network/5xx),
+  // the order landed in CANCELLING with label_voided_at = NULL.
+  // We must resolve the void before issuing the Stripe refund:
+  //   1. Query Shippo for any existing refund for this label.
+  //   2. SUCCESS found → write label_voided_at and continue.
+  //   3. ERROR found   → void definitively failed, record event and continue.
+  //   4. null          → no refund created → retry void once.
+  //      a. Retry succeeds → write label_voided_at and continue.
+  //      b. Retry ambiguous → leave in CANCELLING, retry next sweep.
+  //      c. Retry definitive → record event and continue.
+  //   5. pending       → still processing, retry next sweep.
+  if (order.label_id && !order.label_voided_at) {
+    let existingVoid;
+    try {
+      existingVoid = await shippoClient.findRefundByTransaction(order.label_id);
+    } catch (queryErr) {
+      return _ambiguous(order,
+        `Cannot query Shippo refunds for void reconciliation: ${queryErr.message}`);
+    }
+
+    if (existingVoid && existingVoid.pending) {
+      return _ambiguous(order,
+        `Shippo refund for label void is pending (status: ${existingVoid.status})`);
+    }
+
+    if (existingVoid && !existingVoid.error) {
+      // SUCCESS — a refund was created in Shippo; write void fields and continue.
+      await pool.query(
+        `UPDATE orders SET label_voided_at = $1, label_void_refund_cents = $2 WHERE id = $3`,
+        [nowIso(), existingVoid.refund_cents, order.id]
+      );
+      await recordEvent(order.id, 'LABEL_VOIDED', {
+        voidId:      existingVoid.void_id,
+        refundCents: existingVoid.refund_cents,
+        triggeredBy: 'recovery',
+        labelId:     order.label_id,
+      });
+    } else if (existingVoid && existingVoid.error) {
+      // Shippo refund has ERROR status — void definitively failed.
+      await recordEvent(order.id, 'LABEL_VOID_FAILED', {
+        error:       'Shippo refund status ERROR',
+        definitive:  true,
+        triggeredBy: 'recovery',
+        labelId:     order.label_id,
+      });
+      // Continue to Stripe refund — the label cost is a platform loss.
+    } else {
+      // null — no existing Shippo refund found.  Positive confirmation that the
+      // original void never reached Shippo, so we can safely retry once.
+      try {
+        const voidResult = await shippoClient.voidLabel(order.label_id);
+        await pool.query(
+          `UPDATE orders SET label_voided_at = $1, label_void_refund_cents = $2 WHERE id = $3`,
+          [nowIso(), voidResult.refund_cents, order.id]
+        );
+        await recordEvent(order.id, 'LABEL_VOIDED', {
+          voidId:      voidResult.void_id,
+          refundCents: voidResult.refund_cents,
+          triggeredBy: 'recovery',
+          labelId:     order.label_id,
+        });
+      } catch (voidErr) {
+        if (!voidErr.definitive) {
+          // Still ambiguous — leave in CANCELLING for next sweep.
+          return _ambiguous(order,
+            `Void retry in recovery returned ambiguous error: ${voidErr.message}`);
+        }
+        // Definitive failure on retry — record and continue to Stripe refund.
+        await recordEvent(order.id, 'LABEL_VOID_FAILED', {
+          error:       voidErr.message,
+          definitive:  true,
+          triggeredBy: 'recovery',
+          labelId:     order.label_id,
+        });
+      }
+    }
+  }
+
+  // ── Stripe refund reconciliation ─────────────────────────────────────────
   // seller_late: full refund; buyer_change_of_mind or null: partial refund
   const refundAmountCents = order.cancellation_cause === 'seller_late'
     ? order.amount_cents

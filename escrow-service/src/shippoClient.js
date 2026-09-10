@@ -471,6 +471,150 @@ async function findTransactionByRate(rateId, orderId) {
   return { pending: true, status: match.status };
 }
 
+/**
+ * voidLabel — request a Shippo refund/void for a purchased shipping label.
+ *
+ * Uses async:false so Shippo processes the void synchronously.
+ *
+ * Throws ShippoDefinitiveError for:
+ *   - HTTP 4xx (Shippo rejected the void — label already used, too old, etc.)
+ *   - Refund status ERROR (Shippo processed but void definitively failed)
+ *   - Unexpected non-SUCCESS status
+ *
+ * Throws ShippoAmbiguousError for:
+ *   - Network-level errors (timeout, ECONNRESET, etc.)
+ *   - HTTP 5xx (Shippo may have started processing)
+ *
+ * Caller branches on err.definitive:
+ *   true  → record LABEL_VOID_FAILED; continue with order cancellation
+ *   false → leave order in CANCELLING; recovery reconciles via findRefundByTransaction
+ *
+ * In stub mode, STUB_VOID_MODE env var controls behaviour (for tests only):
+ *   'definitive' → throws ShippoDefinitiveError
+ *   'ambiguous'  → throws ShippoAmbiguousError
+ *   (unset)      → returns synthetic success
+ */
+async function voidLabel(labelId) {
+  if (!SHIPPO_API_KEY) {
+    if (IS_PRODUCTION) {
+      throw new ShippoDefinitiveError('Shippo is not configured (SHIPPO_API_KEY missing)', 503);
+    }
+    const mode = process.env.STUB_VOID_MODE || '';
+    if (mode === 'definitive') {
+      throw new ShippoDefinitiveError('Stub: definitive void failure (STUB_VOID_MODE=definitive)');
+    }
+    if (mode === 'ambiguous') {
+      throw new ShippoAmbiguousError('Stub: ambiguous void failure (STUB_VOID_MODE=ambiguous)');
+    }
+    return { void_id: `stub_void_${labelId}`, refund_cents: 0 };
+  }
+
+  let res;
+  try {
+    res = await _shippoFetch('/refunds/', 'POST', { transaction: labelId, async: false });
+  } catch (networkErr) {
+    throw new ShippoAmbiguousError(
+      `Network error contacting Shippo during label void: ${networkErr.message}`
+    );
+  }
+
+  if (res.status >= 400 && res.status < 500) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new ShippoDefinitiveError(
+      `Shippo label void rejected (HTTP ${res.status}): ` +
+      (errBody.detail || errBody.non_field_errors || JSON.stringify(errBody)),
+      502
+    );
+  }
+
+  if (res.status >= 500) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new ShippoAmbiguousError(
+      `Shippo returned HTTP ${res.status} during label void: ` +
+      (errBody.detail || String(res.status))
+    );
+  }
+
+  const r = await res.json();
+
+  if (r.status === 'ERROR') {
+    const msgs = (r.messages || [])
+      .map(m => m.text || m.message || JSON.stringify(m))
+      .join('; ');
+    throw new ShippoDefinitiveError(
+      `Shippo label void failed (status ERROR): ${msgs || 'no detail'}`,
+      502
+    );
+  }
+
+  if (r.status !== 'SUCCESS') {
+    throw new ShippoDefinitiveError(
+      `Shippo label void returned unexpected status: ${r.status}`,
+      502
+    );
+  }
+
+  console.log(`[shippo] voidLabel: refund=${r.object_id} label=${labelId} amount=${r.amount}`);
+  return {
+    void_id:      r.object_id,
+    refund_cents: Math.round(parseFloat(r.amount || 0) * 100),
+  };
+}
+
+/**
+ * findRefundByTransaction — query Shippo for any refund created for this label_id.
+ * Used by crash recovery to reconcile ambiguous void outcomes before deciding
+ * whether to retry the void or continue with cancellation.
+ *
+ * Returns one of:
+ *   { void_id, refund_cents } → SUCCESS refund found; write label_voided_at.
+ *   { error: true }           → ERROR status; definitive failure, continue without void.
+ *   { pending: true, status } → QUEUED/PENDING; still processing, retry next sweep.
+ *   null                      → No refund found; positive confirmation, safe to retry void.
+ *
+ * In stub mode, always returns null (no persistent state).
+ */
+async function findRefundByTransaction(labelId) {
+  if (!SHIPPO_API_KEY) {
+    return null; // stub mode — no persistent transaction store
+  }
+
+  let res;
+  try {
+    res = await _shippoFetch('/refunds/?results=50', 'GET');
+  } catch (networkErr) {
+    throw new Error(`Cannot query Shippo refunds for void recovery: ${networkErr.message}`);
+  }
+
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(
+      `Shippo refunds list returned HTTP ${res.status}: ` +
+      (errBody.detail || String(res.status))
+    );
+  }
+
+  const data = await res.json();
+  const refunds = data.results || [];
+  const match = refunds.find(r => r.transaction === labelId);
+
+  if (!match) return null;
+
+  if (match.status === 'SUCCESS') {
+    return {
+      void_id:      match.object_id,
+      refund_cents: Math.round(parseFloat(match.amount || 0) * 100),
+    };
+  }
+
+  if (match.status === 'ERROR') {
+    return { error: true };
+  }
+
+  // QUEUED or PENDING — still processing, retry next sweep.
+  return { pending: true, status: match.status };
+}
+
 // ── Webhook token verification ─────────────────────────────────────────────
 
 /**
@@ -505,6 +649,8 @@ module.exports = {
   getRate,
   purchaseLabel,
   findTransactionByRate,
+  voidLabel,
+  findRefundByTransaction,
   makeRateToken,
   verifyRateToken,
   verifyWebhookToken,

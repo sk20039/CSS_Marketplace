@@ -188,6 +188,47 @@ async function notifyRefunded(order, { triggeredBy }) {
   ]);
 }
 
+// ---- RETURNED / FAILURE ----
+// Called fire-and-forget from handleTrackingWebhook when tracking_status
+// transitions to RETURNED or FAILURE.  Notifies buyer and seller so they
+// can act (buyer to dispute; admin/seller to investigate).
+async function notifyTrackingException(order, trackingStatus) {
+  const [buyer, seller] = await Promise.all([getUser(order.buyer_id), getUser(order.seller_id)]);
+  const link       = orderUrl(order.id);
+  const isReturned = trackingStatus === 'RETURNED';
+
+  await Promise.allSettled([
+    buyer && sendEmail({
+      to:      buyer.email,
+      subject: isReturned
+        ? `Package returned to sender — Order #${order.id}`
+        : `Delivery failed — Order #${order.id}`,
+      text: isReturned
+        ? `Hi ${buyer.name},\n\n` +
+          `The carrier has returned the package for Order #${order.id} to the sender. ` +
+          `If you have not received your item, please file a dispute on your order page.\n\n` +
+          `View order: ${link}`
+        : `Hi ${buyer.name},\n\n` +
+          `The carrier was unable to deliver the package for Order #${order.id}. ` +
+          `If you have not received your item, please file a dispute on your order page.\n\n` +
+          `View order: ${link}`,
+    }),
+    seller && sendEmail({
+      to:      seller.email,
+      subject: isReturned
+        ? `Package returned — Order #${order.id}`
+        : `Delivery failed — Order #${order.id}`,
+      text: isReturned
+        ? `Hi ${seller.name},\n\n` +
+          `The carrier has returned the package for Order #${order.id} to you. ` +
+          `An admin may review this order.\n\nView order: ${link}`
+        : `Hi ${seller.name},\n\n` +
+          `The carrier reported a delivery failure for Order #${order.id}. ` +
+          `The buyer has been notified. An admin may review this order.\n\nView order: ${link}`,
+    }),
+  ]);
+}
+
 module.exports = {
   notifyOrderCaptured,
   notifyShipped,
@@ -196,4 +237,5 @@ module.exports = {
   notifyDisputed,
   notifyReleased,
   notifyRefunded,
+  notifyTrackingException,
 };
