@@ -982,29 +982,63 @@ async function disputeOrder(id, reasonText) {
 
   const { category, matchedPattern } = categorizeDispute(reasonText);
   const ts_now = nowIso();
+  const now = new Date(ts_now);
   const client = await pool.connect();
 
   try {
     await client.query('BEGIN');
-    const result = await client.query(
+
+    // Lock the row to read current state and block concurrent disputes.
+    const { rows } = await client.query(
+      `SELECT id, status, tracking_status, window_expires_at, last_tracking_event_at
+       FROM orders WHERE id = $1 FOR UPDATE`,
+      [id]
+    );
+    if (!rows[0]) {
+      await client.query('ROLLBACK');
+      throw new OrderError(`Order ${id} not found`, 404);
+    }
+    const cur = rows[0];
+    const priorStatus = cur.status;
+
+    // --- Eligibility check ---
+    let reason409 = null;
+
+    if (cur.status === 'DELIVERED') {
+      if (cur.window_expires_at && new Date(cur.window_expires_at) <= now) {
+        reason409 = `Order ${id} dispute window has expired`;
+      }
+    } else if (cur.status === 'SHIPPED') {
+      if (!['RETURNED', 'FAILURE'].includes(cur.tracking_status)) {
+        reason409 = `Order ${id} can only be disputed from SHIPPED status when carrier reports RETURNED or FAILURE (current tracking: ${cur.tracking_status || 'none'})`;
+      } else if (!cur.last_tracking_event_at) {
+        reason409 = `Order ${id} has no tracking event timestamp; cannot verify dispute deadline`;
+      } else {
+        const deadline = new Date(cur.last_tracking_event_at);
+        deadline.setDate(deadline.getDate() + 14);
+        if (now > deadline) {
+          reason409 = `Order ${id} 14-day dispute window for shipping exception has expired`;
+        }
+      }
+    } else {
+      reason409 = `Order ${id} cannot be disputed in its current state (status: ${cur.status})`;
+    }
+
+    if (reason409) {
+      await client.query('ROLLBACK');
+      throw new OrderError(reason409, 409);
+    }
+
+    await client.query(
       `UPDATE orders
        SET status = 'DISPUTED', dispute_reason_text = $1, dispute_category = $2, updated_at = $3
-       WHERE id = $4 AND status = 'DELIVERED'`,
+       WHERE id = $4`,
       [reasonText, category, ts_now, id]
     );
-    if (result.rowCount === 0) {
-      await client.query('ROLLBACK');
-      const { rows } = await pool.query('SELECT status FROM orders WHERE id = $1', [id]);
-      if (!rows[0]) throw new OrderError(`Order ${id} not found`, 404);
-      throw new OrderError(
-        `Order ${id} is already being released (status ${rows[0].status}); dispute not possible`,
-        409
-      );
-    }
     await client.query(
       `INSERT INTO order_events (order_id, event_type, payload_json, created_at)
        VALUES ($1, $2, $3, $4)`,
-      [id, 'DISPUTED', JSON.stringify({ reasonText, category, matchedPattern }), ts_now]
+      [id, 'DISPUTED', JSON.stringify({ reasonText, category, matchedPattern, priorStatus }), ts_now]
     );
     await client.query('COMMIT');
   } catch (err) {
@@ -1023,19 +1057,24 @@ async function disputeOrder(id, reasonText) {
 // POST /admin/orders/:id/resolve
 // ---------------------------------------------------------------------------
 
-async function resolveDispute(id, action) {
+async function resolveDispute(id, action, notes) {
   await getOrder(id); // 404 if not found
+
+  const adminNotes = (typeof notes === 'string' && notes.trim()) ? notes.trim() : null;
 
   if (action === 'release') {
     await performRelease(id, { triggeredBy: 'admin_resolve', fromStatus: 'DISPUTED' });
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query(`UPDATE orders SET dispute_resolution = 'release' WHERE id = $1`, [id]);
+      await client.query(
+        `UPDATE orders SET dispute_resolution = 'release', dispute_admin_notes = $2 WHERE id = $1`,
+        [id, adminNotes]
+      );
       await client.query(
         `INSERT INTO order_events (order_id, event_type, payload_json, created_at)
          VALUES ($1, $2, $3, $4)`,
-        [id, 'DISPUTE_RESOLVED', JSON.stringify({ action: 'release' }), nowIso()]
+        [id, 'DISPUTE_RESOLVED', JSON.stringify({ action: 'release', notes: adminNotes }), nowIso()]
       );
       await client.query('COMMIT');
     } catch (err) {
@@ -1052,11 +1091,14 @@ async function resolveDispute(id, action) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query(`UPDATE orders SET dispute_resolution = 'refund' WHERE id = $1`, [id]);
+      await client.query(
+        `UPDATE orders SET dispute_resolution = 'refund', dispute_admin_notes = $2 WHERE id = $1`,
+        [id, adminNotes]
+      );
       await client.query(
         `INSERT INTO order_events (order_id, event_type, payload_json, created_at)
          VALUES ($1, $2, $3, $4)`,
-        [id, 'DISPUTE_RESOLVED', JSON.stringify({ action: 'refund' }), nowIso()]
+        [id, 'DISPUTE_RESOLVED', JSON.stringify({ action: 'refund', notes: adminNotes }), nowIso()]
       );
       await client.query('COMMIT');
     } catch (err) {

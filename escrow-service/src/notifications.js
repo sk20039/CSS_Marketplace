@@ -115,17 +115,42 @@ async function notifyCancelled(order, { cancelledBy }) {
 
 // ---- DISPUTED ----
 async function notifyDisputed(order) {
-  const seller = await getUser(order.seller_id);
-  if (!seller) return;
-  await sendEmail({
-    to:      seller.email,
-    subject: `Dispute filed on your order — Order #${order.id}`,
-    text:
-      `Hi ${seller.name},\n\n` +
-      `The buyer has filed a dispute on Order #${order.id} (${money(order.amount_cents)}). ` +
-      `An admin will review the dispute and make a decision.\n\n` +
-      `View order: ${orderUrl(order.id)}`,
-  });
+  const [buyer, seller] = await Promise.all([getUser(order.buyer_id), getUser(order.seller_id)]);
+  const link       = orderUrl(order.id);
+  const amount     = money(order.amount_cents);
+  const adminEmail = process.env.ADMIN_ALERT_EMAIL;
+
+  await Promise.allSettled([
+    seller && sendEmail({
+      to:      seller.email,
+      subject: `Dispute filed on your order — Order #${order.id}`,
+      text:
+        `Hi ${seller.name},\n\n` +
+        `The buyer has filed a dispute on Order #${order.id} (${amount}). ` +
+        `An admin will review the dispute and make a decision.\n\n` +
+        `View order: ${link}`,
+    }),
+    buyer && sendEmail({
+      to:      buyer.email,
+      subject: `Dispute received — Order #${order.id}`,
+      text:
+        `Hi ${buyer.name},\n\n` +
+        `Your dispute on Order #${order.id} (${amount}) has been received. ` +
+        `An admin will review the case and you will be notified of the decision.\n\n` +
+        `View order: ${link}`,
+    }),
+    adminEmail && sendEmail({
+      to:      adminEmail,
+      subject: `[Admin] New dispute — Order #${order.id}`,
+      text:
+        `A dispute has been filed.\n\n` +
+        `Order #${order.id} — ${amount}\n` +
+        `Buyer: ${buyer ? buyer.email : 'unknown'}\n` +
+        `Seller: ${seller ? seller.email : 'unknown'}\n` +
+        `Reason: ${order.dispute_reason_text || '(none)'}\n\n` +
+        `Resolve: ${BASE_URL}/admin/disputes/${order.id}`,
+    }),
+  ]);
 }
 
 // ---- RELEASED ----

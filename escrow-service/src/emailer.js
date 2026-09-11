@@ -14,8 +14,12 @@ function createTransport() {
 
 const transport = createTransport();
 
+// In stub mode (no SMTP_HOST), all sent emails are recorded here so tests can inspect them.
+const _capturedEmails = [];
+
 async function sendEmail({ to, subject, text }) {
   if (!transport) {
+    _capturedEmails.push({ to, subject, text });
     console.log(`[EMAIL STUB] To: ${to}`);
     console.log(`[EMAIL STUB] Subject: ${subject}`);
     console.log(`[EMAIL STUB] ${text.split('\n')[0]}`);
@@ -24,4 +28,7 @@ async function sendEmail({ to, subject, text }) {
   await transport.sendMail({ from: FROM, to, subject, text });
 }
 
-module.exports = { sendEmail };
+function _clearCaptured() { _capturedEmails.length = 0; }
+function _getCaptured()   { return [..._capturedEmails]; }
+
+module.exports = { sendEmail, _clearCaptured, _getCaptured };

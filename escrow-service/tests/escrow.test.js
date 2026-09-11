@@ -165,6 +165,11 @@ async function setup() {
   const mockPort = mockListingServer.address().port;
   process.env.LISTING_SERVICE_URL = `http://127.0.0.1:${mockPort}`;
 
+  // Raise rate limits so the full test suite (which creates many orders/labels) does not self-throttle.
+  process.env.RATE_LIMIT_LABEL_PURCHASE_MAX = '200';
+  process.env.RATE_LIMIT_ORDER_MAX          = '200';
+  process.env.RATE_LIMIT_DISPUTE_MAX        = '200';
+
   // NOW load src/ modules (LISTING_SERVICE_URL is set)
   pool = require('../src/db');
   const { buildApp } = require('../src/app');
@@ -810,6 +815,169 @@ async function runCancelWithVoidTests() {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 5: Dispute eligibility (SHIPPED exceptions + window gating) + admin notes
+// ---------------------------------------------------------------------------
+
+async function runPhase5DisputeTests() {
+  console.log('\nPhase 5 — Dispute eligibility and admin notes');
+
+  // Fire a Shippo tracking webhook for an already-SHIPPED order.
+  async function fireTrackingWebhook(orderId, trackingStatus) {
+    const getRes = await get(appServer, `/orders/${orderId}`, sellerToken);
+    const { tracking_number, carrier } = getRes.body;
+    assert(tracking_number, `tracking_number must be set for order ${orderId}`);
+    const whRes = await post(appServer, '/webhooks/shippo', null, {
+      event: 'track_updated',
+      test: false,
+      data: {
+        tracking_number,
+        carrier: carrier.toLowerCase(),
+        tracking_status: {
+          status:         trackingStatus,
+          status_date:    new Date().toISOString(),
+          status_details: `${trackingStatus} (test)`,
+          substatus:      null,
+        },
+      },
+    });
+    assertEqual(whRes.status, 200, `${trackingStatus} webhook failed: ${JSON.stringify(whRes.body)}`);
+    const final = await get(appServer, `/orders/${orderId}`, sellerToken);
+    return final.body;
+  }
+
+  // Drive to SHIPPED then fire a RETURNED or FAILURE event.
+  async function driveToShippedWithException(exceptionStatus) {
+    const held = await driveToHeld();
+    await shipOrder(held.id); // HELD → SHIPPED via TRANSIT webhook
+    return fireTrackingWebhook(held.id, exceptionStatus);
+  }
+
+  await test('SHIPPED+RETURNED order can be disputed (Phase 5)', async () => {
+    const order = await driveToShippedWithException('RETURNED');
+    assertEqual(order.status, 'SHIPPED', 'order must be SHIPPED');
+    assertEqual(order.tracking_status, 'RETURNED', 'tracking_status must be RETURNED');
+
+    const res = await post(appServer, `/orders/${order.id}/dispute`, buyerToken, {
+      reason: 'Package was returned to sender before I received it',
+    });
+    assertEqual(res.status, 200, `dispute must succeed: ${JSON.stringify(res.body)}`);
+    assertEqual(res.body.status, 'DISPUTED', 'order must be DISPUTED');
+    const event = res.body.events.find((e) => e.event_type === 'DISPUTED');
+    assert(event, 'DISPUTED event required');
+    assertEqual(event.payload.priorStatus, 'SHIPPED', 'priorStatus must be SHIPPED in event');
+  });
+
+  await test('SHIPPED+FAILURE order can be disputed (Phase 5)', async () => {
+    const order = await driveToShippedWithException('FAILURE');
+    const res = await post(appServer, `/orders/${order.id}/dispute`, buyerToken, {
+      reason: 'Carrier failed to deliver and item lost',
+    });
+    assertEqual(res.status, 200, `dispute must succeed: ${JSON.stringify(res.body)}`);
+    assertEqual(res.body.status, 'DISPUTED', 'order must be DISPUTED');
+    const event = res.body.events.find((e) => e.event_type === 'DISPUTED');
+    assertEqual(event.payload.priorStatus, 'SHIPPED', 'priorStatus must be SHIPPED in event');
+  });
+
+  await test('SHIPPED without exception is rejected with 409 (Phase 5)', async () => {
+    const held = await driveToHeld();
+    await shipOrder(held.id);
+    const res = await post(appServer, `/orders/${held.id}/dispute`, buyerToken, {
+      reason: 'Changed my mind',
+    });
+    assertEqual(res.status, 409, `dispute must be rejected: ${JSON.stringify(res.body)}`);
+    assert(res.body.error.includes('RETURNED or FAILURE'), 'error must explain shipping exception requirement');
+  });
+
+  await test('DELIVERED past window_expires_at rejected with 409 (Phase 5)', async () => {
+    const delivered = await driveToDelivered();
+    // Expire the window
+    await pool.query(
+      `UPDATE orders SET window_expires_at = $1 WHERE id = $2`,
+      [new Date(Date.now() - 1000).toISOString(), delivered.id]
+    );
+    const res = await post(appServer, `/orders/${delivered.id}/dispute`, buyerToken, { reason: 'Too late claim' });
+    assertEqual(res.status, 409, `dispute must be rejected after window: ${JSON.stringify(res.body)}`);
+    assert(res.body.error.includes('expired'), 'error must mention expiry');
+  });
+
+  await test('DELIVERED inside window is still accepted (Phase 5 regression)', async () => {
+    const delivered = await driveToDelivered();
+    // window_expires_at is set in the future by default (48h from delivery)
+    const res = await post(appServer, `/orders/${delivered.id}/dispute`, buyerToken, {
+      reason: 'Item is completely wrong — wrong size and model',
+    });
+    assertEqual(res.status, 200, `dispute inside window must succeed: ${JSON.stringify(res.body)}`);
+    assertEqual(res.body.status, 'DISPUTED', 'order must be DISPUTED');
+    const event = res.body.events.find((e) => e.event_type === 'DISPUTED');
+    assertEqual(event.payload.priorStatus, 'DELIVERED', 'priorStatus must be DELIVERED in event');
+  });
+
+  await test('admin resolve with notes: notes stored and in DISPUTE_RESOLVED event (Phase 5)', async () => {
+    const delivered = await driveToDelivered();
+    await disputeOrder(delivered.id, 'Item arrived cracked in two pieces');
+
+    const adminNotes = 'Buyer provided photos confirming damage. Listing described item as new. Refunding.';
+    const res = await post(appServer, `/admin/orders/${delivered.id}/resolve`, adminToken, {
+      action: 'refund',
+      notes: adminNotes,
+    });
+    assertEqual(res.status, 200, `resolve must succeed: ${JSON.stringify(res.body)}`);
+    assertEqual(res.body.status, 'REFUNDED', 'order must be REFUNDED');
+
+    const { rows } = await pool.query(
+      'SELECT dispute_admin_notes FROM orders WHERE id = $1', [delivered.id]
+    );
+    assertEqual(rows[0].dispute_admin_notes, adminNotes, 'dispute_admin_notes must be stored in DB');
+
+    const resolvedEvent = res.body.events.find((e) => e.event_type === 'DISPUTE_RESOLVED');
+    assert(resolvedEvent, 'DISPUTE_RESOLVED event required');
+    assertEqual(resolvedEvent.payload.notes, adminNotes, 'notes must appear in DISPUTE_RESOLVED event payload');
+  });
+
+  await test('admin resolve without notes: notes field is null (Phase 5)', async () => {
+    const delivered = await driveToDelivered();
+    await disputeOrder(delivered.id, 'Wrong item');
+
+    const res = await post(appServer, `/admin/orders/${delivered.id}/resolve`, adminToken, {
+      action: 'release',
+    });
+    assertEqual(res.status, 200, `resolve must succeed: ${JSON.stringify(res.body)}`);
+    const { rows } = await pool.query(
+      'SELECT dispute_admin_notes FROM orders WHERE id = $1', [delivered.id]
+    );
+    assertEqual(rows[0].dispute_admin_notes, null, 'dispute_admin_notes must be null when not provided');
+  });
+
+  await test('notifyDisputed sends buyer confirmation and admin alert emails (Phase 5)', async () => {
+    const emailer = require('../src/emailer');
+    const delivered = await driveToDelivered();
+
+    // Let any delivery notifications settle, then clear the slate.
+    await new Promise((r) => setTimeout(r, 80));
+    emailer._clearCaptured();
+    process.env.ADMIN_ALERT_EMAIL = 'admin-alert@cricket.test';
+
+    await disputeOrder(delivered.id, 'Item never arrived at my address');
+
+    // Wait for fire-and-forget notifications to complete.
+    await new Promise((r) => setTimeout(r, 120));
+
+    const emails = emailer._getCaptured();
+    const toAddresses = emails.map((e) => e.to);
+    assert(
+      emails.some((e) => e.to === 'buyer@escrow.test' && e.subject.includes('Dispute received')),
+      `buyer confirmation email must be sent; captured to: ${JSON.stringify(toAddresses)}`
+    );
+    assert(
+      emails.some((e) => e.to === 'admin-alert@cricket.test'),
+      `admin alert email must be sent; captured to: ${JSON.stringify(toAddresses)}`
+    );
+
+    delete process.env.ADMIN_ALERT_EMAIL;
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -830,6 +998,7 @@ async function runCancelWithVoidTests() {
     await runMessagesTests();
     await runReviewTests();
     await runCancelWithVoidTests();
+    await runPhase5DisputeTests();
   } finally {
     await teardown();
   }

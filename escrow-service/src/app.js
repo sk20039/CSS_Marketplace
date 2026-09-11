@@ -613,8 +613,8 @@ function buildApp() {
   // ---- admin ----
   app.post('/admin/orders/:id/resolve', adminResolveLimiter, requireAuth, requireAdmin, async (req, res, next) => {
     try {
-      const { action } = req.body;
-      res.json(await orderService.resolveDispute(req.params.id, action));
+      const { action, notes } = req.body;
+      res.json(await orderService.resolveDispute(req.params.id, action, notes));
     } catch (err) { next(err); }
   });
 

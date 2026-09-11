@@ -282,8 +282,8 @@ export async function disputeOrder(id: string | number, reason: string) {
   return escrowFetch(`/orders/${id}/dispute`, { method: 'POST', body: JSON.stringify({ reason }) });
 }
 
-export async function resolveDispute(id: string | number, action: 'release' | 'refund') {
-  return escrowFetch(`/admin/orders/${id}/resolve`, { method: 'POST', body: JSON.stringify({ action }) });
+export async function resolveDispute(id: string | number, action: 'release' | 'refund', notes?: string) {
+  return escrowFetch(`/admin/orders/${id}/resolve`, { method: 'POST', body: JSON.stringify({ action, notes }) });
 }
 
 export async function submitReview(orderId: string | number, rating: number, body: string) {

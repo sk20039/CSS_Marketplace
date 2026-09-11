@@ -12,6 +12,8 @@ interface Order {
   id: number; status: string; amount_cents: number; listing_id: number;
   buyer_id: number; seller_id: number; dispute_reason_text?: string;
   dispute_category?: string; seller_payout_cents: number; platform_fee_cents: number;
+  carrier?: string; tracking_number?: string; tracking_status?: string;
+  label_cost_cents?: number;
   events: { id: number; event_type: string; payload_json: string | null; created_at: string }[];
 }
 
@@ -35,6 +37,7 @@ function DisputeContent() {
   const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
   const [resolving, setResolving] = useState<'release' | 'refund' | null>(null);
+  const [adminNotes, setAdminNotes] = useState('');
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -45,7 +48,7 @@ function DisputeContent() {
     setResolving(action);
     setError('');
     try {
-      const res = await resolveDispute(id, action);
+      const res = await resolveDispute(id, action, adminNotes || undefined);
       const data = await res.json();
       if (!res.ok) { setError(data.error || 'Resolution failed'); return; }
       router.push('/admin');
@@ -163,6 +166,63 @@ function DisputeContent() {
               <span className="font-bold text-blue-600">${(order.amount_cents / 100).toFixed(2)}</span>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* Shipping context */}
+      {(order.carrier || order.tracking_number || order.tracking_status) && (
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-100">
+            <p className="text-sm font-semibold text-gray-700">Shipping Context</p>
+          </div>
+          <div className="px-6 py-4 space-y-3 text-sm">
+            {order.carrier && (
+              <div className="flex justify-between">
+                <span className="text-gray-500">Carrier</span>
+                <span className="font-medium uppercase">{order.carrier}</span>
+              </div>
+            )}
+            {order.tracking_number && (
+              <div className="flex justify-between">
+                <span className="text-gray-500">Tracking #</span>
+                <span className="font-mono text-xs font-medium">{order.tracking_number}</span>
+              </div>
+            )}
+            {order.tracking_status && (
+              <div className="flex justify-between items-center">
+                <span className="text-gray-500">Tracking status</span>
+                <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full ${
+                  order.tracking_status === 'RETURNED' ? 'bg-orange-100 text-orange-700 border border-orange-200' :
+                  order.tracking_status === 'FAILURE'  ? 'bg-red-100 text-red-700 border border-red-200' :
+                  order.tracking_status === 'DELIVERED'? 'bg-green-100 text-green-700 border border-green-200' :
+                  'bg-gray-100 text-gray-600 border border-gray-200'
+                }`}>{order.tracking_status}</span>
+              </div>
+            )}
+            {order.label_cost_cents != null && (
+              <div className="flex justify-between">
+                <span className="text-gray-500">Label cost</span>
+                <span className="font-medium">${(order.label_cost_cents / 100).toFixed(2)}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Admin notes */}
+      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-100">
+          <p className="text-sm font-semibold text-gray-700">Admin Resolution Notes</p>
+          <p className="text-xs text-gray-400 mt-0.5">Internal only — not visible to buyer or seller</p>
+        </div>
+        <div className="px-6 py-4">
+          <textarea
+            value={adminNotes}
+            onChange={(e) => setAdminNotes(e.target.value)}
+            placeholder="Record your reasoning for this resolution decision…"
+            rows={4}
+            className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent resize-none text-gray-700 placeholder-gray-400"
+          />
         </div>
       </div>
 
