@@ -86,7 +86,7 @@ function ts(v) {
 function normalizeOrder(row) {
   if (!row) return null;
   // eslint-disable-next-line no-unused-vars
-  const { shipping_address, ...rest } = row;
+  const { shipping_address, stripe_client_secret, ...rest } = row;
   return {
     ...rest,
     shipped_at:            ts(row.shipped_at),

@@ -397,6 +397,53 @@ async function runOrderCreationTests() {
     assertEqual(res.status, 200, `expected 200, got ${res.status}`);
     assert(!('shipping_address' in res.body), 'shipping_address must not appear in GET response');
   });
+
+  // ── BLOCKER-2 regression: stripe_client_secret must never leak via general order APIs ──
+  await test('POST /orders response does not include stripe_client_secret (BLOCKER-2)', async () => {
+    const order = await createOrder();
+    assert(!('stripe_client_secret' in order),
+      'stripe_client_secret must not appear in POST /orders response');
+  });
+
+  await test('GET /orders/:id does not include stripe_client_secret for buyer (BLOCKER-2)', async () => {
+    const order = await createOrder();
+    const res = await get(appServer, `/orders/${order.id}`, buyerToken);
+    assertEqual(res.status, 200, `expected 200, got ${res.status}`);
+    assert(!('stripe_client_secret' in res.body),
+      'stripe_client_secret must not appear in GET /orders/:id buyer response');
+  });
+
+  await test('GET /orders/:id does not include stripe_client_secret for seller (BLOCKER-2)', async () => {
+    const order = await createOrder();
+    const res = await get(appServer, `/orders/${order.id}`, sellerToken);
+    assertEqual(res.status, 200, `expected 200, got ${res.status}`);
+    assert(!('stripe_client_secret' in res.body),
+      'stripe_client_secret must not appear in GET /orders/:id seller response');
+  });
+
+  await test('GET /orders list does not include stripe_client_secret for buyer (BLOCKER-2)', async () => {
+    await createOrder();
+    const res = await get(appServer, '/orders', buyerToken);
+    assertEqual(res.status, 200, `expected 200, got ${res.status}`);
+    assert(Array.isArray(res.body), 'orders list must be an array');
+    for (const o of res.body) {
+      assert(!('stripe_client_secret' in o),
+        `stripe_client_secret leaked in order list item id=${o.id}`);
+    }
+  });
+
+  await test('GET /orders/:id/client-secret still works for buyer (BLOCKER-2 non-regression)', async () => {
+    const order = await createOrder();
+    const res = await get(appServer, `/orders/${order.id}/client-secret`, buyerToken);
+    assertEqual(res.status, 200, `expected 200, got ${res.status}`);
+    assert(res.body.client_secret, 'client_secret must still be returned via dedicated endpoint');
+  });
+
+  await test('GET /orders/:id/client-secret returns 403 for seller (BLOCKER-2 non-regression)', async () => {
+    const order = await createOrder();
+    const res = await get(appServer, `/orders/${order.id}/client-secret`, sellerToken);
+    assertEqual(res.status, 403, `expected 403 for seller, got ${res.status}`);
+  });
 }
 
 async function runCaptureTests() {

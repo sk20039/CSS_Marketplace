@@ -42,6 +42,7 @@ const VALID = {
   INTERNAL_SERVICE_SECRET: 'a-different-internal-svc-secret-at-least-32chars!',
   FRONTEND_ORIGIN:         'https://example.com',
   PUBLIC_BASE_URL:         'https://listing.example.com',
+  UPLOADS_DIR:             '/uploads',
 };
 
 (async () => {
@@ -72,6 +73,10 @@ const VALID = {
 
   test('missing PUBLIC_BASE_URL is rejected', () => {
     assertError(validateProductionEnv({ ...VALID, PUBLIC_BASE_URL: undefined }), 'PUBLIC_BASE_URL', 'missing');
+  });
+
+  test('missing UPLOADS_DIR is rejected', () => {
+    assertError(validateProductionEnv({ ...VALID, UPLOADS_DIR: undefined }), 'UPLOADS_DIR', 'missing');
   });
 
   // ---- Placeholder values ----

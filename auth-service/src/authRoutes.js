@@ -114,24 +114,30 @@ function setRefreshCookie(res, token) {
 
 async function storeRefreshToken(userId) {
   const raw = crypto.randomBytes(REFRESH_BYTES).toString('hex');
+  const sha256 = crypto.createHash('sha256').update(raw).digest('hex');
   const hash = await bcrypt.hash(raw, 10);
   const expiresAt = new Date(Date.now() + REFRESH_DAYS * 86400000).toISOString();
   await pool.query(
-    'INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)',
-    [userId, hash, expiresAt]
+    'INSERT INTO refresh_tokens (user_id, token_hash, token_sha256, expires_at) VALUES ($1, $2, $3, $4)',
+    [userId, hash, sha256, expiresAt]
   );
   return raw;
 }
 
 async function findAndDeleteRefreshToken(raw) {
-  const { rows } = await pool.query('SELECT * FROM refresh_tokens WHERE expires_at > NOW()');
-  for (const row of rows) {
-    if (await bcrypt.compare(raw, row.token_hash)) {
-      await pool.query('DELETE FROM refresh_tokens WHERE id = $1', [row.id]);
-      return row;
-    }
-  }
-  return null;
+  // O(1) indexed lookup via SHA-256(raw) — replaces the previous O(n*bcrypt)
+  // full-table scan.  bcrypt verification of the single candidate row is
+  // retained for breach-resistance against a stolen DB dump.
+  const sha256 = crypto.createHash('sha256').update(String(raw)).digest('hex');
+  const { rows } = await pool.query(
+    'SELECT * FROM refresh_tokens WHERE token_sha256 = $1 AND expires_at > NOW()',
+    [sha256]
+  );
+  const row = rows[0];
+  if (!row) return null;
+  if (!(await bcrypt.compare(raw, row.token_hash))) return null;
+  await pool.query('DELETE FROM refresh_tokens WHERE id = $1', [row.id]);
+  return row;
 }
 
 // POST /auth/register

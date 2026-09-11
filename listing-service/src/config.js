@@ -73,6 +73,10 @@ function validateProductionEnv(env) {
   needMinLen('INTERNAL_SERVICE_SECRET', MIN_SECRET_LENGTH);
   needHttpsUrl('FRONTEND_ORIGIN');
   needHttpsUrl('PUBLIC_BASE_URL');
+  // Listing photos must be stored on a persistent volume in production.
+  // Without this, photos are written to the ephemeral container filesystem
+  // and are lost on every deployment.
+  need('UPLOADS_DIR');
 
   return errors;
 }

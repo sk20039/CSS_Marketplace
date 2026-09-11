@@ -69,14 +69,16 @@ const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 
   CREATE TABLE IF NOT EXISTS refresh_tokens (
-    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    user_id     BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    token_hash  TEXT        NOT NULL,
-    expires_at  TIMESTAMPTZ NOT NULL,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id      BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash   TEXT        NOT NULL,
+    token_sha256 TEXT        NOT NULL UNIQUE,
+    expires_at   TIMESTAMPTZ NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
-  CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id);
+  CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user   ON refresh_tokens(user_id);
   CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires ON refresh_tokens(expires_at);
+  CREATE INDEX IF NOT EXISTS idx_refresh_tokens_sha256  ON refresh_tokens(token_sha256);
 
   CREATE TABLE IF NOT EXISTS email_verification_tokens (
     id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -480,6 +482,93 @@ async function run() {
     // Subsequent refresh with the same (now deleted) cookie should fail
     const retried = await request(app).post('/auth/refresh').set('Cookie', buyerRefreshCookie);
     assert(retried.status === 401, `expected 401 after logout, got ${retried.status}`);
+  });
+
+  // ── token_sha256 indexed lookup (BLOCKER-1 regression) ───────────────────
+  // Prove that refresh/logout use the indexed token_sha256 column and do NOT
+  // fall back to a full-table bcrypt scan.
+  console.log('\nRefresh token SHA-256 indexed lookup (BLOCKER-1)');
+
+  await test('token_sha256 column is stored on login and is a valid hex SHA-256', async () => {
+    // Inspect the DB row created by the seller login earlier in this test run.
+    const { rows } = await pool.query(
+      "SELECT token_sha256 FROM refresh_tokens WHERE user_id = (SELECT id FROM users WHERE email = 'demo.seller@cricket.test') ORDER BY id DESC LIMIT 1"
+    );
+    assert(rows.length > 0, 'must have at least one refresh token for demo seller');
+    const sha256 = rows[0].token_sha256;
+    assert(typeof sha256 === 'string' && /^[0-9a-f]{64}$/.test(sha256),
+      `token_sha256 must be a 64-char hex string, got: ${sha256}`);
+  });
+
+  await test('refresh token lookup uses indexed token_sha256 — single row returned, not full table', async () => {
+    // Insert 5 decoy tokens for a different user so the table has multiple rows.
+    const { rows: [decoyUser] } = await pool.query(
+      "SELECT id FROM users WHERE email = 'buyer@cricket.test'"
+    );
+    const crypto2 = require('crypto');
+    const bcryptjs2 = require('bcryptjs');
+    for (let i = 0; i < 5; i++) {
+      const raw = crypto2.randomBytes(32).toString('hex');
+      const sha256 = crypto2.createHash('sha256').update(raw).digest('hex');
+      const hash = await bcryptjs2.hash(raw, 4); // cost 4 for speed in tests
+      await pool.query(
+        'INSERT INTO refresh_tokens (user_id, token_hash, token_sha256, expires_at) VALUES ($1, $2, $3, NOW() + INTERVAL \'7 days\')',
+        [decoyUser.id, hash, sha256]
+      );
+    }
+
+    // Now issue a real login for seller to get a fresh cookie, then refresh it.
+    // The refresh must succeed without touching the 5 decoy rows.
+    const loginRes = await request(app)
+      .post('/auth/login')
+      .send({ email: 'demo.seller@cricket.test', password: 'Demo1234!' });
+    assert(loginRes.status === 200, `seller login failed: ${loginRes.status}`);
+    const freshCookie = loginRes.headers['set-cookie'];
+    assert(freshCookie && freshCookie.length > 0, 'must receive refresh cookie');
+
+    // Count rows before
+    const { rows: before } = await pool.query('SELECT COUNT(*) AS c FROM refresh_tokens');
+    const countBefore = parseInt(before[0].c, 10);
+
+    const refreshRes = await request(app)
+      .post('/auth/refresh')
+      .set('Cookie', freshCookie);
+    assert(refreshRes.status === 200, `refresh failed: ${refreshRes.status}`);
+    assert(refreshRes.body.access_token, 'must return access_token');
+
+    // After a successful refresh, the old token is deleted and a new one inserted.
+    // Count of rows must be (countBefore - 1 + 1) = countBefore.
+    const { rows: after } = await pool.query('SELECT COUNT(*) AS c FROM refresh_tokens');
+    const countAfter = parseInt(after[0].c, 10);
+    assert(countAfter === countBefore, `token count mismatch: before=${countBefore} after=${countAfter}`);
+
+    // Clean up decoy tokens
+    await pool.query("DELETE FROM refresh_tokens WHERE user_id = $1", [decoyUser.id]);
+  });
+
+  await test('a forged raw token with wrong SHA-256 does not match any row', async () => {
+    // Insert a real token for the seller
+    const crypto3 = require('crypto');
+    const bcryptjs3 = require('bcryptjs');
+    const { rows: [seller] } = await pool.query(
+      "SELECT id FROM users WHERE email = 'demo.seller@cricket.test'"
+    );
+    const raw = crypto3.randomBytes(32).toString('hex');
+    const sha256 = crypto3.createHash('sha256').update(raw).digest('hex');
+    const hash = await bcryptjs3.hash(raw, 4);
+    await pool.query(
+      'INSERT INTO refresh_tokens (user_id, token_hash, token_sha256, expires_at) VALUES ($1, $2, $3, NOW() + INTERVAL \'7 days\')',
+      [seller.id, hash, sha256]
+    );
+
+    // Attempt refresh with a completely different random raw token — should get 401
+    const forgery = crypto3.randomBytes(32).toString('hex');
+    const fakeCookie = `refresh_token=${forgery}; Path=/; HttpOnly`;
+    const res = await request(app).post('/auth/refresh').set('Cookie', fakeCookie);
+    assert(res.status === 401, `expected 401 for forged token, got ${res.status}`);
+
+    // Clean up
+    await pool.query('DELETE FROM refresh_tokens WHERE token_sha256 = $1', [sha256]);
   });
 
   // ── Cookie attributes ─────────────────────────────────────────────────────
