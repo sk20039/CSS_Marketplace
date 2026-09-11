@@ -46,6 +46,11 @@ const VALID = {
   APP_BASE_URL:             'https://api.example.com',
   FRONTEND_ORIGIN:          'https://example.com',
   INTERNAL_SERVICE_SECRET:  'yet-another-long-internal-secret-at-least-32-chars',
+  SMTP_HOST:                'smtp.resend.com',
+  SMTP_USER:                'resend',
+  SMTP_PASS:                'resend_api_key_fake_for_config_tests_only',
+  EMAIL_FROM:               'Test <noreply@example.com>',
+  EVIDENCE_DIR:             '/evidence',
 };
 
 (async () => {
@@ -152,6 +157,28 @@ const VALID = {
 
   test('HTTP FRONTEND_ORIGIN is rejected', () => {
     assertError(validateProductionEnv({ ...VALID, FRONTEND_ORIGIN: 'http://example.com' }), 'FRONTEND_ORIGIN', 'HTTPS');
+  });
+
+  // ---- SMTP / Email (HIGH-1) ----
+  test('missing SMTP_HOST is rejected (HIGH-1)', () => {
+    assertError(validateProductionEnv({ ...VALID, SMTP_HOST: undefined }), 'SMTP_HOST', 'missing');
+  });
+
+  test('missing SMTP_USER is rejected (HIGH-1)', () => {
+    assertError(validateProductionEnv({ ...VALID, SMTP_USER: undefined }), 'SMTP_USER', 'missing');
+  });
+
+  test('missing SMTP_PASS is rejected (HIGH-1)', () => {
+    assertError(validateProductionEnv({ ...VALID, SMTP_PASS: undefined }), 'SMTP_PASS', 'missing');
+  });
+
+  test('missing EMAIL_FROM is rejected (HIGH-1)', () => {
+    assertError(validateProductionEnv({ ...VALID, EMAIL_FROM: undefined }), 'EMAIL_FROM', 'missing');
+  });
+
+  // ---- Evidence volume (HIGH-2) ----
+  test('missing EVIDENCE_DIR is rejected (HIGH-2)', () => {
+    assertError(validateProductionEnv({ ...VALID, EVIDENCE_DIR: undefined }), 'EVIDENCE_DIR', 'missing');
   });
 
   // ---- Multiple errors ----

@@ -88,6 +88,15 @@ function validateProductionEnv(env) {
   needHttpsUrl('FRONTEND_ORIGIN');
   needMinLen('INTERNAL_SERVICE_SECRET', MIN_SECRET_LENGTH);
 
+  // ---- Email (SMTP) — lifecycle notifications must not silently drop in production ----
+  need('SMTP_HOST');
+  need('SMTP_USER');
+  need('SMTP_PASS');
+  need('EMAIL_FROM');
+
+  // ---- Evidence volume — dispute evidence must be stored on a persistent volume ----
+  need('EVIDENCE_DIR');
+
   return errors;
 }
 

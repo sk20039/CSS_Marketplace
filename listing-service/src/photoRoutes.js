@@ -17,6 +17,36 @@ const ALLOWED_MIME = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const MAX_PHOTOS = 5;
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5 MB
 
+// Detect image MIME type from the first 12 bytes of the file.
+// Returns the detected MIME string or null if unrecognised.
+// Pattern mirrors Phase 6 evidenceService magic-byte detection.
+function detectImageMime(buf) {
+  if (buf.length < 12) return null;
+  // JPEG: FF D8 FF
+  if (buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) return 'image/jpeg';
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) return 'image/png';
+  // WebP: RIFF????WEBP (bytes 0-3 = RIFF, bytes 8-11 = WEBP)
+  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+      buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) {
+    return 'image/webp';
+  }
+  return null;
+}
+
+function validatePhotoSignature(filePath) {
+  let header;
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    header = Buffer.alloc(12);
+    fs.readSync(fd, header, 0, 12, 0);
+    fs.closeSync(fd);
+  } catch {
+    return null;
+  }
+  return detectImageMime(header);
+}
+
 const storage = multer.diskStorage({
   destination: UPLOADS_DIR,
   filename(req, file, cb) {
@@ -70,6 +100,13 @@ router.post('/listings/:id/photos', requireAuth, async (req, res, next) => {
 
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
+    // Magic-byte validation — do not trust browser-supplied mimetype alone.
+    const detectedMime = validatePhotoSignature(req.file.path);
+    if (!detectedMime || !ALLOWED_MIME.has(detectedMime)) {
+      fs.unlink(req.file.path, () => {});
+      return res.status(400).json({ error: 'File content does not match an allowed image type (JPEG, PNG, or WebP)' });
+    }
+
     const displayOrder = currentCount;
     const { rows: photoRows } = await pool.query(
       'INSERT INTO listing_photos (listing_id, filename, display_order) VALUES ($1, $2, $3) RETURNING id',
@@ -93,6 +130,7 @@ router.get('/photos/:filename', (req, res) => {
   const filename = path.basename(req.params.filename); // prevent path traversal
   const filePath = path.join(UPLOADS_DIR, filename);
   if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Photo not found' });
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   res.sendFile(filePath);
 });
 

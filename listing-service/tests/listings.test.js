@@ -625,6 +625,90 @@ async function run() {
     assert(res.status === 201, `expected 201, got ${res.status}: ${JSON.stringify(res.body)}`);
   });
 
+  // Photo upload security (HIGH-3)
+  console.log('\nPOST /listings/:id/photos — magic byte validation (HIGH-3)');
+
+  // Minimal valid magic-byte buffers
+  const JPEG_BYTES = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01]);
+  const PNG_BYTES  = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D]);
+  const WEBP_BYTES = Buffer.from([0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50]);
+  const ELF_BYTES  = Buffer.from([0x7F, 0x45, 0x4C, 0x46, 0x02, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00]);
+
+  async function createListingForPhoto() {
+    const res = await request(app)
+      .post('/listings')
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .send({ title: 'Photo Test Bat', price_cents: 5000, category: 'bat', condition: 'new', ...PKG_DIMS });
+    return res.body.id;
+  }
+
+  await cleanup();
+  await test('valid JPEG upload accepted (HIGH-3)', async () => {
+    const id = await createListingForPhoto();
+    const res = await request(app)
+      .post(`/listings/${id}/photos`)
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .attach('photo', JPEG_BYTES, { filename: 'test.jpg', contentType: 'image/jpeg' });
+    assert(res.status === 201, `expected 201 for valid JPEG, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.filename, 'filename should be set');
+  });
+
+  await cleanup();
+  await test('valid PNG upload accepted (HIGH-3)', async () => {
+    const id = await createListingForPhoto();
+    const res = await request(app)
+      .post(`/listings/${id}/photos`)
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .attach('photo', PNG_BYTES, { filename: 'test.png', contentType: 'image/png' });
+    assert(res.status === 201, `expected 201 for valid PNG, got ${res.status}: ${JSON.stringify(res.body)}`);
+  });
+
+  await cleanup();
+  await test('valid WebP upload accepted (HIGH-3)', async () => {
+    const id = await createListingForPhoto();
+    const res = await request(app)
+      .post(`/listings/${id}/photos`)
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .attach('photo', WEBP_BYTES, { filename: 'test.webp', contentType: 'image/webp' });
+    assert(res.status === 201, `expected 201 for valid WebP, got ${res.status}: ${JSON.stringify(res.body)}`);
+  });
+
+  await cleanup();
+  await test('executable binary renamed .jpg is rejected by magic bytes (HIGH-3)', async () => {
+    const id = await createListingForPhoto();
+    const res = await request(app)
+      .post(`/listings/${id}/photos`)
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .attach('photo', ELF_BYTES, { filename: 'evil.jpg', contentType: 'image/jpeg' });
+    assert(res.status === 400, `expected 400 for ELF bytes, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.error && res.body.error.toLowerCase().includes('content'), `error should mention content: ${JSON.stringify(res.body)}`);
+  });
+
+  await cleanup();
+  await test('PNG bytes with image/jpeg MIME are accepted — magic bytes determine type (HIGH-3)', async () => {
+    const id = await createListingForPhoto();
+    const res = await request(app)
+      .post(`/listings/${id}/photos`)
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .attach('photo', PNG_BYTES, { filename: 'disguised.jpg', contentType: 'image/jpeg' });
+    // PNG magic bytes detected (allowed), so upload succeeds regardless of claimed MIME
+    assert(res.status === 201, `expected 201 when PNG bytes pass magic check, got ${res.status}: ${JSON.stringify(res.body)}`);
+  });
+
+  await cleanup();
+  await test('GET /photos/:filename returns X-Content-Type-Options: nosniff (HIGH-3)', async () => {
+    const id = await createListingForPhoto();
+    const upload = await request(app)
+      .post(`/listings/${id}/photos`)
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .attach('photo', JPEG_BYTES, { filename: 'nosniff_test.jpg', contentType: 'image/jpeg' });
+    assert(upload.status === 201, `upload failed: ${JSON.stringify(upload.body)}`);
+    const res = await request(app).get(`/photos/${upload.body.filename}`);
+    assert(res.status === 200, `expected 200 fetching photo, got ${res.status}`);
+    const header = res.headers['x-content-type-options'];
+    assert(header === 'nosniff', `expected nosniff header, got: ${header}`);
+  });
+
   // Teardown
   await pool.end();
 
