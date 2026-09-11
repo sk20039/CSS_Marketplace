@@ -5,7 +5,8 @@ import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import AuthGuard from '@/components/AuthGuard';
 import OrderTimeline from '@/components/OrderTimeline';
-import { getOrder, resolveDispute } from '@/lib/api';
+import { getOrder, resolveDispute, listEvidence, downloadEvidence, getSellerResponse } from '@/lib/api';
+import type { EvidenceItem, SellerDisputeResponse } from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
 
 interface Order {
@@ -39,10 +40,33 @@ function DisputeContent() {
   const [resolving, setResolving] = useState<'release' | 'refund' | null>(null);
   const [adminNotes, setAdminNotes] = useState('');
   const [error, setError] = useState('');
+  const [evidence, setEvidence] = useState<EvidenceItem[]>([]);
+  const [sellerResponse, setSellerResponse] = useState<SellerDisputeResponse | null>(null);
 
   useEffect(() => {
-    getOrder(id).then(setOrder).catch(() => setError('Order not found')).finally(() => setLoading(false));
+    getOrder(id)
+      .then((o) => {
+        setOrder(o);
+        if (o.status === 'DISPUTED') {
+          listEvidence(id).then(setEvidence).catch(() => {});
+          getSellerResponse(id).then(setSellerResponse).catch(() => {});
+        }
+      })
+      .catch(() => setError('Order not found'))
+      .finally(() => setLoading(false));
   }, [id]);
+
+  async function handleDownloadEvidence(evidenceId: number, filename: string) {
+    try {
+      const res = await downloadEvidence(id, evidenceId);
+      if (!res.ok) return;
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename; a.click();
+      URL.revokeObjectURL(url);
+    } catch { /* silent */ }
+  }
 
   async function handle(action: 'release' | 'refund') {
     setResolving(action);
@@ -205,6 +229,51 @@ function DisputeContent() {
                 <span className="font-medium">${(order.label_cost_cents / 100).toFixed(2)}</span>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Dispute Evidence */}
+      {evidence.length > 0 && (
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-100">
+            <p className="text-sm font-semibold text-gray-700">Dispute Evidence ({evidence.length} file{evidence.length !== 1 ? 's' : ''})</p>
+          </div>
+          <div className="px-6 py-4 space-y-2">
+            {evidence.map((ev) => (
+              <div key={ev.id} className="flex items-center justify-between gap-3 bg-gray-50 border border-gray-200 rounded-xl px-4 py-2.5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className={`text-xs font-semibold px-2 py-0.5 rounded-full shrink-0 ${
+                    ev.uploader_role === 'buyer'
+                      ? 'bg-blue-100 text-blue-700'
+                      : 'bg-amber-100 text-amber-700'
+                  }`}>
+                    {ev.uploader_role}
+                  </span>
+                  <span className="text-sm text-gray-700 truncate">{ev.original_filename}</span>
+                  <span className="text-xs text-gray-400 shrink-0">{(ev.file_size_bytes / 1024).toFixed(0)} KB · {ev.uploader_name}</span>
+                </div>
+                <button
+                  onClick={() => handleDownloadEvidence(ev.id, ev.original_filename)}
+                  className="text-xs text-brand-700 hover:text-brand-800 font-medium shrink-0"
+                >
+                  Download
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Seller Response */}
+      {sellerResponse && (
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-100">
+            <p className="text-sm font-semibold text-gray-700">Seller&apos;s Formal Response</p>
+            <p className="text-xs text-gray-400 mt-0.5">Submitted {new Date(sellerResponse.created_at).toLocaleDateString()}</p>
+          </div>
+          <div className="px-6 py-4">
+            <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{sellerResponse.body}</p>
           </div>
         </div>
       )}

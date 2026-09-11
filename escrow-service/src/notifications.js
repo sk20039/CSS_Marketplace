@@ -127,8 +127,9 @@ async function notifyDisputed(order) {
       text:
         `Hi ${seller.name},\n\n` +
         `The buyer has filed a dispute on Order #${order.id} (${amount}). ` +
-        `An admin will review the dispute and make a decision.\n\n` +
-        `View order: ${link}`,
+        `You can upload evidence and submit a formal response on your order page. ` +
+        `An admin will review the case and make a decision.\n\n` +
+        `View order and respond: ${link}`,
     }),
     buyer && sendEmail({
       to:      buyer.email,
@@ -213,6 +214,36 @@ async function notifyRefunded(order, { triggeredBy }) {
   ]);
 }
 
+// ---- SELLER RESPONDED TO DISPUTE ----
+async function notifySellerResponded(order) {
+  const [buyer, seller] = await Promise.all([getUser(order.buyer_id), getUser(order.seller_id)]);
+  const link       = orderUrl(order.id);
+  const amount     = money(order.amount_cents);
+  const adminEmail = process.env.ADMIN_ALERT_EMAIL;
+
+  await Promise.allSettled([
+    buyer && sendEmail({
+      to:      buyer.email,
+      subject: `Seller responded to your dispute — Order #${order.id}`,
+      text:
+        `Hi ${buyer.name},\n\n` +
+        `The seller has submitted a formal response to the dispute on Order #${order.id} (${amount}). ` +
+        `An admin will review both sides and make a decision.\n\n` +
+        `View order: ${link}`,
+    }),
+    adminEmail && sendEmail({
+      to:      adminEmail,
+      subject: `[Admin] Seller responded to dispute — Order #${order.id}`,
+      text:
+        `The seller has submitted a response to the dispute.\n\n` +
+        `Order #${order.id} — ${amount}\n` +
+        `Seller: ${seller ? seller.email : 'unknown'}\n` +
+        `Buyer:  ${buyer  ? buyer.email  : 'unknown'}\n\n` +
+        `Resolve: ${BASE_URL}/admin/disputes/${order.id}`,
+    }),
+  ]);
+}
+
 // ---- RETURNED / FAILURE ----
 // Called fire-and-forget from handleTrackingWebhook when tracking_status
 // transitions to RETURNED or FAILURE.  Notifies buyer and seller so they
@@ -260,6 +291,7 @@ module.exports = {
   notifyDelivered,
   notifyCancelled,
   notifyDisputed,
+  notifySellerResponded,
   notifyReleased,
   notifyRefunded,
   notifyTrackingException,

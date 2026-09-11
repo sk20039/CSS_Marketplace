@@ -31,6 +31,8 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 process.env.DATABASE_URL = process.env.DATABASE_URL_TEST;
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'change-me'; // explicit: removed || '' fallback in requireAuth
 delete process.env.STRIPE_SECRET_KEY; // force stub mode
+// Evidence files go to a temp dir so we don't pollute the working tree.
+process.env.EVIDENCE_DIR = require('os').tmpdir() + '/escrow_test_evidence_' + Date.now();
 
 // Start mock listing server before loading src/ (LISTING_SERVICE_URL must be set before require)
 const http = require('http');
@@ -166,9 +168,11 @@ async function setup() {
   process.env.LISTING_SERVICE_URL = `http://127.0.0.1:${mockPort}`;
 
   // Raise rate limits so the full test suite (which creates many orders/labels) does not self-throttle.
-  process.env.RATE_LIMIT_LABEL_PURCHASE_MAX = '200';
-  process.env.RATE_LIMIT_ORDER_MAX          = '200';
-  process.env.RATE_LIMIT_DISPUTE_MAX        = '200';
+  process.env.RATE_LIMIT_LABEL_PURCHASE_MAX = '500';
+  process.env.RATE_LIMIT_ORDER_MAX          = '500'; // legacy name kept for reference
+  process.env.RATE_LIMIT_ORDER_CREATE_MAX   = '500';
+  process.env.RATE_LIMIT_DISPUTE_MAX        = '500';
+  process.env.RATE_LIMIT_EVIDENCE_MAX       = '500';
 
   // NOW load src/ modules (LISTING_SERVICE_URL is set)
   pool = require('../src/db');
@@ -978,6 +982,339 @@ async function runPhase5DisputeTests() {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 6: Dispute Evidence and Seller Response
+// ---------------------------------------------------------------------------
+
+// Build a minimal multipart/form-data body buffer for file upload tests.
+// Returns { buffer, contentType } for use as the HTTP body.
+function buildMultipartBody(boundary, fieldname, filename, contentType, fileData) {
+  const head = [
+    `--${boundary}\r\n`,
+    `Content-Disposition: form-data; name="${fieldname}"; filename="${filename}"\r\n`,
+    `Content-Type: ${contentType}\r\n`,
+    '\r\n',
+  ].join('');
+  const tail = `\r\n--${boundary}--\r\n`;
+  return Buffer.concat([Buffer.from(head), fileData, Buffer.from(tail)]);
+}
+
+// Valid magic-byte prefixes for supported MIME types.
+const FAKE_JPEG = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01]);
+const FAKE_PNG  = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52]);
+const FAKE_PDF  = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2D, 0x31, 0x2E, 0x34, 0x0A, 0x25, 0xC4, 0xE5, 0xF2, 0xE5, 0xEB, 0xA7]);
+
+// Raw multipart upload helper (does NOT set Content-Type: application/json).
+function uploadRequest(server, path, token, buffer, contentType) {
+  return new Promise((resolve, reject) => {
+    const addr = server.address();
+    const options = {
+      hostname: '127.0.0.1',
+      port: addr.port,
+      path,
+      method: 'POST',
+      headers: {
+        'Content-Type': contentType,
+        'Content-Length': buffer.length,
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    };
+    const req = http.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        let body;
+        try { body = JSON.parse(data); } catch { body = data; }
+        resolve({ status: res.statusCode, body });
+      });
+    });
+    req.on('error', reject);
+    req.write(buffer);
+    req.end();
+  });
+}
+
+function makeEvidenceUpload(server, orderId, token, fileData, filename, mimeType) {
+  const boundary = 'TestBoundary' + Date.now();
+  const buf = buildMultipartBody(boundary, 'file', filename, mimeType, fileData);
+  return uploadRequest(server, `/orders/${orderId}/evidence`, token, buf,
+    `multipart/form-data; boundary=${boundary}`);
+}
+
+async function runPhase6EvidenceTests() {
+  console.log('\nPhase 6: Dispute Evidence and Seller Response');
+
+  await test('buyer can upload JPEG evidence when order is DISPUTED', async () => {
+    const delivered = await driveToDelivered();
+    await disputeOrder(delivered.id, 'Item not as described');
+
+    const res = await makeEvidenceUpload(appServer, delivered.id, buyerToken, FAKE_JPEG, 'photo.jpg', 'image/jpeg');
+    assertEqual(res.status, 201, `upload must return 201: ${JSON.stringify(res.body)}`);
+    assert(res.body.id, 'evidence id must be present');
+    assertEqual(res.body.uploader_role, 'buyer', 'uploader_role must be buyer');
+    assertEqual(res.body.mime_type, 'image/jpeg', 'mime_type must be image/jpeg');
+    assertEqual(res.body.order_id, delivered.id, 'order_id must match');
+  });
+
+  await test('seller can upload PNG evidence when order is DISPUTED', async () => {
+    const delivered = await driveToDelivered();
+    await disputeOrder(delivered.id, 'Item fine, buyer lying');
+
+    const res = await makeEvidenceUpload(appServer, delivered.id, sellerToken, FAKE_PNG, 'proof.png', 'image/png');
+    assertEqual(res.status, 201, `upload must return 201: ${JSON.stringify(res.body)}`);
+    assertEqual(res.body.uploader_role, 'seller', 'uploader_role must be seller');
+    assertEqual(res.body.mime_type, 'image/png', 'mime_type must be image/png');
+  });
+
+  await test('upload rejected with 409 when order is not DISPUTED', async () => {
+    const delivered = await driveToDelivered(); // DELIVERED, not DISPUTED
+    const res = await makeEvidenceUpload(appServer, delivered.id, buyerToken, FAKE_JPEG, 'photo.jpg', 'image/jpeg');
+    assertEqual(res.status, 409, `expected 409, got ${res.status}: ${JSON.stringify(res.body)}`);
+  });
+
+  await test('upload rejected with 422 when file fails magic-byte check', async () => {
+    const delivered = await driveToDelivered();
+    await disputeOrder(delivered.id, 'Test bad mime');
+
+    const fakeExe = Buffer.from([0x4D, 0x5A, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00]);
+    const res = await makeEvidenceUpload(appServer, delivered.id, buyerToken, fakeExe, 'evil.exe', 'image/jpeg');
+    assertEqual(res.status, 422, `expected 422, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.error && res.body.error.includes('not allowed'), `must report file type error: ${JSON.stringify(res.body)}`);
+  });
+
+  await test('upload rejected with 403 when unauthenticated', async () => {
+    const delivered = await driveToDelivered();
+    await disputeOrder(delivered.id, 'Test no auth');
+    const res = await makeEvidenceUpload(appServer, delivered.id, null, FAKE_JPEG, 'photo.jpg', 'image/jpeg');
+    assertEqual(res.status, 401, `expected 401, got ${res.status}`);
+  });
+
+  await test('upload rejected when per-role file count limit exceeded', async () => {
+    const delivered = await driveToDelivered();
+    await disputeOrder(delivered.id, 'Test limit');
+
+    const evidenceService = require('../src/evidenceService');
+    const MAX = evidenceService.MAX_FILES_PER_ROLE;
+
+    // Upload MAX files as buyer
+    for (let i = 0; i < MAX; i++) {
+      const res = await makeEvidenceUpload(appServer, delivered.id, buyerToken, FAKE_PDF, `file${i}.pdf`, 'application/pdf');
+      assertEqual(res.status, 201, `upload ${i + 1} must succeed: ${JSON.stringify(res.body)}`);
+    }
+
+    // The (MAX+1)th upload must be rejected
+    const res = await makeEvidenceUpload(appServer, delivered.id, buyerToken, FAKE_JPEG, 'extra.jpg', 'image/jpeg');
+    assertEqual(res.status, 409, `expected 409 after limit exceeded: ${JSON.stringify(res.body)}`);
+    assert(res.body.error && res.body.error.includes('Maximum'), `must mention Maximum: ${res.body.error}`);
+  });
+
+  await test('both buyer and seller can list all evidence (P2 MODIFIED)', async () => {
+    const delivered = await driveToDelivered();
+    await disputeOrder(delivered.id, 'Test shared visibility');
+
+    // Buyer uploads buyer evidence
+    await makeEvidenceUpload(appServer, delivered.id, buyerToken, FAKE_JPEG, 'buyer_photo.jpg', 'image/jpeg');
+    // Seller uploads seller evidence
+    await makeEvidenceUpload(appServer, delivered.id, sellerToken, FAKE_PNG, 'seller_proof.png', 'image/png');
+
+    // Buyer lists evidence — should see both
+    const buyerList = await get(appServer, `/orders/${delivered.id}/evidence`, buyerToken);
+    assertEqual(buyerList.status, 200, `buyer list failed: ${JSON.stringify(buyerList.body)}`);
+    assert(Array.isArray(buyerList.body) && buyerList.body.length >= 2, 'buyer must see both items');
+    const roles = buyerList.body.map((e) => e.uploader_role);
+    assert(roles.includes('buyer'), 'buyer must see buyer evidence');
+    assert(roles.includes('seller'), 'buyer must see seller evidence');
+
+    // Seller lists evidence — should also see both
+    const sellerList = await get(appServer, `/orders/${delivered.id}/evidence`, sellerToken);
+    assertEqual(sellerList.status, 200, `seller list failed: ${JSON.stringify(sellerList.body)}`);
+    assert(sellerList.body.length >= 2, 'seller must see both items');
+  });
+
+  await test('admin can list all evidence', async () => {
+    const delivered = await driveToDelivered();
+    await disputeOrder(delivered.id, 'Admin view test');
+    await makeEvidenceUpload(appServer, delivered.id, buyerToken, FAKE_JPEG, 'doc.jpg', 'image/jpeg');
+
+    const res = await get(appServer, `/orders/${delivered.id}/evidence`, adminToken);
+    assertEqual(res.status, 200, `admin list failed: ${JSON.stringify(res.body)}`);
+    assert(Array.isArray(res.body), 'must return array');
+    assert(res.body.some((e) => e.uploader_role === 'buyer'), 'admin must see buyer evidence');
+  });
+
+  await test('evidence list returns 403 for non-party', async () => {
+    const delivered = await driveToDelivered();
+    await disputeOrder(delivered.id, 'Test 403');
+
+    // Create a third user who is neither buyer nor seller
+    const { rows: [stranger] } = await pool.query(
+      `INSERT INTO users (name, email, role) VALUES ('Stranger', 'stranger@escrow.test', 'buyer') RETURNING id`
+    );
+    const strangerToken = jwt.sign({ sub: String(stranger.id), email: 'stranger@escrow.test', role: 'buyer' }, JWT_SECRET);
+
+    const res = await get(appServer, `/orders/${delivered.id}/evidence`, strangerToken);
+    assertEqual(res.status, 403, `expected 403, got ${res.status}`);
+  });
+
+  await test('auth-gated file download returns file content', async () => {
+    const delivered = await driveToDelivered();
+    await disputeOrder(delivered.id, 'Download test');
+    const uploadRes = await makeEvidenceUpload(appServer, delivered.id, buyerToken, FAKE_JPEG, 'photo.jpg', 'image/jpeg');
+    assertEqual(uploadRes.status, 201, 'upload must succeed');
+    const evidenceId = uploadRes.body.id;
+
+    // Download via raw HTTP so we can check status + headers without JSON parsing
+    const downloadRes = await new Promise((resolve, reject) => {
+      const addr = appServer.address();
+      const req = http.request({
+        hostname: '127.0.0.1', port: addr.port,
+        path: `/orders/${delivered.id}/evidence/${evidenceId}/file`,
+        method: 'GET',
+        headers: { Authorization: `Bearer ${buyerToken}` },
+      }, (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+
+    assertEqual(downloadRes.status, 200, `download must return 200: status ${downloadRes.status}`);
+    assert(downloadRes.headers['content-type'] === 'image/jpeg', `must return image/jpeg content-type, got ${downloadRes.headers['content-type']}`);
+    assert(downloadRes.body.length > 0, 'downloaded body must not be empty');
+  });
+
+  await test('file download returns 403 for non-party', async () => {
+    const delivered = await driveToDelivered();
+    await disputeOrder(delivered.id, 'Download 403 test');
+    const uploadRes = await makeEvidenceUpload(appServer, delivered.id, buyerToken, FAKE_JPEG, 'p.jpg', 'image/jpeg');
+    const evidenceId = uploadRes.body.id;
+
+    const { rows: [stranger2] } = await pool.query(
+      `INSERT INTO users (name, email, role) VALUES ('Stranger2', 'stranger2@escrow.test', 'buyer') RETURNING id`
+    );
+    const s2Token = jwt.sign({ sub: String(stranger2.id), email: 'stranger2@escrow.test', role: 'buyer' }, JWT_SECRET);
+
+    const res = await get(appServer, `/orders/${delivered.id}/evidence/${evidenceId}/file`, s2Token);
+    assertEqual(res.status, 403, `expected 403, got ${res.status}`);
+  });
+
+  await test('seller can submit formal dispute response', async () => {
+    const delivered = await driveToDelivered();
+    await disputeOrder(delivered.id, 'Faulty description');
+
+    const res = await post(appServer, `/orders/${delivered.id}/seller-response`, sellerToken, {
+      body: 'The item was exactly as described. Photos in the listing clearly show the condition.',
+    });
+    assertEqual(res.status, 201, `submit response must return 201: ${JSON.stringify(res.body)}`);
+    assert(res.body.id, 'response id must be present');
+    assertEqual(res.body.order_id, delivered.id, 'order_id must match');
+    assert(res.body.body.includes('exactly as described'), 'body must be stored');
+    assert(res.body.created_at, 'created_at must be present');
+  });
+
+  await test('duplicate seller response returns 409', async () => {
+    const delivered = await driveToDelivered();
+    await disputeOrder(delivered.id, 'Test duplicate response');
+
+    await post(appServer, `/orders/${delivered.id}/seller-response`, sellerToken, {
+      body: 'First response.',
+    });
+    const res2 = await post(appServer, `/orders/${delivered.id}/seller-response`, sellerToken, {
+      body: 'Second response — should be rejected.',
+    });
+    assertEqual(res2.status, 409, `duplicate must return 409: ${JSON.stringify(res2.body)}`);
+    assert(res2.body.error && res2.body.error.includes('already been submitted'), `must mention already submitted: ${JSON.stringify(res2.body)}`);
+  });
+
+  await test('seller response rejected when order is not DISPUTED', async () => {
+    const delivered = await driveToDelivered(); // DELIVERED, not DISPUTED
+    const res = await post(appServer, `/orders/${delivered.id}/seller-response`, sellerToken, {
+      body: 'This should fail.',
+    });
+    assertEqual(res.status, 409, `expected 409: ${JSON.stringify(res.body)}`);
+  });
+
+  await test('buyer cannot submit seller response (403)', async () => {
+    const delivered = await driveToDelivered();
+    await disputeOrder(delivered.id, 'Buyer tries to submit seller response');
+    const res = await post(appServer, `/orders/${delivered.id}/seller-response`, buyerToken, {
+      body: 'Buyer impersonating seller.',
+    });
+    assertEqual(res.status, 403, `expected 403: ${JSON.stringify(res.body)}`);
+  });
+
+  await test('GET /seller-response returns null when no response submitted', async () => {
+    const delivered = await driveToDelivered();
+    await disputeOrder(delivered.id, 'No response yet');
+
+    const res = await get(appServer, `/orders/${delivered.id}/seller-response`, buyerToken);
+    assertEqual(res.status, 200, `GET must return 200: ${JSON.stringify(res.body)}`);
+    assert(res.body === null, `must be null when no response, got: ${JSON.stringify(res.body)}`);
+  });
+
+  await test('GET /seller-response returns response after submission', async () => {
+    const delivered = await driveToDelivered();
+    await disputeOrder(delivered.id, 'Test GET response');
+    await post(appServer, `/orders/${delivered.id}/seller-response`, sellerToken, {
+      body: 'Item was in perfect condition as listed.',
+    });
+
+    // Both buyer and seller can retrieve it
+    const buyerRes  = await get(appServer, `/orders/${delivered.id}/seller-response`, buyerToken);
+    const sellerRes = await get(appServer, `/orders/${delivered.id}/seller-response`, sellerToken);
+    const adminRes  = await get(appServer, `/orders/${delivered.id}/seller-response`, adminToken);
+
+    for (const [label, r] of [['buyer', buyerRes], ['seller', sellerRes], ['admin', adminRes]]) {
+      assertEqual(r.status, 200, `${label} GET must return 200`);
+      assert(r.body && r.body.body, `${label} must receive response body`);
+    }
+  });
+
+  await test('evidence is retained after dispute resolved (P4)', async () => {
+    const delivered = await driveToDelivered();
+    await disputeOrder(delivered.id, 'Retain evidence test');
+    await makeEvidenceUpload(appServer, delivered.id, buyerToken, FAKE_JPEG, 'retained.jpg', 'image/jpeg');
+
+    // Resolve dispute
+    await post(appServer, `/admin/orders/${delivered.id}/resolve`, adminToken, { action: 'refund' });
+
+    // Evidence still accessible
+    const res = await get(appServer, `/orders/${delivered.id}/evidence`, adminToken);
+    assertEqual(res.status, 200, `evidence list after resolve must return 200: ${JSON.stringify(res.body)}`);
+    assert(Array.isArray(res.body) && res.body.length >= 1, 'evidence must be retained after resolution');
+  });
+
+  await test('notifySellerResponded sends buyer email and admin alert', async () => {
+    const emailer = require('../src/emailer');
+    const delivered = await driveToDelivered();
+    await disputeOrder(delivered.id, 'Notification test');
+
+    await new Promise((r) => setTimeout(r, 80));
+    emailer._clearCaptured();
+    process.env.ADMIN_ALERT_EMAIL = 'admin-alert@cricket.test';
+
+    await post(appServer, `/orders/${delivered.id}/seller-response`, sellerToken, {
+      body: 'The item was sent in perfect condition per listing photos.',
+    });
+
+    await new Promise((r) => setTimeout(r, 120));
+
+    const emails = emailer._getCaptured();
+    assert(
+      emails.some((e) => e.to === 'buyer@escrow.test' && e.subject.includes('responded')),
+      `buyer must receive seller-responded notification; captured: ${JSON.stringify(emails.map((e) => e.to))}`
+    );
+    assert(
+      emails.some((e) => e.to === 'admin-alert@cricket.test' && e.subject.includes('responded')),
+      `admin must receive alert; captured: ${JSON.stringify(emails.map((e) => e.to))}`
+    );
+
+    delete process.env.ADMIN_ALERT_EMAIL;
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -999,6 +1336,7 @@ async function runPhase5DisputeTests() {
     await runReviewTests();
     await runCancelWithVoidTests();
     await runPhase5DisputeTests();
+    await runPhase6EvidenceTests();
   } finally {
     await teardown();
   }

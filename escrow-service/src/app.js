@@ -1,8 +1,11 @@
 'use strict';
 
-const path = require('path');
+const crypto  = require('crypto');
+const fs      = require('fs');
+const path    = require('path');
 const express = require('express');
-const cors = require('cors');
+const cors    = require('cors');
+const multer  = require('multer');
 const rateLimit = require('express-rate-limit');
 const pool = require('./db');
 const orderService = require('./orderService');
@@ -13,6 +16,8 @@ const requireAuth = require('./middleware/requireAuth');
 const { requireAdmin } = requireAuth;
 const { buildHealthRouter } = require('./healthRoutes');
 const shippoClient = require('./shippoClient');
+const evidenceService = require('./evidenceService');
+const notifications   = require('./notifications');
 
 function isParty(user, order) {
   return (
@@ -180,6 +185,31 @@ function buildApp() {
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many label purchase requests from this IP, please try again later' },
+  });
+  const evidenceUploadLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: Number(process.env.RATE_LIMIT_EVIDENCE_MAX || 30),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many evidence uploads from this IP, please try again later' },
+  });
+
+  // Multer instance for dispute evidence uploads.
+  // Uses diskStorage so we can generate a UUID-based filename before the file lands.
+  // Files go directly to EVIDENCE_DIR with name: {orderId}_{uuid}{.ext}
+  const evidenceStorage = multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, evidenceService.EVIDENCE_DIR),
+    filename: (req, file, cb) => {
+      const orderId  = req.params.id || 'unknown';
+      const origExt  = path.extname(file.originalname).toLowerCase();
+      const safeExt  = ['.jpg', '.jpeg', '.png', '.webp', '.pdf'].includes(origExt) ? origExt : '';
+      const key      = `${orderId}_${crypto.randomUUID()}${safeExt}`;
+      cb(null, key);
+    },
+  });
+  const upload = multer({
+    storage: evidenceStorage,
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
   });
 
   // Health checks — no auth required.
@@ -607,6 +637,73 @@ function buildApp() {
       const msg = rows[0];
       msg.created_at = msg.created_at instanceof Date ? msg.created_at.toISOString() : msg.created_at;
       res.status(201).json(msg);
+    } catch (err) { next(err); }
+  });
+
+  // ---- dispute evidence ----
+
+  // POST /orders/:id/evidence — buyer or seller uploads a file when the order is DISPUTED.
+  // multer saves to EVIDENCE_DIR; evidenceService validates, magic-byte checks, and records in DB.
+  app.post('/orders/:id/evidence', evidenceUploadLimiter, requireAuth,
+    upload.single('file'),
+    async (req, res, next) => {
+      try {
+        if (!req.file) throw new OrderError('No file uploaded', 400);
+        const role = req.user.role;
+        if (role !== 'buyer' && role !== 'seller') {
+          // Admins observe but do not upload evidence.
+          if (req.file) fs.unlink(req.file.path, () => {});
+          throw new OrderError('Only buyers and sellers may upload evidence', 403);
+        }
+        const ev = await evidenceService.registerUploadedFile(
+          req.params.id, req.file, req.user.id, role
+        );
+        res.status(201).json(ev);
+      } catch (err) { next(err); }
+    }
+  );
+
+  // GET /orders/:id/evidence — list all evidence for the order.
+  app.get('/orders/:id/evidence', requireAuth, async (req, res, next) => {
+    try {
+      const items = await evidenceService.listEvidence(req.params.id, req.user.id, req.user.role);
+      res.json(items);
+    } catch (err) { next(err); }
+  });
+
+  // GET /orders/:id/evidence/:evidenceId/file — auth-gated file download.
+  app.get('/orders/:id/evidence/:evidenceId/file', requireAuth, async (req, res, next) => {
+    try {
+      const { filePath, mimeType, originalFilename } = await evidenceService.getEvidenceFilePath(
+        req.params.id, req.params.evidenceId, req.user.id, req.user.role
+      );
+      res.setHeader('Content-Type', mimeType);
+      res.setHeader('Content-Disposition', `attachment; filename="${originalFilename.replace(/"/g, '\\"')}"`);
+      res.sendFile(filePath);
+    } catch (err) { next(err); }
+  });
+
+  // POST /orders/:id/seller-response — seller submits formal dispute response (one, immutable).
+  app.post('/orders/:id/seller-response', requireAuth, async (req, res, next) => {
+    try {
+      if (req.user.role !== 'seller') {
+        throw new OrderError('Only sellers can submit a dispute response', 403);
+      }
+      const { body } = req.body;
+      const response = await evidenceService.submitSellerResponse(req.params.id, body, req.user.id);
+      // Fire-and-forget: notify buyer + admin that seller has responded.
+      orderService.getOrderWithTimeline(req.params.id)
+        .then((o) => notifications.notifySellerResponded(o).catch(() => {}))
+        .catch(() => {});
+      res.status(201).json(response);
+    } catch (err) { next(err); }
+  });
+
+  // GET /orders/:id/seller-response — retrieve the seller's response (all parties).
+  app.get('/orders/:id/seller-response', requireAuth, async (req, res, next) => {
+    try {
+      const response = await evidenceService.getSellerResponse(req.params.id, req.user.id, req.user.role);
+      res.json(response);
     } catch (err) { next(err); }
   });
 

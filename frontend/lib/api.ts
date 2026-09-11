@@ -286,6 +286,53 @@ export async function resolveDispute(id: string | number, action: 'release' | 'r
   return escrowFetch(`/admin/orders/${id}/resolve`, { method: 'POST', body: JSON.stringify({ action, notes }) });
 }
 
+// ---- Dispute evidence ----
+
+export interface EvidenceItem {
+  id: number; order_id: number; uploader_user_id: number; uploader_role: 'buyer' | 'seller';
+  original_filename: string; mime_type: string; file_size_bytes: number;
+  created_at: string; uploader_name: string;
+}
+
+export interface SellerDisputeResponse {
+  id: number; order_id: number; seller_id: number; body: string; created_at: string;
+}
+
+export async function uploadEvidence(orderId: string | number, file: File) {
+  const token = getAccessToken();
+  const form = new FormData();
+  form.append('file', file);
+  return fetch(`${ESCROW_URL}/orders/${orderId}/evidence`, {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: form,
+    credentials: 'include',
+  });
+}
+
+export async function listEvidence(orderId: string | number): Promise<EvidenceItem[]> {
+  const res = await escrowFetch(`/orders/${orderId}/evidence`);
+  if (!res.ok) throw new Error('Failed to fetch evidence');
+  return res.json();
+}
+
+export async function downloadEvidence(orderId: string | number, evidenceId: number) {
+  return escrowFetch(`/orders/${orderId}/evidence/${evidenceId}/file`);
+}
+
+export async function submitSellerResponse(orderId: string | number, body: string) {
+  return escrowFetch(`/orders/${orderId}/seller-response`, {
+    method: 'POST',
+    body: JSON.stringify({ body }),
+  });
+}
+
+export async function getSellerResponse(orderId: string | number): Promise<SellerDisputeResponse | null> {
+  const res = await escrowFetch(`/orders/${orderId}/seller-response`);
+  if (!res.ok) return null;
+  return res.json();
+}
+
 export async function submitReview(orderId: string | number, rating: number, body: string) {
   return escrowFetch(`/orders/${orderId}/review`, { method: 'POST', body: JSON.stringify({ rating, body }) });
 }

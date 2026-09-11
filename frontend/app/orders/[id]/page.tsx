@@ -5,7 +5,8 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import AuthGuard from '@/components/AuthGuard';
 import OrderTimeline from '@/components/OrderTimeline';
-import { getOrder, cancelOrder, purchaseLabel, shipOrder, deliverOrder, confirmOrder, disputeOrder, getMessages, sendMessage, submitReview, getOrderReview } from '@/lib/api';
+import { getOrder, cancelOrder, purchaseLabel, shipOrder, deliverOrder, confirmOrder, disputeOrder, getMessages, sendMessage, submitReview, getOrderReview, uploadEvidence, listEvidence, downloadEvidence, submitSellerResponse, getSellerResponse } from '@/lib/api';
+import type { EvidenceItem, SellerDisputeResponse } from '@/lib/api';
 import { useUser } from '@/lib/auth';
 import ErrorAlert from '@/components/ErrorAlert';
 
@@ -111,6 +112,16 @@ function OrderContent() {
   const [reviewError, setReviewError] = useState('');
   const [submittingReview, setSubmittingReview] = useState(false);
 
+  // Evidence state (dispute phase)
+  const [evidence, setEvidence] = useState<EvidenceItem[]>([]);
+  const [evidenceLoading, setEvidenceLoading] = useState(false);
+  const [uploadingEvidence, setUploadingEvidence] = useState(false);
+  const [evidenceError, setEvidenceError] = useState('');
+  const [sellerResponse, setSellerResponse] = useState<SellerDisputeResponse | null | undefined>(undefined);
+  const [responseBody, setResponseBody] = useState('');
+  const [submittingResponse, setSubmittingResponse] = useState(false);
+  const [responseError, setResponseError] = useState('');
+
   const refresh = useCallback(() => {
     getOrder(id).then(setOrder).catch(() => setError('Order not found')).finally(() => setLoading(false));
   }, [id]);
@@ -126,6 +137,16 @@ function OrderContent() {
       getOrderReview(id).then(setExistingReview).catch(() => setExistingReview(null));
     }
   }, [order?.status, order?.buyer_id, user, id]);
+
+  useEffect(() => {
+    if (order?.status === 'DISPUTED') {
+      setEvidenceLoading(true);
+      Promise.all([
+        listEvidence(id).then(setEvidence).catch(() => {}),
+        getSellerResponse(id).then(setSellerResponse).catch(() => setSellerResponse(null)),
+      ]).finally(() => setEvidenceLoading(false));
+    }
+  }, [order?.status, id]);
 
   useEffect(() => {
     refreshMessages();
@@ -192,6 +213,53 @@ function OrderContent() {
       setReviewError('Network error');
     } finally {
       setSubmittingReview(false);
+    }
+  }
+
+  async function handleEvidenceUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || uploadingEvidence) return;
+    e.target.value = '';
+    setUploadingEvidence(true);
+    setEvidenceError('');
+    try {
+      const res = await uploadEvidence(id, file);
+      const data = await res.json();
+      if (!res.ok) { setEvidenceError(data.error || 'Upload failed'); return; }
+      setEvidence((prev) => [...prev, data]);
+    } catch {
+      setEvidenceError('Network error during upload');
+    } finally {
+      setUploadingEvidence(false);
+    }
+  }
+
+  async function handleDownloadEvidence(evidenceId: number, filename: string) {
+    try {
+      const res = await downloadEvidence(id, evidenceId);
+      if (!res.ok) return;
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename; a.click();
+      URL.revokeObjectURL(url);
+    } catch { /* silent */ }
+  }
+
+  async function handleSubmitSellerResponse(e: React.FormEvent) {
+    e.preventDefault();
+    if (!responseBody.trim() || submittingResponse) return;
+    setSubmittingResponse(true);
+    setResponseError('');
+    try {
+      const res = await submitSellerResponse(id, responseBody.trim());
+      const data = await res.json();
+      if (!res.ok) { setResponseError(data.error || 'Failed to submit response'); return; }
+      setSellerResponse(data);
+    } catch {
+      setResponseError('Network error');
+    } finally {
+      setSubmittingResponse(false);
     }
   }
 
@@ -622,6 +690,119 @@ function OrderContent() {
                 Cancel
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Dispute Evidence Panel — visible to buyer and seller when DISPUTED */}
+      {order.status === 'DISPUTED' && (isBuyer || isSeller) && (
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-2">
+            <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+            </svg>
+            <p className="text-sm font-semibold text-gray-700">Dispute Evidence</p>
+          </div>
+          <div className="px-6 py-5 space-y-5">
+            {/* Shared-visibility warning */}
+            <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800">
+              <span className="font-semibold">Note:</span> Evidence you upload is visible to the other party and to our admin team. Do not include personal information beyond what is necessary for your case.
+            </div>
+
+            {/* Evidence list */}
+            {evidenceLoading ? (
+              <div className="space-y-2">
+                {[1,2].map((i) => <div key={i} className="h-10 bg-gray-100 rounded-lg animate-pulse" />)}
+              </div>
+            ) : evidence.length === 0 ? (
+              <p className="text-sm text-gray-400 italic">No evidence uploaded yet.</p>
+            ) : (
+              <div className="space-y-2">
+                {evidence.map((ev) => (
+                  <div key={ev.id} className="flex items-center justify-between gap-3 bg-gray-50 border border-gray-200 rounded-xl px-4 py-2.5">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className={`text-xs font-semibold px-2 py-0.5 rounded-full shrink-0 ${
+                        ev.uploader_role === 'buyer'
+                          ? 'bg-blue-100 text-blue-700'
+                          : 'bg-amber-100 text-amber-700'
+                      }`}>
+                        {ev.uploader_role}
+                      </span>
+                      <span className="text-sm text-gray-700 truncate">{ev.original_filename}</span>
+                      <span className="text-xs text-gray-400 shrink-0">{(ev.file_size_bytes / 1024).toFixed(0)} KB</span>
+                    </div>
+                    <button
+                      onClick={() => handleDownloadEvidence(ev.id, ev.original_filename)}
+                      className="text-xs text-brand-700 hover:text-brand-800 font-medium shrink-0"
+                    >
+                      Download
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Upload section */}
+            {evidenceError && (
+              <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{evidenceError}</p>
+            )}
+            <div>
+              <p className="text-xs text-gray-500 mb-2">
+                Upload up to 5 files ({isBuyer ? 'buyer' : 'seller'} slot). Accepted: JPG, PNG, WEBP, PDF · Max 10 MB each.
+              </p>
+              <label className={`inline-flex items-center gap-2 cursor-pointer bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors ${uploadingEvidence ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                </svg>
+                {uploadingEvidence ? 'Uploading…' : 'Upload file'}
+                <input type="file" accept=".jpg,.jpeg,.png,.webp,.pdf" className="hidden" onChange={handleEvidenceUpload} disabled={uploadingEvidence} />
+              </label>
+            </div>
+
+            {/* Seller response section */}
+            {isSeller && (
+              <div className="border-t border-gray-100 pt-5">
+                <p className="text-sm font-semibold text-gray-700 mb-1">Your Formal Response</p>
+                <p className="text-xs text-gray-400 mb-3">Submit one official written statement visible to the buyer and admin. This cannot be edited once submitted.</p>
+                {sellerResponse ? (
+                  <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3">
+                    <p className="text-xs text-gray-400 mb-1">Submitted {new Date(sellerResponse.created_at).toLocaleDateString()}</p>
+                    <p className="text-sm text-gray-800 whitespace-pre-wrap">{sellerResponse.body}</p>
+                  </div>
+                ) : (
+                  <form onSubmit={handleSubmitSellerResponse} className="space-y-3">
+                    {responseError && (
+                      <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{responseError}</p>
+                    )}
+                    <textarea
+                      rows={4}
+                      value={responseBody}
+                      onChange={(e) => setResponseBody(e.target.value)}
+                      placeholder="Describe your side of the dispute clearly and factually…"
+                      className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-brand-500 resize-none text-gray-700 placeholder-gray-400"
+                    />
+                    <button
+                      type="submit"
+                      disabled={submittingResponse || !responseBody.trim()}
+                      className="bg-brand-700 text-white text-sm font-semibold px-5 py-2.5 rounded-lg hover:bg-brand-800 disabled:opacity-50 transition-colors"
+                    >
+                      {submittingResponse ? 'Submitting…' : 'Submit Response'}
+                    </button>
+                  </form>
+                )}
+              </div>
+            )}
+
+            {/* Buyer: view seller response */}
+            {isBuyer && sellerResponse && (
+              <div className="border-t border-gray-100 pt-5">
+                <p className="text-sm font-semibold text-gray-700 mb-2">Seller&apos;s Formal Response</p>
+                <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3">
+                  <p className="text-xs text-gray-400 mb-1">Submitted {new Date(sellerResponse.created_at).toLocaleDateString()}</p>
+                  <p className="text-sm text-gray-800 whitespace-pre-wrap">{sellerResponse.body}</p>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
