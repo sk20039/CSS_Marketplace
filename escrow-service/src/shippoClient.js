@@ -547,6 +547,15 @@ async function voidLabel(labelId) {
     );
   }
 
+  // QUEUED or PENDING — void is still processing; treat as ambiguous so recovery
+  // can reconcile via findRefundByTransaction on the next sweep rather than
+  // treating the in-flight void as a definitive failure.
+  if (r.status === 'QUEUED' || r.status === 'PENDING') {
+    throw new ShippoAmbiguousError(
+      `Shippo label void is still processing (status: ${r.status}) — recovery will reconcile`
+    );
+  }
+
   if (r.status !== 'SUCCESS') {
     throw new ShippoDefinitiveError(
       `Shippo label void returned unexpected status: ${r.status}`,
