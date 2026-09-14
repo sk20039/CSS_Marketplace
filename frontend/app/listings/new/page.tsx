@@ -45,6 +45,15 @@ function scoreBadgeClasses(tier: string) {
   return 'bg-red-100 text-red-800 border-red-300';
 }
 
+/** Convert a user-entered weight value to ounces for the listing API. */
+function toWeightOz(value: string, unit: 'lb' | 'oz' | 'kg'): number {
+  const n = parseFloat(value);
+  if (isNaN(n)) return NaN;
+  if (unit === 'lb') return n * 16;
+  if (unit === 'kg') return n * 35.27396195;
+  return n; // already oz
+}
+
 export default function NewListingPage() {
   return (
     <AuthGuard allowedRoles={['seller', 'admin']}>
@@ -64,7 +73,8 @@ function NewListingForm() {
   const [condition, setCondition] = useState('used_good');
   const [photos, setPhotos] = useState<File[]>([]);
   const [previews, setPreviews] = useState<string[]>([]);
-  const [weightOz, setWeightOz] = useState('');
+  const [weightValue, setWeightValue] = useState('');
+  const [weightUnit, setWeightUnit] = useState<'lb' | 'oz' | 'kg'>('lb');
   const [pkgLength, setPkgLength] = useState('');
   const [pkgWidth, setPkgWidth] = useState('');
   const [pkgHeight, setPkgHeight] = useState('');
@@ -102,7 +112,7 @@ function NewListingForm() {
 
     const res = await createListing({
       title, description, price_cents, category, condition,
-      weight_oz: parseFloat(weightOz),
+      weight_oz: toWeightOz(weightValue, weightUnit),
       pkg_length_in: parseFloat(pkgLength),
       pkg_width_in: parseFloat(pkgWidth),
       pkg_height_in: parseFloat(pkgHeight),
@@ -532,24 +542,34 @@ function NewListingForm() {
               Package Details <span className="text-red-500">*</span>
             </h2>
             <p className="text-xs text-gray-400 mt-2">
-              Required to calculate shipping rates at checkout. Enter the dimensions of the packed item including packaging.
+              Required to calculate shipping rates at checkout. Include the weight and dimensions of the item, box, and all packing materials.
             </p>
           </div>
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">
-              Weight <span className="text-red-500">*</span>
-              <span className="ml-1 text-xs font-normal text-gray-400">(ounces, including packaging)</span>
+              Package weight <span className="text-red-500">*</span>
             </label>
-            <div className="relative max-w-xs">
+            <div className="flex items-center gap-2 max-w-xs">
               <input
-                type="number" required min="0.1" step="0.1"
-                value={weightOz} onChange={(e) => setWeightOz(e.target.value)}
-                placeholder="e.g. 64"
-                className="w-full border-2 border-gray-200 rounded-xl px-4 py-2.5 pr-12 text-sm focus:outline-none focus:border-brand-600 transition-colors"
+                type="number" required min="0.01" step="0.01"
+                value={weightValue} onChange={(e) => setWeightValue(e.target.value)}
+                placeholder="e.g. 2.5"
+                className="flex-1 border-2 border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-brand-600 transition-colors"
               />
-              <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 text-sm">oz</span>
+              <select
+                value={weightUnit}
+                onChange={(e) => setWeightUnit(e.target.value as 'lb' | 'oz' | 'kg')}
+                className="border-2 border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-700 focus:outline-none focus:border-brand-600 transition-colors bg-white"
+              >
+                <option value="lb">lb</option>
+                <option value="oz">oz</option>
+                <option value="kg">kg</option>
+              </select>
             </div>
+            <p className="text-xs text-gray-400 mt-1.5">
+              Total packed weight — item + box + packing materials.
+            </p>
           </div>
 
           <div>
