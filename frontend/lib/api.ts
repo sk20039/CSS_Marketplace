@@ -1,4 +1,4 @@
-import { getAccessToken, setAccessToken } from './auth';
+import { getAccessToken, setAccessToken, notifySessionExpired } from './auth';
 import type { SeoAuditResult, SeoFields } from './types';
 
 const AUTH_URL = process.env.NEXT_PUBLIC_AUTH_URL!;
@@ -11,7 +11,13 @@ async function silentRefresh(): Promise<string | null> {
       method: 'POST',
       credentials: 'include',
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // Refresh failed (stale/missing cookie, migration wipe, etc.).
+      // Clear the access token and delegate React state clearing + /login
+      // redirect to the handler registered by AuthProvider.
+      notifySessionExpired();
+      return null;
+    }
     const data = await res.json();
     setAccessToken(data.access_token);
     return data.access_token;

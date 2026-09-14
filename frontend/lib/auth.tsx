@@ -1,6 +1,7 @@
 'use client';
 
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import { useRouter } from 'next/navigation';
 
 export interface User {
   id: number;
@@ -35,7 +36,24 @@ export function setAccessToken(t: string | null) {
   _accessToken = t;
 }
 
+// Module-level session-expired handler registered by AuthProvider.
+// Allows api.ts to clear React state and redirect without importing React.
+let _onSessionExpired: (() => void) | null = null;
+
+export function registerSessionExpiredHandler(fn: (() => void) | null) {
+  _onSessionExpired = fn;
+}
+
+/** Called by api.ts when a silent token refresh fails. Clears the access
+ *  token immediately (synchronous) and delegates React state clearing +
+ *  redirect to the handler registered by AuthProvider. */
+export function notifySessionExpired() {
+  _accessToken = null;
+  _onSessionExpired?.();
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [accessToken, setToken] = useState<string | null>(null);
   const [initializing, setInitializing] = useState(true);
@@ -78,6 +96,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return null;
     }
   }
+
+  // Register the session-expired handler so api.ts can clear React state and
+  // redirect to /login when a silent token refresh fails mid-session.
+  useEffect(() => {
+    registerSessionExpiredHandler(() => {
+      setToken(null);
+      setUser(null);
+      router.push('/login');
+    });
+    return () => { registerSessionExpiredHandler(null); };
+  }, [router]);
 
   // On mount: attempt silent refresh to restore session from httpOnly cookie.
   // initializing stays true until this whole chain settles (success, 401, or
