@@ -45,7 +45,7 @@ const cspHeader = [
   `connect-src 'self'${apiOrigins ? ` ${apiOrigins}` : ''} https://api.stripe.com https://errors.stripe.com`,
   // Stripe Elements renders in iframes hosted on js.stripe.com / hooks.stripe.com
   "frame-src https://js.stripe.com https://hooks.stripe.com",
-  `img-src 'self' data: https://*.stripe.com${listingImgSrc ? ` ${listingImgSrc}` : ''}`,
+  `img-src 'self' data: blob: https://*.stripe.com${listingImgSrc ? ` ${listingImgSrc}` : ''}`,
   "font-src 'self' data:",
   "object-src 'none'",
   "base-uri 'self'",
