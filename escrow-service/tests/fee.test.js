@@ -239,11 +239,11 @@ async function driveToHeld(priceCents) {
 
 async function driveToDelivered(priceCents) {
   const held = await driveToHeld(priceCents);
-  // Phase 3: purchase label before ship.
-  const label = await post(appServer, `/orders/${held.id}/purchase-label`, sellerToken);
-  if (label.status !== 200) throw new Error(`purchaseLabel failed: ${JSON.stringify(label.body)}`);
+  // Skip purchase-label here: fee tests exercise fee math, not label purchasing.
+  // shipOrder only blocks when label_id is set (platform label flow); without a label
+  // the seller can call /ship directly, which is the correct path for this helper.
   const shipped = await post(appServer, `/orders/${held.id}/ship`, sellerToken);
-  if (shipped.status !== 200) throw new Error(`ship failed`);
+  if (shipped.status !== 200) throw new Error(`ship failed: ${JSON.stringify(shipped.body)}`);
   const delivered = await post(appServer, `/orders/${held.id}/deliver`, sellerToken);
   if (delivered.status !== 200) throw new Error(`deliver failed`);
   return delivered.body;

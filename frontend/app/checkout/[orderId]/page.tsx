@@ -15,7 +15,7 @@ const stripePromise = STRIPE_PUB_KEY ? loadStripe(STRIPE_PUB_KEY) : null;
 interface Order {
   id: number; status: string; amount_cents: number; platform_fee_cents: number;
   seller_payout_cents: number; listing_id: number; buyer_id: number;
-  item_price_cents?: number; shipping_cents?: number;
+  item_price_cents?: number; shipping_cents?: number; tax_cents?: number;
 }
 
 export default function CheckoutPage() {
@@ -105,6 +105,7 @@ function CheckoutContent() {
   const total     = (order.amount_cents / 100).toFixed(2);
   const itemPrice = ((order.item_price_cents ?? order.amount_cents) / 100).toFixed(2);
   const shipping  = order.shipping_cents != null ? (order.shipping_cents / 100).toFixed(2) : null;
+  const tax       = order.tax_cents != null && order.tax_cents > 0 ? (order.tax_cents / 100).toFixed(2) : null;
 
   return (
     <div className="max-w-lg mx-auto">
@@ -140,6 +141,12 @@ function CheckoutContent() {
               <div className="flex justify-between items-center text-sm">
                 <span className="text-gray-600">Shipping</span>
                 <span className="font-medium">${shipping}</span>
+              </div>
+            )}
+            {tax != null && (
+              <div className="flex justify-between items-center text-sm">
+                <span className="text-gray-600">Sales tax</span>
+                <span className="font-medium">${tax}</span>
               </div>
             )}
             <div className="border-t border-gray-100 pt-3 flex justify-between items-center">

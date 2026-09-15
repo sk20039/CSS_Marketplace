@@ -405,8 +405,24 @@ async function createOrder({ listingId, buyerId, shippingAddress, shippoRateId, 
   const rateCarrier        = rateData.carrier        || null;
   const rateCarrierService = rateData.carrier_service || null;
 
-  const amountCents = itemPriceCents + shippingCents;
-  // Platform fee is based on item price only — shipping passes through to carrier.
+  // Calculate sales tax via Stripe Tax using buyer's shipping address.
+  // Tax code is determined by the account's Dashboard preset (omitted from line items).
+  // In stub mode calculateTax always returns 0. In real mode Stripe determines nexus/rate.
+  let taxCents, taxCalculationId;
+  try {
+    const taxResult = await stripeClient.calculateTax({
+      lineItems: [{ amount: itemPriceCents, reference: 'item', quantity: 1 }],
+      shippingCents,
+      customerDetails: { address: sanitizedAddr },
+    });
+    taxCents         = taxResult.tax_amount_exclusive;
+    taxCalculationId = taxResult.id;
+  } catch (err) {
+    throw new OrderError(`Tax calculation failed: ${err.message}`, 502);
+  }
+
+  const amountCents = itemPriceCents + shippingCents + taxCents;
+  // Platform fee is based on item price only — shipping and tax are excluded from the fee basis.
   const { platformFeeCents, sellerPayoutCents } = computeFee(itemPriceCents);
 
   // Keep local mirror in sync for admin views.
@@ -431,15 +447,17 @@ async function createOrder({ listingId, buyerId, shippingAddress, shippoRateId, 
   const { rows: inserted } = await pool.query(
     `INSERT INTO orders (
        listing_id, buyer_id, seller_id, amount_cents, item_price_cents, shipping_cents,
+       tax_cents, tax_calculation_id,
        platform_fee_cents, seller_payout_cents,
        status, stripe_payment_intent_id, stripe_client_secret, shipping_address,
        shippo_rate_id, carrier, carrier_service,
        created_at, updated_at
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'CREATED', $9, $10, $11, $12, $13, $14, $15, $16)
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'CREATED', $11, $12, $13, $14, $15, $16, $17, $18)
      RETURNING id`,
     [
       normalizedListingId, normalizedBuyerId, sellerId,
       amountCents, itemPriceCents, shippingCents,
+      taxCents, taxCalculationId,
       platformFeeCents, sellerPayoutCents,
       intent.id, intent.client_secret || null,
       JSON.stringify(sanitizedAddr),
@@ -455,6 +473,8 @@ async function createOrder({ listingId, buyerId, shippingAddress, shippoRateId, 
     sellerId,
     itemPriceCents,
     shippingCents,
+    taxCents,
+    taxCalculationId,
     amountCents,
     platformFeeCents,
     sellerPayoutCents,
@@ -539,6 +559,30 @@ async function finalizeCaptured(order, stripeCapture, { triggeredBy }) {
     throw err;
   } finally {
     client.release();
+  }
+
+  // Finalize the Stripe Tax Transaction so it appears in tax reporting.
+  // Best-effort: capture is already committed. Transient failures are recovered
+  // by runTaxReconciliation() on the next cron tick without risk of duplication.
+  if (order.tax_calculation_id) {
+    try {
+      const taxTxn = await stripeClient.finalizeTaxTransaction({
+        calculationId:  order.tax_calculation_id,
+        reference:      String(order.id),
+        idempotencyKey: `finalize_tax_${order.id}`,
+      });
+      await pool.query(
+        'UPDATE orders SET stripe_tax_transaction_id = $1 WHERE id = $2',
+        [taxTxn.id, order.id]
+      );
+      await recordEvent(order.id, 'TAX_TRANSACTION_FINALIZED', {
+        taxTransactionId: taxTxn.id,
+        triggeredBy,
+      });
+    } catch (err) {
+      console.error(`[tax] finalize failed for order ${order.id}:`, err.message);
+      await recordEvent(order.id, 'TAX_TRANSACTION_FINALIZE_FAILED', { error: err.message });
+    }
   }
 
   const markedSold = await markListingSold(order.listing_id);
@@ -810,6 +854,30 @@ async function finalizeRefunded(order, stripeRefund, { triggeredBy }) {
     client.release();
   }
 
+  // Reverse the Stripe Tax Transaction for reporting (full refund = full reversal).
+  // Best-effort: refund is already committed. Transient failures are recovered
+  // by runTaxReconciliation() on the next cron tick without risk of duplication.
+  if (order.stripe_tax_transaction_id) {
+    try {
+      const reversal = await stripeClient.reverseTaxTransaction({
+        originalTaxTransactionId: order.stripe_tax_transaction_id,
+        reference:                `refund_${order.id}`,
+        idempotencyKey:           `reverse_tax_${order.id}`,
+      });
+      await pool.query(
+        'UPDATE orders SET stripe_tax_reversal_id = $1 WHERE id = $2',
+        [reversal.id, order.id]
+      );
+      await recordEvent(order.id, 'TAX_TRANSACTION_REVERSED', {
+        taxReversalId: reversal.id,
+        triggeredBy,
+      });
+    } catch (err) {
+      console.error(`[tax] reversal failed for order ${order.id}:`, err.message);
+      await recordEvent(order.id, 'TAX_TRANSACTION_REVERSAL_FAILED', { error: err.message, triggeredBy });
+    }
+  }
+
   notifications.notifyRefunded(order, { triggeredBy }).catch(() => {});
   return getOrderWithTimeline(order.id);
 }
@@ -951,6 +1019,31 @@ async function finalizeCancelled(order, stripeRefund, { cancelledBy }) {
     throw err;
   } finally {
     client.release();
+  }
+
+  // Reverse the Stripe Tax Transaction for reporting.
+  // For buyer_change_of_mind: full tax is refunded (platform only keeps its fee).
+  // For seller_late: full tax is refunded (platform keeps nothing).
+  // Best-effort: cancellation is already committed. Recovered by runTaxReconciliation().
+  if (order.stripe_tax_transaction_id) {
+    try {
+      const reversal = await stripeClient.reverseTaxTransaction({
+        originalTaxTransactionId: order.stripe_tax_transaction_id,
+        reference:                `cancel_${order.id}`,
+        idempotencyKey:           `reverse_tax_${order.id}`,
+      });
+      await pool.query(
+        'UPDATE orders SET stripe_tax_reversal_id = $1 WHERE id = $2',
+        [reversal.id, order.id]
+      );
+      await recordEvent(order.id, 'TAX_TRANSACTION_REVERSED', {
+        taxReversalId: reversal.id,
+        triggeredBy:   cancelledBy,
+      });
+    } catch (err) {
+      console.error(`[tax] reversal failed for order ${order.id}:`, err.message);
+      await recordEvent(order.id, 'TAX_TRANSACTION_REVERSAL_FAILED', { error: err.message, triggeredBy: cancelledBy });
+    }
   }
 
   notifications.notifyCancelled(order, { cancelledBy }).catch(() => {});
@@ -1143,12 +1236,108 @@ async function runReleaseCheck() {
     }
   }
 
+  // Run Stripe Tax reconciliation sweep alongside the release check.
+  // Wrapped in try-catch so a tax reconciliation error never disrupts the release check.
+  let taxReconciliation = { finalizedIds: [], reversedIds: [], failed: [] };
+  try {
+    taxReconciliation = await runTaxReconciliation();
+  } catch (err) {
+    console.error('[runReleaseCheck] tax reconciliation error:', err.message);
+  }
+
   return {
-    checkedAt:       nowIsoStr,
-    candidateCount:  candidates.length,
+    checkedAt:        nowIsoStr,
+    candidateCount:   candidates.length,
     releasedOrderIds: released,
     failed,
+    taxReconciliation,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Stripe Tax reconciliation sweep
+// ---------------------------------------------------------------------------
+//
+// Two sweeps run on every cron tick (via runReleaseCheck):
+//
+//   Sweep 1 — pending finalizations
+//     Finds orders where capture succeeded but finalizeTaxTransaction failed
+//     transiently (stripe_tax_transaction_id IS NULL despite being beyond CREATED).
+//     Calls finalizeTaxTransaction with a deterministic idempotency key so Stripe
+//     returns the same result on replay — safe to call multiple times.
+//     Guards the UPDATE with AND stripe_tax_transaction_id IS NULL to prevent a
+//     race between concurrent sweep instances from overwriting a committed value.
+//
+//   Sweep 2 — pending reversals
+//     Finds REFUNDED/CANCELLED orders where reverseTaxTransaction failed transiently
+//     (stripe_tax_reversal_id IS NULL despite having a finalized tax transaction).
+//     Same idempotency-key + IS NULL guard pattern as Sweep 1.
+
+async function runTaxReconciliation() {
+  const finalizedIds = [];
+  const reversedIds  = [];
+  const failed       = [];
+
+  // Sweep 1: orders with a tax calculation that have not yet been finalized.
+  const { rows: pendingFinalize } = await pool.query(`
+    SELECT id, tax_calculation_id FROM orders
+    WHERE stripe_tax_transaction_id IS NULL
+      AND tax_calculation_id IS NOT NULL
+      AND status NOT IN ('CREATED', 'CAPTURING')
+  `);
+
+  for (const row of pendingFinalize) {
+    try {
+      const taxTxn = await stripeClient.finalizeTaxTransaction({
+        calculationId:  row.tax_calculation_id,
+        reference:      String(row.id),
+        idempotencyKey: `finalize_tax_${row.id}`,
+      });
+      // IS NULL guard prevents overwriting a value set by a concurrent sweep instance.
+      await pool.query(
+        'UPDATE orders SET stripe_tax_transaction_id = $1 WHERE id = $2 AND stripe_tax_transaction_id IS NULL',
+        [taxTxn.id, row.id]
+      );
+      await recordEvent(row.id, 'TAX_TRANSACTION_FINALIZED', {
+        taxTransactionId: taxTxn.id,
+        triggeredBy:      'tax_reconciliation',
+      });
+      finalizedIds.push(Number(row.id));
+    } catch (err) {
+      failed.push({ orderId: Number(row.id), operation: 'finalize', error: err.message });
+    }
+  }
+
+  // Sweep 2: REFUNDED/CANCELLED orders with a finalized tax transaction but no reversal.
+  const { rows: pendingReverse } = await pool.query(`
+    SELECT id, stripe_tax_transaction_id FROM orders
+    WHERE stripe_tax_reversal_id IS NULL
+      AND stripe_tax_transaction_id IS NOT NULL
+      AND status IN ('REFUNDED', 'CANCELLED')
+  `);
+
+  for (const row of pendingReverse) {
+    try {
+      const reversal = await stripeClient.reverseTaxTransaction({
+        originalTaxTransactionId: row.stripe_tax_transaction_id,
+        reference:                `refund_${row.id}`,
+        idempotencyKey:           `reverse_tax_${row.id}`,
+      });
+      await pool.query(
+        'UPDATE orders SET stripe_tax_reversal_id = $1 WHERE id = $2 AND stripe_tax_reversal_id IS NULL',
+        [reversal.id, row.id]
+      );
+      await recordEvent(row.id, 'TAX_TRANSACTION_REVERSED', {
+        taxReversalId: reversal.id,
+        triggeredBy:   'tax_reconciliation',
+      });
+      reversedIds.push(Number(row.id));
+    } catch (err) {
+      failed.push({ orderId: Number(row.id), operation: 'reverse', error: err.message });
+    }
+  }
+
+  return { finalizedIds, reversedIds, failed };
 }
 
 // ---------------------------------------------------------------------------
@@ -1556,6 +1745,7 @@ module.exports = {
   disputeOrder,
   resolveDispute,
   runReleaseCheck,
+  runTaxReconciliation,
   getOrderWithTimeline,
   listOrders,
   finalizeCaptured,

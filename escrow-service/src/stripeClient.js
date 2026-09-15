@@ -171,6 +171,32 @@ class StubStripeClient {
     });
   }
 
+  // ---- Stripe Tax methods ----
+
+  // calculateTax: always returns 0 tax in stub mode — real address-based calculation
+  // only happens in real mode. Tax code is supplied by the Dashboard preset, not here.
+  async calculateTax({ lineItems, shippingCents = 0, customerDetails }) {
+    if (STUB_LATENCY_MS > 0) await sleep(STUB_LATENCY_MS);
+    const id = fakeId('txc');
+    return { id, tax_amount_exclusive: 0 };
+  }
+
+  // finalizeTaxTransaction: commits a Calculation to Stripe Tax reporting ledger.
+  // Idempotency key passed by caller prevents duplicate transactions on retry.
+  async finalizeTaxTransaction({ calculationId, reference, idempotencyKey }) {
+    if (STUB_LATENCY_MS > 0) await sleep(STUB_LATENCY_MS);
+    const id = fakeId('tax_tran');
+    return { id };
+  }
+
+  // reverseTaxTransaction: creates a full reversal of a finalized Tax Transaction.
+  // Idempotency key passed by caller prevents duplicate reversals on retry.
+  async reverseTaxTransaction({ originalTaxTransactionId, reference, idempotencyKey }) {
+    if (STUB_LATENCY_MS > 0) await sleep(STUB_LATENCY_MS);
+    const id = fakeId('tax_rev');
+    return { id };
+  }
+
   // ---- Read-only reconciliation methods (used by recoveryService) ----
 
   async getPaymentIntent(piId) {
@@ -263,6 +289,61 @@ class RealStripeClient {
       options
     );
     return { id: refund.id, status: refund.status };
+  }
+
+  // ---- Stripe Tax methods ----
+
+  // calculateTax: calls stripe.tax.calculations.create with the buyer's shipping address
+  // as the customer address. Tax code is determined by the account's Dashboard preset
+  // (no tax_code param on line items — the preset is the authoritative source).
+  async calculateTax({ lineItems, shippingCents = 0, customerDetails }) {
+    const addr = customerDetails.address;
+    const params = {
+      currency: 'usd',
+      line_items: lineItems.map((li) => ({
+        amount:    li.amount,
+        reference: li.reference,
+        quantity:  li.quantity || 1,
+      })),
+      customer_details: {
+        address: {
+          line1:       addr.line1,
+          line2:       addr.line2 || '',
+          city:        addr.city,
+          state:       addr.state,
+          postal_code: addr.zip,
+          country:     'US',
+        },
+        address_source: 'shipping',
+      },
+    };
+    if (shippingCents > 0) {
+      params.shipping_cost = { amount: shippingCents };
+    }
+    const calc = await this._stripe.tax.calculations.create(params);
+    return { id: calc.id, tax_amount_exclusive: calc.tax_amount_exclusive };
+  }
+
+  // finalizeTaxTransaction: commits a Tax Calculation to Stripe Tax reporting.
+  // Idempotency key prevents duplicate finalization on retry after transient failures.
+  async finalizeTaxTransaction({ calculationId, reference, idempotencyKey }) {
+    const options = idempotencyKey ? { idempotencyKey } : {};
+    const txn = await this._stripe.tax.transactions.createFromCalculation(
+      { calculation: calculationId, reference },
+      options
+    );
+    return { id: txn.id };
+  }
+
+  // reverseTaxTransaction: creates a full reversal of a finalized Tax Transaction.
+  // Idempotency key prevents duplicate reversals on retry after transient failures.
+  async reverseTaxTransaction({ originalTaxTransactionId, reference, idempotencyKey }) {
+    const options = idempotencyKey ? { idempotencyKey } : {};
+    const reversal = await this._stripe.tax.transactions.createReversal(
+      { original_transaction: originalTaxTransactionId, reference, mode: 'full' },
+      options
+    );
+    return { id: reversal.id };
   }
 
   // ---- Read-only reconciliation methods (used by recoveryService) ----
