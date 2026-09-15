@@ -653,6 +653,35 @@ function verifyWebhookToken(provided, expected) {
   }
 }
 
+/**
+ * registerTracking — register a carrier+tracking_number with Shippo to receive
+ * webhook events for own-label shipments.  Best-effort; caller wraps in try-catch.
+ *
+ * Stub mode: no-op (returns immediately without network call).
+ * Real mode: POST /tracks/ with carrier + tracking_number.
+ */
+async function registerTracking(carrier, trackingNumber, orderId) {
+  if (!SHIPPO_API_KEY) {
+    // Stub mode — no-op.
+    return;
+  }
+
+  const res = await _shippoFetch('/tracks/', 'POST', {
+    carrier:          carrier.toLowerCase(),
+    tracking_number:  trackingNumber,
+    metadata:         `order:${orderId}`,
+  });
+
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    const err = new Error(
+      `Shippo registerTracking failed: ${errBody.detail || res.status}`
+    );
+    err.statusCode = res.status;
+    throw err;
+  }
+}
+
 module.exports = {
   getRates,
   getRate,
@@ -660,6 +689,7 @@ module.exports = {
   findTransactionByRate,
   voidLabel,
   findRefundByTransaction,
+  registerTracking,
   makeRateToken,
   verifyRateToken,
   verifyWebhookToken,

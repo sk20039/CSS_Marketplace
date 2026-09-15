@@ -5,8 +5,8 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import AuthGuard from '@/components/AuthGuard';
 import OrderTimeline from '@/components/OrderTimeline';
-import { getOrder, cancelOrder, purchaseLabel, shipOrder, deliverOrder, confirmOrder, disputeOrder, getMessages, sendMessage, submitReview, getOrderReview, uploadEvidence, listEvidence, downloadEvidence, submitSellerResponse, getSellerResponse } from '@/lib/api';
-import type { EvidenceItem, SellerDisputeResponse } from '@/lib/api';
+import { getOrder, cancelOrder, purchaseLabel, shipWithOwnLabel, getOrderShippingRates, shipOrder, deliverOrder, confirmOrder, disputeOrder, getMessages, sendMessage, submitReview, getOrderReview, uploadEvidence, listEvidence, downloadEvidence, submitSellerResponse, getSellerResponse } from '@/lib/api';
+import type { EvidenceItem, SellerDisputeResponse, ShippingRate } from '@/lib/api';
 import { useUser } from '@/lib/auth';
 import ErrorAlert from '@/components/ErrorAlert';
 
@@ -102,6 +102,15 @@ function OrderContent() {
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [purchasingLabel, setPurchasingLabel] = useState(false);
   const [labelError, setLabelError] = useState('');
+  // Ship order — two-option section (platform label OR own label)
+  const [shipMethod, setShipMethod] = useState<'platform' | 'own' | null>(null);
+  const [rates, setRates] = useState<ShippingRate[]>([]);
+  const [loadingRates, setLoadingRates] = useState(false);
+  const [ratesStub, setRatesStub] = useState(false);
+  const [selectedRate, setSelectedRate] = useState<ShippingRate | null>(null);
+  const [ownCarrier, setOwnCarrier] = useState('USPS');
+  const [ownTracking, setOwnTracking] = useState('');
+  const [shippingOwnLabel, setShippingOwnLabel] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [msgInput, setMsgInput] = useState('');
   const [sending, setSending] = useState(false);
@@ -182,12 +191,27 @@ function OrderContent() {
     setDisputeReason('');
   }
 
+  async function handleLoadRates() {
+    setLoadingRates(true);
+    setLabelError('');
+    try {
+      const data = await getOrderShippingRates(id);
+      setRates(data.rates);
+      setRatesStub(data.stub);
+      setSelectedRate(data.rates[0] ?? null);
+    } catch (err: unknown) {
+      setLabelError(err instanceof Error ? err.message : 'Failed to fetch rates');
+    } finally {
+      setLoadingRates(false);
+    }
+  }
+
   async function handlePurchaseLabel() {
-    if (purchasingLabel) return;
+    if (!selectedRate || purchasingLabel) return;
     setPurchasingLabel(true);
     setLabelError('');
     try {
-      const res = await purchaseLabel(id);
+      const res = await purchaseLabel(id, { shippo_rate_id: selectedRate.rate_id, rate_token: selectedRate.rate_token });
       const data = await res.json();
       if (!res.ok) { setLabelError(data.error || 'Label purchase failed'); return; }
       setOrder(data.order || data);
@@ -196,6 +220,23 @@ function OrderContent() {
       setLabelError('Network error — please try again');
     } finally {
       setPurchasingLabel(false);
+    }
+  }
+
+  async function handleShipOwnLabel() {
+    if (!ownTracking.trim() || shippingOwnLabel) return;
+    setShippingOwnLabel(true);
+    setLabelError('');
+    try {
+      const res = await shipWithOwnLabel(id, { carrier: ownCarrier, tracking_number: ownTracking.trim() });
+      const data = await res.json();
+      if (!res.ok) { setLabelError(data.error || 'Failed to mark as shipped'); return; }
+      setOrder(data.order || data);
+      refresh();
+    } catch {
+      setLabelError('Network error — please try again');
+    } finally {
+      setShippingOwnLabel(false);
     }
   }
 
@@ -432,20 +473,123 @@ function OrderContent() {
             )}
 
             {isSeller && order.status === 'HELD' && !order.label_id && (
-              <div className="space-y-2">
+              <div className="space-y-3">
+                <p className="text-sm font-semibold text-gray-700">Ship Order</p>
+                <p className="text-xs text-gray-500">Shipping costs are your responsibility as the seller. Choose how you want to ship:</p>
                 {labelError && (
                   <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{labelError}</p>
                 )}
-                <button
-                  onClick={handlePurchaseLabel}
-                  disabled={purchasingLabel}
-                  className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2.5 rounded-lg disabled:opacity-50 transition-colors"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
-                  </svg>
-                  {purchasingLabel ? 'Purchasing…' : 'Purchase Shipping Label'}
-                </button>
+
+                {/* Method selector */}
+                {!shipMethod && (
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => { setShipMethod('platform'); setLabelError(''); handleLoadRates(); }}
+                      className="flex-1 border-2 border-blue-200 hover:border-blue-400 rounded-xl px-3 py-3 text-left transition-all"
+                    >
+                      <p className="text-sm font-semibold text-blue-700">Buy Shipping Label</p>
+                      <p className="text-xs text-gray-500 mt-0.5">Purchase a label via Cricket Market. Cost deducted from your payout.</p>
+                    </button>
+                    <button
+                      onClick={() => { setShipMethod('own'); setLabelError(''); }}
+                      className="flex-1 border-2 border-gray-200 hover:border-gray-400 rounded-xl px-3 py-3 text-left transition-all"
+                    >
+                      <p className="text-sm font-semibold text-gray-700">Use My Own Label</p>
+                      <p className="text-xs text-gray-500 mt-0.5">Ship with your own carrier and enter the tracking number.</p>
+                    </button>
+                  </div>
+                )}
+
+                {/* Platform label option */}
+                {shipMethod === 'platform' && (
+                  <div className="space-y-3 border border-blue-200 rounded-xl p-4">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-semibold text-gray-700">Select a Rate</p>
+                      <button onClick={() => { setShipMethod(null); setRates([]); setLabelError(''); }} className="text-xs text-gray-400 hover:text-gray-600 underline">Back</button>
+                    </div>
+                    {loadingRates && (
+                      <div className="flex items-center gap-2 text-sm text-gray-400">
+                        <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                        </svg>
+                        Fetching rates…
+                      </div>
+                    )}
+                    {ratesStub && !loadingRates && (
+                      <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5">
+                        <span className="font-semibold">Stub mode</span> — sample rates only.
+                      </p>
+                    )}
+                    {!loadingRates && rates.length === 0 && !labelError && (
+                      <p className="text-xs text-gray-400">No rates available — try Use My Own Label instead.</p>
+                    )}
+                    {!loadingRates && rates.length > 0 && (
+                      <div className="space-y-2">
+                        {rates.map((r) => (
+                          <button key={r.rate_id} onClick={() => setSelectedRate(r)}
+                            className={`w-full flex items-center justify-between rounded-lg border-2 px-3 py-2.5 text-left transition-all ${selectedRate?.rate_id === r.rate_id ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'}`}>
+                            <div>
+                              <p className="text-sm font-semibold text-gray-800">{r.carrier} — {r.service}</p>
+                              {r.est_days != null && <p className="text-xs text-gray-500">{r.est_days} day{r.est_days !== 1 ? 's' : ''}</p>}
+                            </div>
+                            <span className="text-sm font-bold text-gray-900 ml-3 shrink-0">${(r.price_cents / 100).toFixed(2)}</span>
+                          </button>
+                        ))}
+                        {selectedRate && (
+                          <p className="text-xs text-gray-500">
+                            ${(selectedRate.price_cents / 100).toFixed(2)} will be deducted from your ${order.seller_payout_cents != null ? (order.seller_payout_cents / 100).toFixed(2) : '—'} payout.
+                          </p>
+                        )}
+                        <button
+                          onClick={handlePurchaseLabel}
+                          disabled={!selectedRate || purchasingLabel}
+                          className="w-full bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2.5 rounded-lg disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
+                        >
+                          {purchasingLabel ? (
+                            <><svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/></svg>Purchasing…</>
+                          ) : selectedRate ? `Purchase Label — $${(selectedRate.price_cents / 100).toFixed(2)} (from payout)` : 'Select a rate above'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Own label option */}
+                {shipMethod === 'own' && (
+                  <div className="space-y-3 border border-gray-200 rounded-xl p-4">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-semibold text-gray-700">Your Shipment Details</p>
+                      <button onClick={() => { setShipMethod(null); setLabelError(''); }} className="text-xs text-gray-400 hover:text-gray-600 underline">Back</button>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Carrier</label>
+                      <select value={ownCarrier} onChange={(e) => setOwnCarrier(e.target.value)}
+                        className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:border-brand-600">
+                        {['USPS','UPS','FedEx','DHL','Other'].map((c) => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Tracking Number</label>
+                      <input
+                        type="text"
+                        value={ownTracking}
+                        onChange={(e) => setOwnTracking(e.target.value)}
+                        placeholder="e.g. 9400111899223456789012"
+                        className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-brand-600"
+                      />
+                    </div>
+                    <button
+                      onClick={handleShipOwnLabel}
+                      disabled={!ownTracking.trim() || shippingOwnLabel}
+                      className="w-full bg-brand-700 hover:bg-brand-800 text-white text-sm font-semibold px-4 py-2.5 rounded-lg disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
+                    >
+                      {shippingOwnLabel ? (
+                        <><svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/></svg>Marking as Shipped…</>
+                      ) : 'Mark as Shipped'}
+                    </button>
+                  </div>
+                )}
               </div>
             )}
 

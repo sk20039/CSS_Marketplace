@@ -37,13 +37,9 @@ process.env.EVIDENCE_DIR = require('os').tmpdir() + '/escrow_test_evidence_' + D
 // Start mock listing server before loading src/ (LISTING_SERVICE_URL must be set before require)
 const http = require('http');
 const jwt  = require('jsonwebtoken');
-const { makeRateToken } = require('../src/shippoClient');
 
-// Stub shipping constants (must match STUB_RATES in shippoClient.js)
-const STUB_RATE_ID        = 'stub_rate_usps_first_class';
-const STUB_SHIPPING_CENTS = 425;
-const SELLER_SHIP_ZIP     = '77001';
-const TEST_PARCEL         = { weight_oz: 64, length_in: 36, width_in: 6, height_in: 6 };
+const SELLER_SHIP_ZIP = '77001';
+const TEST_PARCEL     = { weight_oz: 64, length_in: 36, width_in: 6, height_in: 6 };
 
 // ---------------------------------------------------------------------------
 // Mock listing-service
@@ -237,12 +233,9 @@ async function teardown() {
 // ---------------------------------------------------------------------------
 
 async function createOrder() {
-  const rateToken = makeRateToken(STUB_RATE_ID, LISTING_ID, SELLER_SHIP_ZIP, VALID_SHIPPING_ADDRESS, TEST_PARCEL);
   const res = await post(appServer, '/orders', buyerToken, {
     listing_id: LISTING_ID,
     shipping_address: VALID_SHIPPING_ADDRESS,
-    shippo_rate_id: STUB_RATE_ID,
-    rate_token: rateToken,
   });
   assertEqual(res.status, 201, `createOrder failed: ${JSON.stringify(res.body)}`);
   return res.body;
@@ -255,7 +248,16 @@ async function captureOrder(orderId) {
 }
 
 async function purchaseLabel(orderId) {
-  const res = await post(appServer, `/orders/${orderId}/purchase-label`, sellerToken);
+  // Fetch seller-side rates first to get a valid shippo_rate_id + rate_token.
+  const ratesRes = await get(appServer, `/orders/${orderId}/seller-shipping-rates`, sellerToken);
+  assertEqual(ratesRes.status, 200, `seller-shipping-rates failed: ${JSON.stringify(ratesRes.body)}`);
+  const rate = ratesRes.body.rates[0];
+  assert(rate, 'seller-shipping-rates must return at least one rate');
+
+  const res = await post(appServer, `/orders/${orderId}/purchase-label`, sellerToken, {
+    shippo_rate_id: rate.rate_id,
+    rate_token:     rate.rate_token,
+  });
   assertEqual(res.status, 200, `purchaseLabel failed: ${JSON.stringify(res.body)}`);
   return res.body;
 }
@@ -343,7 +345,7 @@ async function runOrderCreationTests() {
   await test('POST /orders creates order in CREATED status with correct amounts', async () => {
     const order = await createOrder();
     assertEqual(order.status, 'CREATED', 'status must be CREATED');
-    assertEqual(order.amount_cents, 9999 + STUB_SHIPPING_CENTS, 'amount_cents must be item + shipping');
+    assertEqual(order.amount_cents, 9999, 'amount_cents must equal item_price_cents (shipping is free for buyers)');
     assert(order.platform_fee_cents > 0, 'platform_fee_cents must be set');
     assertEqual(order.platform_fee_cents + order.seller_payout_cents, 9999, 'fee + payout must equal item price (not amount_cents)');
     assert(order.stripe_payment_intent_id, 'stripe_payment_intent_id must be set');

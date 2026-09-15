@@ -22,7 +22,6 @@ process.env.INTERNAL_SERVICE_SECRET = 'test-internal-secret-32-chars!!!';
 const http    = require('http');
 const request = require('supertest');
 const { buildApp } = require('../src/app');
-const { makeRateToken } = require('../src/shippoClient');
 const pool    = require('../src/db');
 
 // ── Minimal test harness ──────────────────────────────────────────────────
@@ -221,172 +220,118 @@ const VALID_BUYER_ADDR = {
     assertEqual(res.status, 401, `expected 401, got ${res.status}`);
   });
 
-  // ── Helpers for order creation tests ──────────────────────────────────
+  // ── 6. POST /orders — free-shipping model ────────────────────────────────
 
-  async function fetchRates() {
-    const res = await request(app)
-      .post('/shipping-rates')
-      .set('Authorization', `Bearer ${buyerToken}`)
-      .send({ listing_id: 1, shipping_address: VALID_BUYER_ADDR });
-    assert(res.status === 200, `fetchRates failed: ${JSON.stringify(res.body)}`);
-    return res.body.rates;
-  }
-
-  // ── 6. POST /orders — valid rate creates order with shipping ───────────
-
-  await test('POST /orders creates order with verified shipping_cents from stub', async () => {
-    const rates = await fetchRates();
-    const rate  = rates[0]; // e.g. stub_rate_usps_priority at 895 cents
+  await test('POST /orders creates order with shipping_cents=0 (free shipping model)', async () => {
     const res = await request(app)
       .post('/orders')
       .set('Authorization', `Bearer ${buyerToken}`)
-      .send({
-        listing_id:    1,
-        shipping_address: VALID_BUYER_ADDR,
-        shippo_rate_id: rate.rate_id,
-        rate_token:     rate.rate_token,
-      });
+      .send({ listing_id: 1, shipping_address: VALID_BUYER_ADDR });
     assertEqual(res.status, 201, `expected 201, got ${res.status}: ${JSON.stringify(res.body)}`);
     const order = res.body;
-    // shipping_cents = stub rate price
-    assertEqual(order.shipping_cents, rate.price_cents, 'shipping_cents must match selected rate');
-    // item_price_cents = listing price
+    assertEqual(order.shipping_cents, 0, 'shipping_cents must be 0 (free shipping)');
     assertEqual(order.item_price_cents, mockListingData.price_cents, 'item_price_cents must match listing');
-    // amount_cents = item + shipping
-    assertEqual(
-      order.amount_cents,
-      mockListingData.price_cents + rate.price_cents,
-      'amount_cents must equal item_price_cents + shipping_cents'
-    );
-    // platform fee is on item price only (8%, min $2.00)
-    const expectedFee = Math.max(Math.round((mockListingData.price_cents * 800) / 10000), 200);
-    assertEqual(order.platform_fee_cents, expectedFee, 'platform_fee_cents must be based on item price only');
-    // seller payout = item price - fee (shipping excluded)
-    assertEqual(
-      order.seller_payout_cents,
-      mockListingData.price_cents - expectedFee,
-      'seller_payout_cents must exclude shipping'
-    );
+    // In stub mode tax = 0, so amount_cents == item_price_cents
+    assertEqual(order.amount_cents, mockListingData.price_cents,
+      'amount_cents must equal item price only (no shipping component)');
   });
 
-  // ── 7. POST /orders — missing shippo_rate_id ───────────────────────────
+  // ── 7. POST /orders — extra rate fields are silently ignored ──────────────
 
-  await test('POST /orders returns 422 when shippo_rate_id is missing', async () => {
-    const res = await request(app)
-      .post('/orders')
-      .set('Authorization', `Bearer ${buyerToken}`)
-      .send({ listing_id: 1, shipping_address: VALID_BUYER_ADDR });
-    assertEqual(res.status, 422, `expected 422, got ${res.status}`);
-    assertMatch(res.body.error, /shippo_rate_id/, 'error must mention shippo_rate_id');
-  });
-
-  // ── 8. POST /orders — missing rate_token ──────────────────────────────
-
-  await test('POST /orders returns 422 when rate_token is missing', async () => {
-    const rates = await fetchRates();
+  await test('POST /orders ignores extra rate fields — still returns 201 with shipping_cents=0', async () => {
     const res = await request(app)
       .post('/orders')
       .set('Authorization', `Bearer ${buyerToken}`)
       .send({
         listing_id: 1,
         shipping_address: VALID_BUYER_ADDR,
-        shippo_rate_id: rates[0].rate_id,
-        // no rate_token
+        shippo_rate_id: 'stub_rate_usps_priority',
+        rate_token:     'some_token_value',
       });
-    assertEqual(res.status, 422, `expected 422, got ${res.status}`);
-    assertMatch(res.body.error, /rate_token/, 'error must mention rate_token');
+    assertEqual(res.status, 201, `expected 201, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assertEqual(res.body.shipping_cents, 0, 'shipping_cents must be 0 regardless of extra fields');
   });
 
-  // ── 9. POST /orders — bogus rate ID ───────────────────────────────────
+  // ── 8. POST /orders — amount_cents has no shipping component ─────────────
 
-  await test('POST /orders returns 422 for unknown/bogus rate_id (even with matching token)', async () => {
-    // Compute a valid token for a fake rate_id.
-    const fakeRateId = 'stub_rate_nonexistent';
-    // We need seller zip for token — must match what the server has.
-    const sellerZip = '77001'; // from seedUsers
-    const parcel = { weight_oz: 64, length_in: 36, width_in: 6, height_in: 6 };
-    const fakeToken = makeRateToken(fakeRateId, 1, sellerZip, VALID_BUYER_ADDR, parcel);
+  await test('amount_cents equals item price only (no shipping component)', async () => {
     const res = await request(app)
       .post('/orders')
       .set('Authorization', `Bearer ${buyerToken}`)
-      .send({
-        listing_id:    1,
-        shipping_address: VALID_BUYER_ADDR,
-        shippo_rate_id: fakeRateId,
-        rate_token:     fakeToken,
-      });
-    assertEqual(res.status, 422, `expected 422, got ${res.status}: ${JSON.stringify(res.body)}`);
-    assertMatch(res.body.error, /expired|invalid|not valid/i, `unexpected error: ${res.body.error}`);
+      .send({ listing_id: 1, shipping_address: VALID_BUYER_ADDR });
+    assertEqual(res.status, 201, `expected 201, got ${res.status}`);
+    const order = res.body;
+    assertEqual(order.amount_cents, order.item_price_cents,
+      'amount_cents must equal item_price_cents (no shipping)');
+    assertEqual(order.shipping_cents, 0, 'shipping_cents must be 0');
+    const expectedFee = Math.max(Math.round((order.item_price_cents * 800) / 10000), 200);
+    assertEqual(order.platform_fee_cents, expectedFee,
+      'platform_fee_cents must be based on item price only');
+    assertEqual(order.seller_payout_cents, order.item_price_cents - expectedFee,
+      'seller_payout = item - fee');
   });
 
-  // ── 10. Tampering protection: wrong rate_token for correct rate ─────────
+  // ── 9. POST /orders — seller_payout does not include shipping ────────────
 
-  await test('POST /orders rejects tampered rate_token (different address)', async () => {
-    const rates = await fetchRates();
-    const rate  = rates[0];
-    // Use the correct rate_id but a token issued for a DIFFERENT buyer address.
-    const differentAddr = { ...VALID_BUYER_ADDR, zip: '90210', city: 'Beverly Hills', state: 'CA' };
-    const sellerZip = '77001';
-    const parcel    = { weight_oz: 64, length_in: 36, width_in: 6, height_in: 6 };
-    const tamperedToken = makeRateToken(rate.rate_id, 1, sellerZip, differentAddr, parcel);
+  await test('seller_payout_cents does not include shipping (shipping is seller responsibility)', async () => {
     const res = await request(app)
       .post('/orders')
       .set('Authorization', `Bearer ${buyerToken}`)
-      .send({
-        listing_id:    1,
-        shipping_address: VALID_BUYER_ADDR, // actual address differs from token
-        shippo_rate_id: rate.rate_id,
-        rate_token:     tamperedToken,
-      });
-    assertEqual(res.status, 422, `expected 422, got ${res.status}: ${JSON.stringify(res.body)}`);
-    assertMatch(res.body.error, /not valid|refresh/i, `unexpected error: ${res.body.error}`);
+      .send({ listing_id: 1, shipping_address: VALID_BUYER_ADDR });
+    assertEqual(res.status, 201, `expected 201, got ${res.status}`);
+    const order = res.body;
+    const expectedFee = Math.max(Math.round((order.item_price_cents * 800) / 10000), 200);
+    // seller_payout = item_price - platform_fee only (no shipping added)
+    assertEqual(order.seller_payout_cents, order.item_price_cents - expectedFee,
+      'seller_payout_cents must not include any shipping amount');
+    assert(order.seller_payout_cents > 0, 'seller payout must be positive');
   });
 
-  // ── 11. Tampering protection: forged rate_token (random value) ─────────
+  // ── 10. POST /orders — shipping_address is still required ────────────────
 
-  await test('POST /orders rejects a randomly forged rate_token', async () => {
-    const rates = await fetchRates();
-    const rate  = rates[0];
+  await test('POST /orders returns 4xx when shipping_address is missing', async () => {
     const res = await request(app)
       .post('/orders')
       .set('Authorization', `Bearer ${buyerToken}`)
-      .send({
-        listing_id:    1,
-        shipping_address: VALID_BUYER_ADDR,
-        shippo_rate_id: rate.rate_id,
-        rate_token:     'aGVsbG8gd29ybGQ',  // random base64url
-      });
-    assertEqual(res.status, 422, `expected 422, got ${res.status}`);
-    assertMatch(res.body.error, /not valid|refresh/i, `unexpected error: ${res.body.error}`);
+      .send({ listing_id: 1 });
+    assert(res.status >= 400, `expected 4xx error, got ${res.status}`);
   });
 
-  // ── 12. Amount math: platform fee excludes shipping ───────────────────
+  // ── 11. POST /orders — order has CREATED status ───────────────────────────
 
-  await test('Platform fee is based on item price only, shipping excluded', async () => {
-    const rates = await fetchRates();
-    // Pick the most expensive stub rate to make the difference obvious.
-    const rate = rates.reduce((max, r) => r.price_cents > max.price_cents ? r : max, rates[0]);
+  await test('POST /orders returns order in CREATED status with correct id', async () => {
     const res = await request(app)
       .post('/orders')
       .set('Authorization', `Bearer ${buyerToken}`)
-      .send({
-        listing_id:    1,
-        shipping_address: VALID_BUYER_ADDR,
-        shippo_rate_id: rate.rate_id,
-        rate_token:     rate.rate_token,
-      });
+      .send({ listing_id: 1, shipping_address: VALID_BUYER_ADDR });
+    assertEqual(res.status, 201, `expected 201, got ${res.status}`);
+    const order = res.body;
+    assert(order.id, 'order must have an id');
+    assertEqual(order.status, 'CREATED', `expected CREATED, got ${order.status}`);
+    assertEqual(order.amount_cents, order.item_price_cents,
+      'amount_cents == item price only');
+    assertEqual(order.shipping_cents, 0, 'shipping_cents must be 0');
+  });
+
+  // ── 12. Platform fee is item-price-only regardless of shipping ────────────
+
+  await test('Platform fee is based on item price only (shipping excluded from fee base)', async () => {
+    const res = await request(app)
+      .post('/orders')
+      .set('Authorization', `Bearer ${buyerToken}`)
+      .send({ listing_id: 1, shipping_address: VALID_BUYER_ADDR });
     assertEqual(res.status, 201, `expected 201, got ${JSON.stringify(res.body)}`);
     const order = res.body;
-    // Fee must be item-only fee.
-    const itemOnly = mockListingData.price_cents;
+    const itemOnly = mockListingData.price_cents; // 2000 cents
     const expectedFee = Math.max(Math.round((itemOnly * 800) / 10000), 200);
-    assertEqual(order.platform_fee_cents, expectedFee, 'platform fee must not include shipping');
-    // Seller payout must NOT include shipping.
-    assertEqual(order.seller_payout_cents, itemOnly - expectedFee, 'seller payout must not include shipping');
-    // Total must include shipping.
-    assertEqual(order.amount_cents, itemOnly + rate.price_cents, 'total must include shipping');
-    // shipping_cents from Shippo, not from browser.
-    assertEqual(order.shipping_cents, rate.price_cents, 'shipping_cents must equal Shippo rate');
+    assertEqual(order.platform_fee_cents, expectedFee,
+      'platform fee must not include shipping');
+    assertEqual(order.seller_payout_cents, itemOnly - expectedFee,
+      'seller payout must not include shipping');
+    assertEqual(order.shipping_cents, 0,
+      'shipping_cents must be 0 in free-shipping model');
+    assertEqual(order.amount_cents, itemOnly,
+      'total must be item price only (no shipping)');
   });
 
   // ── 13. Seller with no ship_from_address → 422 on /shipping-rates ──────

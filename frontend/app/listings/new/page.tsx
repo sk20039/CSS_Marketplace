@@ -535,14 +535,22 @@ function NewListingForm() {
           })()}
         </div>
 
-        {/* Package Details — required for shipping rate calculation */}
+        {/* Package Details — required for shipping label purchase */}
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
           <div>
             <h2 className="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-3">
               Package Details <span className="text-red-500">*</span>
             </h2>
-            <p className="text-xs text-gray-400 mt-2">
-              Required to calculate shipping rates at checkout. Include the weight and dimensions of the item, box, and all packing materials.
+            <div className="mt-2 flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5 mb-1">
+              <svg className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <p className="text-xs text-amber-800">
+                <span className="font-semibold">Shipping is free for buyers.</span> As the seller, you are responsible for all shipping costs. These dimensions are used when you purchase a shipping label after your item sells.
+              </p>
+            </div>
+            <p className="text-xs text-gray-400 mt-1">
+              Include the weight and dimensions of the item, box, and all packing materials.
             </p>
           </div>
 

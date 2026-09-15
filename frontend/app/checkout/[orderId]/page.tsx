@@ -140,7 +140,10 @@ function CheckoutContent() {
             {shipping != null && (
               <div className="flex justify-between items-center text-sm">
                 <span className="text-gray-600">Shipping</span>
-                <span className="font-medium">${shipping}</span>
+                {order.shipping_cents === 0
+                  ? <span className="font-semibold text-green-600">FREE</span>
+                  : <span className="font-medium">${shipping}</span>
+                }
               </div>
             )}
             {tax != null && (

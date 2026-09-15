@@ -247,10 +247,9 @@ export async function getShippingRates(listing_id: number, shipping_address: Shi
 export async function createOrder(body: {
   listing_id: number;
   shipping_address: ShippingAddress;
-  shippo_rate_id: string;
-  rate_token: string;
 }) {
   // buyer_id is derived server-side from the auth token now, not sent by the client.
+  // Shipping is free for buyers — no rate selection at checkout.
   return escrowFetch('/orders', { method: 'POST', body: JSON.stringify(body) });
 }
 
@@ -268,8 +267,21 @@ export async function cancelOrder(id: string | number) {
   return escrowFetch(`/orders/${id}/cancel`, { method: 'POST' });
 }
 
-export async function purchaseLabel(id: string | number) {
-  return escrowFetch(`/orders/${id}/purchase-label`, { method: 'POST' });
+export async function getOrderShippingRates(id: string | number): Promise<{ rates: ShippingRate[]; stub: boolean }> {
+  const res = await escrowFetch(`/orders/${id}/seller-shipping-rates`);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error((data as { error?: string }).error || 'Failed to fetch shipping rates');
+  }
+  return res.json();
+}
+
+export async function purchaseLabel(id: string | number, body: { shippo_rate_id: string; rate_token: string }) {
+  return escrowFetch(`/orders/${id}/purchase-label`, { method: 'POST', body: JSON.stringify(body) });
+}
+
+export async function shipWithOwnLabel(id: string | number, body: { carrier: string; tracking_number: string }) {
+  return escrowFetch(`/orders/${id}/ship-own-label`, { method: 'POST', body: JSON.stringify(body) });
 }
 
 export async function shipOrder(id: string | number) {

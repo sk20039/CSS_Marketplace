@@ -299,7 +299,7 @@ async function fetchListingPublic(listingId) {
 // POST /orders
 // ---------------------------------------------------------------------------
 
-async function createOrder({ listingId, buyerId, shippingAddress, shippoRateId, rateToken }) {
+async function createOrder({ listingId, buyerId, shippingAddress }) {
   if (!isPositiveIntegerId(listingId)) {
     throw new OrderError('listing_id must be a positive integer', 400);
   }
@@ -308,12 +308,6 @@ async function createOrder({ listingId, buyerId, shippingAddress, shippoRateId, 
   }
   const addrError = validateShippingAddress(shippingAddress);
   if (addrError) throw new OrderError(addrError, 422);
-  if (!shippoRateId) {
-    throw new OrderError('shippo_rate_id is required — select a shipping rate before placing an order', 422);
-  }
-  if (!rateToken) {
-    throw new OrderError('rate_token is required — retrieve fresh shipping rates and select one', 422);
-  }
   const sanitizedAddr = sanitizeShippingAddress(shippingAddress);
   const normalizedListingId = Number(listingId);
   const normalizedBuyerId   = Number(buyerId);
@@ -339,71 +333,8 @@ async function createOrder({ listingId, buyerId, shippingAddress, shippoRateId, 
     );
   }
 
-  // ── Shipping rate verification ────────────────────────────────────────────
-  // 1. Re-fetch seller's ship-from address (authoritative from escrow DB).
-  const { rows: sellerRows } = await pool.query('SELECT ship_from_address FROM users WHERE id = $1', [sellerId]);
-  const sellerShipFrom = sellerRows[0]?.ship_from_address
-    ? (typeof sellerRows[0].ship_from_address === 'string'
-        ? JSON.parse(sellerRows[0].ship_from_address)
-        : sellerRows[0].ship_from_address)
-    : null;
-  if (!sellerShipFrom) {
-    throw new OrderError(
-      `Order cannot be created: seller ${sellerId} has no ship-from address on file`,
-      422
-    );
-  }
-
-  // 2. Validate package dims on the listing (must exist — enforced at listing creation).
-  const { weight_oz, pkg_length_in, pkg_width_in, pkg_height_in } = listing;
-  const missingDims = [
-    !weight_oz     && 'weight_oz',
-    !pkg_length_in && 'pkg_length_in',
-    !pkg_width_in  && 'pkg_width_in',
-    !pkg_height_in && 'pkg_height_in',
-  ].filter(Boolean);
-  if (missingDims.length > 0) {
-    throw new OrderError(
-      `Listing ${normalizedListingId} is missing package dimensions: ${missingDims.join(', ')}`,
-      422
-    );
-  }
-
-  const parcel = {
-    weight_oz:  Number(weight_oz),
-    length_in:  Number(pkg_length_in),
-    width_in:   Number(pkg_width_in),
-    height_in:  Number(pkg_height_in),
-  };
-
-  // 3. Verify rate_token — binds shippo_rate_id to this listing + seller zip + buyer address + parcel.
-  const tokenValid = shippoClient.verifyRateToken(
-    rateToken,
-    shippoRateId,
-    normalizedListingId,
-    sellerShipFrom.zip,
-    sanitizedAddr,   // normalized buyer address (same normalization used when token was issued)
-    parcel
-  );
-  if (!tokenValid) {
-    throw new OrderError(
-      'Shipping rate is not valid for this order — please refresh shipping rates and select again',
-      422
-    );
-  }
-
-  // 4. Fetch the rate from Shippo to get the authoritative price.
-  //    The browser-submitted price is ignored entirely.
-  const rateData = await shippoClient.getRate(shippoRateId);
-  if (!rateData) {
-    throw new OrderError(
-      'Selected shipping rate has expired or is invalid — please refresh shipping rates and select again',
-      422
-    );
-  }
-  const shippingCents      = rateData.price_cents;
-  const rateCarrier        = rateData.carrier        || null;
-  const rateCarrierService = rateData.carrier_service || null;
+  // Shipping is free for buyers — seller is responsible for shipping costs.
+  const shippingCents = 0;
 
   // Calculate sales tax via Stripe Tax using buyer's shipping address.
   // Tax code is determined by the account's Dashboard preset (omitted from line items).
@@ -421,7 +352,7 @@ async function createOrder({ listingId, buyerId, shippingAddress, shippoRateId, 
     throw new OrderError(`Tax calculation failed: ${err.message}`, 502);
   }
 
-  const amountCents = itemPriceCents + shippingCents + taxCents;
+  const amountCents = itemPriceCents + taxCents;
   // Platform fee is based on item price only — shipping and tax are excluded from the fee basis.
   const { platformFeeCents, sellerPayoutCents } = computeFee(itemPriceCents);
 
@@ -450,9 +381,8 @@ async function createOrder({ listingId, buyerId, shippingAddress, shippoRateId, 
        tax_cents, tax_calculation_id,
        platform_fee_cents, seller_payout_cents,
        status, stripe_payment_intent_id, stripe_client_secret, shipping_address,
-       shippo_rate_id, carrier, carrier_service,
        created_at, updated_at
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'CREATED', $11, $12, $13, $14, $15, $16, $17, $18)
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'CREATED', $11, $12, $13, $14, $15)
      RETURNING id`,
     [
       normalizedListingId, normalizedBuyerId, sellerId,
@@ -461,7 +391,6 @@ async function createOrder({ listingId, buyerId, shippingAddress, shippoRateId, 
       platformFeeCents, sellerPayoutCents,
       intent.id, intent.client_secret || null,
       JSON.stringify(sanitizedAddr),
-      shippoRateId, rateCarrier, rateCarrierService,
       ts_now, ts_now,
     ]
   );
@@ -478,7 +407,6 @@ async function createOrder({ listingId, buyerId, shippingAddress, shippoRateId, 
     amountCents,
     platformFeeCents,
     sellerPayoutCents,
-    shippoRateId,
     stripePaymentIntentId: intent.id,
     stripeMode: stripeClient.mode,
   });
@@ -716,11 +644,16 @@ async function performRelease(orderId, { triggeredBy, fromStatus }) {
         500
       );
     }
+    // Deduct platform label cost from seller payout if they used a platform label.
+    // Historical orders (label_cost_cents IS NULL) pay full payout — no change.
+    const labelCostCents  = order.label_cost_cents || 0;
+    const actualPayoutCents = order.seller_payout_cents - labelCostCents;
+    console.log(`[release] order ${orderId}: seller_payout=${order.seller_payout_cents} label_cost=${labelCostCents} actual_transfer=${actualPayoutCents}`);
     transfer = await stripeClient.createTransfer({
-      amountCents:         order.seller_payout_cents,
+      amountCents:         actualPayoutCents,
       currency:            'usd',
       destination,
-      metadata:            { orderId: String(order.id), operationType: 'release' },
+      metadata:            { orderId: String(order.id), operationType: 'release', labelCostCents: String(labelCostCents) },
       sourceTransactionId: order.stripe_charge_id,
       transferGroup:       `order_${orderId}`,
       idempotencyKey:      `release_order_${orderId}`,
@@ -1363,7 +1296,7 @@ async function runTaxReconciliation() {
  * Authorization: caller must verify the user is the seller or admin before
  * calling this function (matching the pattern used by shipOrder, cancelOrder).
  */
-async function purchaseLabelForOrder(orderId) {
+async function purchaseLabelForOrder(orderId, { shippoRateId, rateToken }) {
   const order = await getOrder(orderId);
 
   // Short-circuit: label already purchased — idempotent response.
@@ -1386,6 +1319,91 @@ async function purchaseLabelForOrder(orderId) {
     );
   }
 
+  // ── Rate validation (moved from order creation to label purchase time) ────
+  // 1. Re-fetch seller's ship-from address.
+  const { rows: sellerRows } = await pool.query('SELECT ship_from_address FROM users WHERE id = $1', [order.seller_id]);
+  const sellerShipFrom = sellerRows[0]?.ship_from_address
+    ? (typeof sellerRows[0].ship_from_address === 'string'
+        ? JSON.parse(sellerRows[0].ship_from_address)
+        : sellerRows[0].ship_from_address)
+    : null;
+  if (!sellerShipFrom) {
+    throw new OrderError(
+      `Seller ${order.seller_id} has no ship-from address on file — cannot purchase label`,
+      422
+    );
+  }
+
+  // 2. Fetch listing dims from authoritative source.
+  const listing = await fetchAuthoritativeListing(order.listing_id);
+  const { weight_oz, pkg_length_in, pkg_width_in, pkg_height_in } = listing;
+  const missingDims = [
+    !weight_oz     && 'weight_oz',
+    !pkg_length_in && 'pkg_length_in',
+    !pkg_width_in  && 'pkg_width_in',
+    !pkg_height_in && 'pkg_height_in',
+  ].filter(Boolean);
+  if (missingDims.length > 0) {
+    throw new OrderError(
+      `Listing ${order.listing_id} is missing package dimensions: ${missingDims.join(', ')}`,
+      422
+    );
+  }
+  const parcel = {
+    weight_oz:  Number(weight_oz),
+    length_in:  Number(pkg_length_in),
+    width_in:   Number(pkg_width_in),
+    height_in:  Number(pkg_height_in),
+  };
+
+  // 3. Verify rate token — binds rate_id to listing + seller_zip + buyer_addr + parcel.
+  // shipping_address is stripped from normalizeOrder (privacy); fetch directly from DB.
+  const { rows: addrRows } = await pool.query(
+    'SELECT shipping_address FROM orders WHERE id = $1', [orderId]
+  );
+  const rawAddr = addrRows[0]?.shipping_address;
+  const buyerAddr = rawAddr
+    ? (typeof rawAddr === 'string' ? JSON.parse(rawAddr) : rawAddr)
+    : null;
+  if (!buyerAddr) {
+    throw new OrderError(`Order ${orderId} has no shipping address on file`, 422);
+  }
+  const tokenValid = shippoClient.verifyRateToken(
+    rateToken, shippoRateId, order.listing_id,
+    sellerShipFrom.zip, buyerAddr, parcel
+  );
+  if (!tokenValid) {
+    throw new OrderError(
+      'Shipping rate is not valid for this order — please refresh shipping rates and select again',
+      422
+    );
+  }
+
+  // 4. Fetch authoritative rate price from Shippo (ignore any client-submitted price).
+  const rateData = await shippoClient.getRate(shippoRateId);
+  if (!rateData) {
+    throw new OrderError(
+      'Selected shipping rate has expired or is invalid — please refresh rates and select again',
+      422
+    );
+  }
+  const labelCostCents = rateData.price_cents;
+
+  // 5. Payout guard — never allow platform to subsidize seller postage.
+  if (labelCostCents > order.seller_payout_cents) {
+    throw new OrderError(
+      'This shipping label costs more than your available sale proceeds. ' +
+      'Please purchase shipping elsewhere and provide the carrier and tracking number.',
+      422
+    );
+  }
+
+  // Store the selected rate on the order for recovery and audit use.
+  await pool.query(
+    'UPDATE orders SET shippo_rate_id = $1 WHERE id = $2',
+    [shippoRateId, orderId]
+  );
+
   // Atomic reservation: HELD → LABELING.
   // AND label_id IS NULL is the compound idempotency guard — a concurrent
   // winner that finalized before us would have set label_id, causing this
@@ -1405,13 +1423,13 @@ async function purchaseLabelForOrder(orderId) {
   // Call Shippo.  Outcome determines whether we revert or stay in LABELING.
   let labelData;
   try {
-    labelData = await shippoClient.purchaseLabel(order.shippo_rate_id, orderId);
+    labelData = await shippoClient.purchaseLabel(shippoRateId, orderId);
   } catch (err) {
     if (err.definitive) {
       // Definitive failure: Shippo said no — revert to HELD and allow retry.
       await revertTransition(orderId, 'LABELING', 'HELD');
       await recordEvent(orderId, 'LABEL_PURCHASE_FAILED', {
-        error: err.message, definitive: true, rateId: order.shippo_rate_id,
+        error: err.message, definitive: true, rateId: shippoRateId,
       });
       throw new OrderError(`Label purchase failed: ${err.message}`, err.statusCode || 502);
     }
@@ -1419,7 +1437,7 @@ async function purchaseLabelForOrder(orderId) {
     // Recovery sweep will query Shippo to determine if a transaction was
     // created and will finalize or revert accordingly.
     await recordEvent(orderId, 'LABEL_PURCHASE_AMBIGUOUS', {
-      error: err.message, rateId: order.shippo_rate_id,
+      error: err.message, rateId: shippoRateId,
     });
     throw new OrderError(
       'Label purchase outcome is uncertain due to a network error. ' +
@@ -1429,14 +1447,16 @@ async function purchaseLabelForOrder(orderId) {
     );
   }
 
-  return finalizeLabeled(order, labelData);
+  return finalizeLabeled(order, labelData, labelCostCents);
 }
 
 // Shared label finalization — called by purchaseLabelForOrder and recovery.
 // Atomically transitions LABELING → HELD and writes all label fields.
 // The WHERE status='LABELING' guard is the second-layer idempotency check:
 // if two recovery workers both reach this point, only one UPDATE wins.
-async function finalizeLabeled(order, labelData) {
+// labelCostCents: authoritative cost from Shippo getRate(); recovery passes
+//   order.label_cost_cents when it already has this value.
+async function finalizeLabeled(order, labelData, labelCostCents) {
   // Use label-derived carrier/service; fall back to the rate values stored at
   // order creation when Shippo transaction fields are null (e.g., USPS Ground
   // Advantage returns null tracking_carrier and servicelevel_token).
@@ -1465,7 +1485,7 @@ async function finalizeLabeled(order, labelData) {
       [
         labelData.label_id,
         labelData.label_url,
-        order.shipping_cents,  // locked at order creation — authoritative cost
+        labelCostCents,   // authoritative cost from Shippo getRate()
         labelData.tracking_number,
         effectiveCarrier,
         effectiveCarrierService,
@@ -1485,7 +1505,7 @@ async function finalizeLabeled(order, labelData) {
         trackingNumber: labelData.tracking_number,
         carrier:        effectiveCarrier,
         carrierService: effectiveCarrierService,
-        labelCostCents: order.shipping_cents,
+        labelCostCents,
       }), ts_now]
     );
     await client.query('COMMIT');
@@ -1732,6 +1752,73 @@ async function handleTrackingWebhook({ tracking_number, carrier, tracking_status
   return { action: 'processed', orderId, status, trackingUpdated, stateTransition };
 }
 
+// ---------------------------------------------------------------------------
+// POST /orders/:id/ship-own-label
+// ---------------------------------------------------------------------------
+
+/**
+ * shipWithOwnLabel — seller provides their own carrier + tracking number.
+ * Transitions HELD → SHIPPED.
+ * Optionally registers the tracking number with Shippo for webhook coverage.
+ */
+async function shipWithOwnLabel(orderId, { carrier, trackingNumber }) {
+  if (!carrier || typeof carrier !== 'string' || !carrier.trim()) {
+    throw new OrderError('carrier is required', 422);
+  }
+  if (!trackingNumber || typeof trackingNumber !== 'string' || !trackingNumber.trim()) {
+    throw new OrderError('tracking_number is required', 422);
+  }
+
+  const order = await getOrder(orderId);
+  assertStatus(order, 'HELD');
+
+  const ts_now = nowIso();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      `UPDATE orders
+       SET status          = 'SHIPPED',
+           carrier         = $1,
+           tracking_number = $2,
+           shipped_at      = $3,
+           updated_at      = $4
+       WHERE id = $5 AND status = 'HELD'`,
+      [carrier.trim(), trackingNumber.trim(), ts_now, ts_now, orderId]
+    );
+    if (result.rowCount === 0) {
+      await client.query('ROLLBACK');
+      throw new OrderError(`Order ${orderId} is no longer HELD`, 409);
+    }
+    await client.query(
+      `INSERT INTO order_events (order_id, event_type, payload_json, created_at)
+       VALUES ($1, $2, $3, $4)`,
+      [orderId, 'SHIPPED', JSON.stringify({
+        shippedAt:      ts_now,
+        carrier:        carrier.trim(),
+        trackingNumber: trackingNumber.trim(),
+        method:         'own_label',
+      }), ts_now]
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  // Best-effort: register tracking with Shippo for webhook coverage.
+  try {
+    await shippoClient.registerTracking(carrier.trim(), trackingNumber.trim(), orderId);
+  } catch (err) {
+    console.warn(`[ship-own-label] registerTracking failed for order ${orderId}:`, err.message);
+  }
+
+  notifications.notifyShipped(order).catch(() => {});
+  return getOrderWithTimeline(orderId);
+}
+
 module.exports = {
   OrderError,
   FinalizeConflictError,
@@ -1756,6 +1843,8 @@ module.exports = {
   purchaseLabelForOrder,
   finalizeLabeled,
   revertLabelPurchase,
+  // Free shipping model: own-label shipping
+  shipWithOwnLabel,
   // Exported for use by the /shipping-rates route in app.js.
   validateShippingAddressPublic,
   fetchListingPublic,

@@ -9,7 +9,7 @@ const multer  = require('multer');
 const rateLimit = require('express-rate-limit');
 const pool = require('./db');
 const orderService = require('./orderService');
-const { runReleaseCheck, cancelOrder, purchaseLabelForOrder } = require('./orderService');
+const { runReleaseCheck, cancelOrder, purchaseLabelForOrder, shipWithOwnLabel } = require('./orderService');
 const { runRecovery } = require('./recoveryService');
 const { OrderError } = orderService;
 const requireAuth = require('./middleware/requireAuth');
@@ -309,14 +309,12 @@ function buildApp() {
   // ---- orders ----
   app.post('/orders', orderCreateLimiter, requireAuth, async (req, res, next) => {
     try {
-      const { listing_id, shipping_address, shippo_rate_id, rate_token } = req.body;
+      const { listing_id, shipping_address } = req.body;
       if (!listing_id) throw new OrderError('listing_id is required', 400);
       const order = await orderService.createOrder({
         listingId: listing_id,
         buyerId: req.user.id,
         shippingAddress: shipping_address,
-        shippoRateId: shippo_rate_id,
-        rateToken: rate_token,
       });
       res.status(201).json(order);
     } catch (err) { next(err); }
@@ -397,8 +395,71 @@ function buildApp() {
     } catch (err) { next(err); }
   });
 
+  // GET /orders/:id/seller-shipping-rates
+  // Seller fetches available Shippo rates for a HELD order.
+  // Rates are bound to the order's buyer address + listing dims + seller ship-from.
+  app.get('/orders/:id/seller-shipping-rates', requireAuth, async (req, res, next) => {
+    try {
+      const order = await orderService.getOrderWithTimeline(req.params.id);
+      if (req.user.role !== 'admin' && String(req.user.id) !== String(order.seller_id)) {
+        throw new OrderError('Forbidden: only the seller can fetch shipping rates for this order', 403);
+      }
+      if (order.status !== 'HELD') {
+        throw new OrderError(`Shipping rates can only be fetched when order is HELD (current: ${order.status})`, 409);
+      }
+
+      // Fetch seller ship-from address.
+      const { rows: sellerRows } = await pool.query(
+        'SELECT ship_from_address FROM users WHERE id = $1',
+        [order.seller_id]
+      );
+      const sellerShipFrom = sellerRows[0]?.ship_from_address
+        ? (typeof sellerRows[0].ship_from_address === 'string'
+            ? JSON.parse(sellerRows[0].ship_from_address)
+            : sellerRows[0].ship_from_address)
+        : null;
+      if (!sellerShipFrom) {
+        throw new OrderError('Seller has no ship-from address on file — add it in your account settings', 422);
+      }
+
+      // Fetch listing dims from authoritative source.
+      const listing = await orderService.fetchListingPublic(order.listing_id);
+      const { weight_oz, pkg_length_in, pkg_width_in, pkg_height_in } = listing;
+      const missingDims = [
+        !weight_oz && 'weight_oz', !pkg_length_in && 'pkg_length_in',
+        !pkg_width_in && 'pkg_width_in', !pkg_height_in && 'pkg_height_in',
+      ].filter(Boolean);
+      if (missingDims.length > 0) {
+        throw new OrderError(`Listing ${order.listing_id} is missing package dimensions: ${missingDims.join(', ')}`, 422);
+      }
+
+      const parcel = {
+        weight_oz: Number(weight_oz), length_in: Number(pkg_length_in),
+        width_in: Number(pkg_width_in), height_in: Number(pkg_height_in),
+      };
+
+      // Fetch buyer shipping address from DB (not included in getOrderWithTimeline response).
+      const { rows: addrRows } = await pool.query(
+        'SELECT shipping_address FROM orders WHERE id = $1', [req.params.id]
+      );
+      const rawAddr = addrRows[0]?.shipping_address;
+      const buyerAddr = rawAddr
+        ? (typeof rawAddr === 'string' ? JSON.parse(rawAddr) : rawAddr)
+        : null;
+      if (!buyerAddr) {
+        throw new OrderError('Order has no shipping address on file', 422);
+      }
+
+      const rates = await shippoClient.getRates(
+        sellerShipFrom, buyerAddr, parcel, order.listing_id, buyerAddr
+      );
+      res.json({ rates, stub: shippoClient.STUB_MODE });
+    } catch (err) { next(err); }
+  });
+
   // POST /orders/:id/purchase-label
   // Seller purchases a Shippo shipping label for a HELD order.
+  // Body: { shippo_rate_id, rate_token }
   // Returns the updated order (with label_id, label_url, tracking_number).
   // Idempotent: if a label is already purchased, returns the current state.
   // Concurrency-safe: HELD→LABELING state transition prevents duplicate calls.
@@ -408,7 +469,24 @@ function buildApp() {
       if (req.user.role !== 'admin' && String(req.user.id) !== String(order.seller_id)) {
         throw new OrderError('Forbidden: only the seller can purchase a label for this order', 403);
       }
-      res.json(await purchaseLabelForOrder(req.params.id));
+      const { shippo_rate_id, rate_token } = req.body;
+      if (!shippo_rate_id) throw new OrderError('shippo_rate_id is required', 422);
+      if (!rate_token)     throw new OrderError('rate_token is required', 422);
+      res.json(await purchaseLabelForOrder(req.params.id, { shippoRateId: shippo_rate_id, rateToken: rate_token }));
+    } catch (err) { next(err); }
+  });
+
+  // POST /orders/:id/ship-own-label
+  // Seller provides their own carrier + tracking number (no Shippo label purchase).
+  // Body: { carrier, tracking_number }
+  app.post('/orders/:id/ship-own-label', requireAuth, async (req, res, next) => {
+    try {
+      const order = await orderService.getOrderWithTimeline(req.params.id);
+      if (req.user.role !== 'admin' && String(req.user.id) !== String(order.seller_id)) {
+        throw new OrderError('Forbidden: only the seller can ship this order', 403);
+      }
+      const { carrier, tracking_number } = req.body;
+      res.json(await orderService.shipWithOwnLabel(req.params.id, { carrier, trackingNumber: tracking_number }));
     } catch (err) { next(err); }
   });
 

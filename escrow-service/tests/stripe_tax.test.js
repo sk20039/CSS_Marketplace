@@ -20,13 +20,8 @@ process.env.EVIDENCE_DIR = require('os').tmpdir() + '/escrow_tax_test_' + Date.n
 
 const http = require('http');
 const jwt  = require('jsonwebtoken');
-const { makeRateToken } = require('../src/shippoClient');
 
-// Stub shipping constants (must match STUB_RATES in shippoClient.js)
-const STUB_RATE_ID        = 'stub_rate_usps_first_class';
-const STUB_SHIPPING_CENTS = 425;
-const SELLER_SHIP_ZIP     = '77001';
-const TEST_PARCEL         = { weight_oz: 64, length_in: 36, width_in: 6, height_in: 6 };
+const SELLER_SHIP_ZIP = '77001';
 
 // Simulated TX tax: 8.25% of $100 item = $8.25 = 825 cents (rounded)
 const TX_TAX_CENTS = 825;
@@ -228,26 +223,19 @@ async function teardown() {
 
 function setMockListing(priceCents) {
   mockListing = {
-    id:            LISTING_ID,
-    seller_id:     sellerId,
-    title:         'Tax Test Item',
-    price_cents:   priceCents,
-    status:        'active',
-    weight_oz:     TEST_PARCEL.weight_oz,
-    pkg_length_in: TEST_PARCEL.length_in,
-    pkg_width_in:  TEST_PARCEL.width_in,
-    pkg_height_in: TEST_PARCEL.height_in,
+    id:          LISTING_ID,
+    seller_id:   sellerId,
+    title:       'Tax Test Item',
+    price_cents: priceCents,
+    status:      'active',
   };
 }
 
 async function createOrderWithPrice(priceCents) {
   setMockListing(priceCents);
-  const rateToken = makeRateToken(STUB_RATE_ID, LISTING_ID, SELLER_SHIP_ZIP, VALID_SHIPPING_ADDRESS, TEST_PARCEL);
   const res = await post(appServer, '/orders', buyerToken, {
     listing_id:       LISTING_ID,
     shipping_address: VALID_SHIPPING_ADDRESS,
-    shippo_rate_id:   STUB_RATE_ID,
-    rate_token:       rateToken,
   });
   if (res.status !== 201) throw new Error(`createOrder failed (${res.status}): ${JSON.stringify(res.body)}`);
   return res.body;
@@ -285,11 +273,11 @@ async function runTests() {
   // ── 1. Zero tax (default stub behavior) ─────────────────────────────────
   console.log('Tax calculation');
 
-  await test('zero tax result: tax_cents=0, amount_cents = item + shipping', async () => {
+  await test('zero tax result: tax_cents=0, amount_cents = item only', async () => {
     const order = await createOrderWithPrice(10000);
-    assertEqual(order.tax_cents,    0,                            'tax_cents must be 0 in stub mode');
-    assert(order.tax_calculation_id,                              'tax_calculation_id must be set');
-    assertEqual(order.amount_cents, 10000 + STUB_SHIPPING_CENTS,  'amount_cents = item + shipping when tax=0');
+    assertEqual(order.tax_cents,    0,     'tax_cents must be 0 in stub mode');
+    assert(order.tax_calculation_id,       'tax_calculation_id must be set');
+    assertEqual(order.amount_cents, 10000, 'amount_cents = item_price_cents when tax=0 and shipping=0');
   });
 
   // ── 2. Non-zero Texas tax ────────────────────────────────────────────────
@@ -297,20 +285,20 @@ async function runTests() {
     const restore = patchCalculateTax(TX_TAX_CENTS);
     try {
       const order = await createOrderWithPrice(10000);
-      assertEqual(order.tax_cents,      TX_TAX_CENTS,                                   'tax_cents must match Stripe Tax result');
-      assertEqual(order.amount_cents,   10000 + STUB_SHIPPING_CENTS + TX_TAX_CENTS,     'amount_cents = item + shipping + tax');
+      assertEqual(order.tax_cents,      TX_TAX_CENTS,                'tax_cents must match Stripe Tax result');
+      assertEqual(order.amount_cents,   10000 + TX_TAX_CENTS,        'amount_cents = item + tax (no shipping for buyers)');
     } finally {
       restore();
     }
   });
 
   // ── 3. item + shipping + tax = PI total ──────────────────────────────────
-  await test('item + shipping + tax equals PaymentIntent (order.amount_cents)', async () => {
+  await test('item + tax equals PaymentIntent (order.amount_cents)', async () => {
     const restore = patchCalculateTax(TX_TAX_CENTS);
     try {
       const order = await createOrderWithPrice(5000);
-      const expectedTotal = 5000 + STUB_SHIPPING_CENTS + TX_TAX_CENTS;
-      assertEqual(order.amount_cents, expectedTotal, 'amount_cents must be item + shipping + tax');
+      const expectedTotal = 5000 + TX_TAX_CENTS;
+      assertEqual(order.amount_cents, expectedTotal, 'amount_cents must be item + tax (shipping=0)');
       assertEqual(order.item_price_cents + order.shipping_cents + order.tax_cents, order.amount_cents,
         'item_price_cents + shipping_cents + tax_cents must equal amount_cents');
     } finally {
@@ -359,13 +347,13 @@ async function runTests() {
   // ── 6. Full dispute refund includes tax ──────────────────────────────────
   console.log('\nRefund paths');
 
-  await test('dispute refund: refund amount = item + shipping + tax (full amount_cents)', async () => {
+  await test('dispute refund: refund amount = item + tax (full amount_cents, no shipping)', async () => {
     const restore = patchCalculateTax(TX_TAX_CENTS);
     try {
       const delivered  = await driveToDelivered(10000);
       const orderId    = delivered.id;
-      const expectedTotal = 10000 + STUB_SHIPPING_CENTS + TX_TAX_CENTS;
-      assertEqual(delivered.amount_cents, expectedTotal, 'amount_cents must include tax');
+      const expectedTotal = 10000 + TX_TAX_CENTS; // no shipping (free shipping model)
+      assertEqual(delivered.amount_cents, expectedTotal, 'amount_cents must be item + tax (no shipping)');
 
       await post(appServer, `/orders/${orderId}/dispute`, buyerToken, { reason: 'Item never arrived' });
       const resolved = await post(appServer, `/admin/orders/${orderId}/resolve`, adminToken, { action: 'refund' });
@@ -377,7 +365,7 @@ async function runTests() {
       const refunds = stripeClient._refunds;
       const lastRefund = refunds[refunds.length - 1];
       assertEqual(lastRefund.amountCents, expectedTotal,
-        'Stripe refund amount must equal amount_cents (item + shipping + tax)');
+        'Stripe refund amount must equal amount_cents (item + tax, no shipping)');
     } finally {
       restore();
     }
@@ -388,7 +376,7 @@ async function runTests() {
     const restore = patchCalculateTax(TX_TAX_CENTS);
     try {
       const held = await driveToHeld(10000);
-      const expectedAmount = 10000 + STUB_SHIPPING_CENTS + TX_TAX_CENTS; // amount_cents
+      const expectedAmount = 10000 + TX_TAX_CENTS; // amount_cents (no shipping, free shipping model)
       const expectedFee    = 800; // 8% of item only
       const expectedRefund = expectedAmount - expectedFee;
 

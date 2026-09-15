@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { getListing, createOrder, getShippingRates, getUserReviews, type ShippingAddress, type ShippingRate } from '@/lib/api';
+import { getListing, createOrder, getUserReviews, type ShippingAddress } from '@/lib/api';
 import { useUser } from '@/lib/auth';
 import { CONDITION_LABELS, CATEGORY_LABELS } from '@/lib/constants';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -15,12 +15,11 @@ const US_STATES = [
   'VA','WA','WV','WI','WY','DC',
 ];
 
-// ── Multi-step checkout modal ─────────────────────────────────────────────
+// ── Two-step checkout modal ───────────────────────────────────────────────
 // Step 1: ship-to address entry
-// Step 2: carrier rate selection (fetched from escrow-service / Shippo)
-// Step 3: confirmation + place order
+// Step 2: confirmation + place order (shipping is FREE for buyers)
 
-type CheckoutStep = 'address' | 'rates' | 'confirm';
+type CheckoutStep = 'address' | 'confirm';
 
 interface CheckoutModalProps {
   listingId: number;
@@ -33,44 +32,20 @@ function CheckoutModal({ listingId, onClose, onOrderCreated }: CheckoutModalProp
   const [form, setForm] = useState<ShippingAddress>({
     name: '', line1: '', line2: '', city: '', state: '', zip: '', phone: '',
   });
-  const [rates, setRates] = useState<ShippingRate[]>([]);
-  const [selectedRate, setSelectedRate] = useState<ShippingRate | null>(null);
-  const [loadingRates, setLoadingRates] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
-  const [stubMode, setStubMode] = useState(false);
 
   function setField(field: keyof ShippingAddress, value: string) {
     setForm((f) => ({ ...f, [field]: value }));
   }
 
-  async function handleAddressSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setError('');
-    setLoadingRates(true);
-    try {
-      const data = await getShippingRates(listingId, form);
-      setRates(data.rates);
-      setStubMode(data.stub);
-      setSelectedRate(data.rates[0] ?? null);
-      setStep('rates');
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch shipping rates');
-    } finally {
-      setLoadingRates(false);
-    }
-  }
-
   async function handlePlaceOrder() {
-    if (!selectedRate) return;
     setSubmitting(true);
     setError('');
     try {
       const res = await createOrder({
         listing_id: listingId,
         shipping_address: form,
-        shippo_rate_id: selectedRate.rate_id,
-        rate_token: selectedRate.rate_token,
       });
       const data = await res.json();
       if (!res.ok) {
@@ -97,7 +72,7 @@ function CheckoutModal({ listingId, onClose, onOrderCreated }: CheckoutModalProp
           <>
             <h2 className="text-lg font-bold text-gray-900 mb-1">Ship-to Address</h2>
             <p className="text-sm text-gray-500 mb-5">Enter the address where you want this item delivered.</p>
-            <form onSubmit={handleAddressSubmit} className="space-y-3">
+            <form onSubmit={(e) => { e.preventDefault(); setError(''); setStep('confirm'); }} className="space-y-3">
               <input required placeholder="Full name" className={inputCls}
                 value={form.name} onChange={(e) => setField('name', e.target.value)} />
               <input required placeholder="Address line 1" className={inputCls}
@@ -125,88 +100,17 @@ function CheckoutModal({ listingId, onClose, onOrderCreated }: CheckoutModalProp
                   className="flex-1 border border-gray-200 text-gray-700 py-2.5 rounded-xl font-semibold text-sm hover:bg-gray-50 transition-colors">
                   Cancel
                 </button>
-                <button type="submit" disabled={loadingRates}
-                  className="flex-1 bg-brand-700 text-white py-2.5 rounded-xl font-bold text-sm hover:bg-brand-800 disabled:opacity-50 transition-colors flex items-center justify-center gap-2">
-                  {loadingRates ? (
-                    <>
-                      <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-                      </svg>
-                      Fetching rates…
-                    </>
-                  ) : 'Get Shipping Rates'}
+                <button type="submit"
+                  className="flex-1 bg-brand-700 text-white py-2.5 rounded-xl font-bold text-sm hover:bg-brand-800 transition-colors">
+                  Continue
                 </button>
               </div>
             </form>
           </>
         )}
 
-        {/* ── Step 2: Rate selection ── */}
-        {step === 'rates' && (
-          <>
-            <h2 className="text-lg font-bold text-gray-900 mb-1">Select Shipping</h2>
-            <p className="text-sm text-gray-500 mb-4">
-              Shipping to <span className="font-medium text-gray-700">{form.city}, {form.state} {form.zip}</span>.{' '}
-              <button onClick={() => { setStep('address'); setError(''); }}
-                className="text-brand-700 underline text-xs">Change address</button>
-            </p>
-            {stubMode && (
-              <div className="mb-3 flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                <svg className="w-4 h-4 text-amber-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                <p className="text-xs text-amber-800"><span className="font-semibold">Stub mode</span> — sample rates, not real carrier quotes.</p>
-              </div>
-            )}
-            {rates.length === 0 ? (
-              <p className="text-sm text-gray-500 py-4 text-center">No shipping rates available for this address.</p>
-            ) : (
-              <div className="space-y-2 mb-4">
-                {rates.map((r) => (
-                  <button
-                    key={r.rate_id}
-                    onClick={() => setSelectedRate(r)}
-                    className={`w-full flex items-center justify-between rounded-xl border-2 px-4 py-3 text-left transition-all ${
-                      selectedRate?.rate_id === r.rate_id
-                        ? 'border-brand-600 bg-brand-50'
-                        : 'border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <div>
-                      <p className="text-sm font-semibold text-gray-800">{r.carrier} — {r.service}</p>
-                      {r.est_days != null && (
-                        <p className="text-xs text-gray-500 mt-0.5">{r.est_days} business day{r.est_days !== 1 ? 's' : ''} estimated</p>
-                      )}
-                      {r.est_delivery && !r.est_days && (
-                        <p className="text-xs text-gray-500 mt-0.5">{r.est_delivery}</p>
-                      )}
-                    </div>
-                    <span className="text-sm font-bold text-gray-900 ml-4 shrink-0">
-                      ${(r.price_cents / 100).toFixed(2)}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
-            {error && <p className="text-red-600 text-sm mb-3">{error}</p>}
-            <div className="flex gap-3">
-              <button onClick={() => { setStep('address'); setError(''); }}
-                className="flex-1 border border-gray-200 text-gray-700 py-2.5 rounded-xl font-semibold text-sm hover:bg-gray-50 transition-colors">
-                Back
-              </button>
-              <button
-                onClick={() => { setError(''); setStep('confirm'); }}
-                disabled={!selectedRate}
-                className="flex-1 bg-brand-700 text-white py-2.5 rounded-xl font-bold text-sm hover:bg-brand-800 disabled:opacity-50 transition-colors">
-                Continue
-              </button>
-            </div>
-          </>
-        )}
-
-        {/* ── Step 3: Confirm & place order ── */}
-        {step === 'confirm' && selectedRate && (
+        {/* ── Step 2: Confirm & place order ── */}
+        {step === 'confirm' && (
           <>
             <h2 className="text-lg font-bold text-gray-900 mb-4">Order Summary</h2>
             <div className="bg-gray-50 rounded-xl p-4 space-y-2 mb-4 text-sm">
@@ -218,16 +122,14 @@ function CheckoutModal({ listingId, onClose, onOrderCreated }: CheckoutModalProp
               </div>
               <div className="flex justify-between text-gray-600">
                 <span>Shipping</span>
-                <span className="font-medium text-gray-800">
-                  {selectedRate.carrier} {selectedRate.service} — ${(selectedRate.price_cents / 100).toFixed(2)}
-                </span>
+                <span className="font-semibold text-green-600">FREE</span>
               </div>
-              <button onClick={() => { setStep('rates'); setError(''); }}
-                className="text-xs text-brand-700 underline">Change shipping</button>
+              <button onClick={() => { setStep('address'); setError(''); }}
+                className="text-xs text-brand-700 underline">Change address</button>
             </div>
             {error && <p className="text-red-600 text-sm mb-3">{error}</p>}
             <div className="flex gap-3">
-              <button onClick={() => { setStep('rates'); setError(''); }}
+              <button onClick={() => { setStep('address'); setError(''); }}
                 className="flex-1 border border-gray-200 text-gray-700 py-2.5 rounded-xl font-semibold text-sm hover:bg-gray-50 transition-colors">
                 Back
               </button>

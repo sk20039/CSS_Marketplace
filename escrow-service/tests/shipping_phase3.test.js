@@ -174,26 +174,39 @@ function makeJwt(userId, role) {
 }
 
 // Helper: create a fresh CREATED order and return its data.
+// Shipping is now free for buyers — no rate selection at order creation.
 async function createOrderViaApi(app) {
-  // Get rates first.
-  const ratesRes = await request(app)
-    .post('/shipping-rates')
-    .set('Authorization', `Bearer ${buyerToken}`)
-    .send({ listing_id: 1, shipping_address: BUYER_ADDR });
-  assert(ratesRes.status === 200, `fetchRates failed: ${JSON.stringify(ratesRes.body)}`);
-  const rate = ratesRes.body.rates[0];
-
   const orderRes = await request(app)
     .post('/orders')
     .set('Authorization', `Bearer ${buyerToken}`)
     .send({
       listing_id:       1,
       shipping_address: BUYER_ADDR,
-      shippo_rate_id:   rate.rate_id,
-      rate_token:       rate.rate_token,
     });
   assert(orderRes.status === 201, `createOrder failed: ${JSON.stringify(orderRes.body)}`);
-  return { order: orderRes.body, rate };
+  return { order: orderRes.body };
+}
+
+// Helper: fetch a rate for a HELD order and return { shippo_rate_id, rate_token }.
+async function getSellerRate(app, orderId) {
+  const res = await request(app)
+    .get(`/orders/${orderId}/seller-shipping-rates`)
+    .set('Authorization', `Bearer ${sellerToken}`);
+  assert(res.status === 200, `seller-shipping-rates failed: ${JSON.stringify(res.body)}`);
+  const rate = res.body.rates[0];
+  assert(rate, 'must have at least one rate');
+  return { shippo_rate_id: rate.rate_id, rate_token: rate.rate_token };
+}
+
+// Helper: purchase a label (GET rates then POST purchase-label).
+async function purchaseLabelViaApi(app, orderId) {
+  const body = await getSellerRate(app, orderId);
+  const res = await request(app)
+    .post(`/orders/${orderId}/purchase-label`)
+    .set('Authorization', `Bearer ${sellerToken}`)
+    .send(body);
+  assertEqual(res.status, 200, `purchaseLabelViaApi failed: ${JSON.stringify(res.body)}`);
+  return res.body;
 }
 
 // Helper: capture an order (CREATED → HELD) via API.
@@ -245,20 +258,15 @@ async function createHeldOrder(app) {
 
   await test('POST /orders/:id/purchase-label returns HELD order with label fields', async () => {
     const held = await createHeldOrder(app);
-    const res = await request(app)
-      .post(`/orders/${held.id}/purchase-label`)
-      .set('Authorization', `Bearer ${sellerToken}`)
-      .send();
-    assertEqual(res.status, 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
-    const o = res.body;
+    const o = await purchaseLabelViaApi(app, held.id);
     assertEqual(o.status, 'HELD', 'order must remain HELD after label purchase');
     assert(o.label_id,        'label_id must be set');
     assert(o.label_url,       'label_url must be set');
     assert(o.tracking_number, 'tracking_number must be set');
     assert(o.carrier,         'carrier must be set');
     assert(o.carrier_service, 'carrier_service must be set');
-    assert(Number.isInteger(o.label_cost_cents), 'label_cost_cents must be an integer');
-    assertEqual(o.label_cost_cents, o.shipping_cents, 'label_cost_cents must equal shipping_cents');
+    assert(Number.isInteger(o.label_cost_cents) && o.label_cost_cents > 0, 'label_cost_cents must be a positive integer');
+    assertEqual(o.shipping_cents, 0, 'shipping_cents must be 0 (free shipping for buyers)');
     // LABELING event should be in timeline.
     const labelEvent = (o.events || []).find(e => e.event_type === 'LABEL_PURCHASED');
     assert(labelEvent, 'LABEL_PURCHASED event must be recorded');
@@ -271,7 +279,7 @@ async function createHeldOrder(app) {
     const res = await request(app)
       .post(`/orders/${held.id}/purchase-label`)
       .set('Authorization', `Bearer ${buyerToken}`)
-      .send();
+      .send({ shippo_rate_id: 'stub_rate_usps_first_class', rate_token: 'dummy' });
     assertEqual(res.status, 403, `expected 403, got ${res.status}`);
   });
 
@@ -281,7 +289,7 @@ async function createHeldOrder(app) {
     const held = await createHeldOrder(app);
     const res = await request(app)
       .post(`/orders/${held.id}/purchase-label`)
-      .send();
+      .send({ shippo_rate_id: 'stub_rate_usps_first_class', rate_token: 'dummy' });
     assertEqual(res.status, 401, `expected 401, got ${res.status}`);
   });
 
@@ -290,16 +298,19 @@ async function createHeldOrder(app) {
   await test('POST /orders/:id/purchase-label is idempotent — second call returns existing label', async () => {
     const held = await createHeldOrder(app);
 
+    // First call: fetch real rate and purchase.
+    const body = await getSellerRate(app, held.id);
     const res1 = await request(app)
       .post(`/orders/${held.id}/purchase-label`)
       .set('Authorization', `Bearer ${sellerToken}`)
-      .send();
+      .send(body);
     assertEqual(res1.status, 200, `first call failed: ${JSON.stringify(res1.body)}`);
 
+    // Second call: label_id already set — idempotent short-circuit (body not re-validated).
     const res2 = await request(app)
       .post(`/orders/${held.id}/purchase-label`)
       .set('Authorization', `Bearer ${sellerToken}`)
-      .send();
+      .send(body);
     assertEqual(res2.status, 200, `second call failed: ${JSON.stringify(res2.body)}`);
 
     // Both calls must return the same label_id.
@@ -323,7 +334,7 @@ async function createHeldOrder(app) {
     const res = await request(app)
       .post(`/orders/${held.id}/purchase-label`)
       .set('Authorization', `Bearer ${sellerToken}`)
-      .send();
+      .send({ shippo_rate_id: 'stub_rate_usps_first_class', rate_token: 'dummy' });
     assertEqual(res.status, 409, `expected 409, got ${res.status}: ${JSON.stringify(res.body)}`);
     assertMatch(res.body.error, /in progress|recovery/i, `unexpected error: ${res.body.error}`);
 
@@ -339,42 +350,41 @@ async function createHeldOrder(app) {
     const res = await request(app)
       .post(`/orders/${order.id}/purchase-label`)
       .set('Authorization', `Bearer ${sellerToken}`)
-      .send();
+      .send({ shippo_rate_id: 'stub_rate_usps_first_class', rate_token: 'dummy' });
     assertEqual(res.status, 409, `expected 409, got ${res.status}: ${JSON.stringify(res.body)}`);
   });
 
-  // ── 8. ship — 422 when no label purchased ────────────────────────────────
+  // ── 8. ship — succeeds without platform label (own-label / no-label flow) ──
 
-  await test('POST /orders/:id/ship returns 422 when label_id is not set', async () => {
+  await test('POST /orders/:id/ship succeeds when no platform label (label_id is null)', async () => {
     const held = await createHeldOrder(app);
-    // Do not purchase label.
+    // Do not purchase label — manual ship is allowed in free-shipping model
+    // when seller does not use a Shippo label (e.g. own carrier).
     const res = await request(app)
       .post(`/orders/${held.id}/ship`)
       .set('Authorization', `Bearer ${sellerToken}`)
       .send();
-    assertEqual(res.status, 422, `expected 422, got ${res.status}: ${JSON.stringify(res.body)}`);
-    assertMatch(res.body.error, /label|purchase-label/i, `unexpected error: ${res.body.error}`);
+    assertEqual(res.status, 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assertEqual(res.body.status, 'SHIPPED', 'order must be SHIPPED');
   });
 
-  // ── 9. ship — succeeds after label purchase ───────────────────────────────
+  // ── 9. ship — 409 when platform label exists (carrier webhook handles it) ──
 
-  await test('POST /orders/:id/ship succeeds after label is purchased', async () => {
+  await test('POST /orders/:id/ship returns 409 when platform label exists', async () => {
     const held = await createHeldOrder(app);
 
-    // Purchase label.
-    const labelRes = await request(app)
-      .post(`/orders/${held.id}/purchase-label`)
-      .set('Authorization', `Bearer ${sellerToken}`)
-      .send();
-    assertEqual(labelRes.status, 200, `label purchase failed: ${JSON.stringify(labelRes.body)}`);
+    // Purchase label — order stays HELD with label data.
+    const labelRes = await purchaseLabelViaApi(app, held.id);
+    assertEqual(labelRes.status, 'HELD', `label purchase must leave order HELD`);
 
-    // Now mark shipped.
+    // Manual ship is blocked; carrier TRANSIT webhook handles transition.
     const shipRes = await request(app)
       .post(`/orders/${held.id}/ship`)
       .set('Authorization', `Bearer ${sellerToken}`)
       .send();
-    assertEqual(shipRes.status, 200, `ship failed: ${JSON.stringify(shipRes.body)}`);
-    assertEqual(shipRes.body.status, 'SHIPPED', 'order must be SHIPPED');
+    assertEqual(shipRes.status, 409, `expected 409, got ${shipRes.status}: ${JSON.stringify(shipRes.body)}`);
+    assertMatch(shipRes.body.error, /platform shipping label|carrier webhook|TRANSIT/i,
+      `unexpected error: ${shipRes.body.error}`);
   });
 
   // ── 10. label_url redaction — buyer cannot see label_url ─────────────────
@@ -382,10 +392,7 @@ async function createHeldOrder(app) {
   await test('GET /orders/:id hides label_url from buyer', async () => {
     const held = await createHeldOrder(app);
 
-    await request(app)
-      .post(`/orders/${held.id}/purchase-label`)
-      .set('Authorization', `Bearer ${sellerToken}`)
-      .send();
+    await purchaseLabelViaApi(app, held.id);
 
     // Seller can see label_url.
     const sellerView = await request(app)
@@ -413,10 +420,7 @@ async function createHeldOrder(app) {
 
   await test('GET /orders list hides label_url from buyer', async () => {
     const held = await createHeldOrder(app);
-    await request(app)
-      .post(`/orders/${held.id}/purchase-label`)
-      .set('Authorization', `Bearer ${sellerToken}`)
-      .send();
+    await purchaseLabelViaApi(app, held.id);
 
     const res = await request(app)
       .get('/orders')
@@ -561,52 +565,58 @@ async function createHeldOrder(app) {
 
   await test('POST /orders/:id/purchase-label succeeds for admin', async () => {
     const held = await createHeldOrder(app);
+    const body = await getSellerRate(app, held.id);
     const res = await request(app)
       .post(`/orders/${held.id}/purchase-label`)
       .set('Authorization', `Bearer ${adminToken}`)
-      .send();
+      .send(body);
     assertEqual(res.status, 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
     assert(res.body.label_id, 'label_id must be set after admin purchase');
   });
 
-  // ── 17. carrier and carrier_service stored at order creation ─────────────
+  // ── 17. carrier and carrier_service are null at order creation ──────────────
+  // (In the free-shipping model, carrier is not set until label purchase)
 
-  await test('carrier and carrier_service are populated from rate at order creation', async () => {
+  await test('carrier and carrier_service are null at order creation (set at label purchase)', async () => {
     const { order } = await createOrderViaApi(app);
-    assert(order.carrier != null, `carrier must be set at order creation (got ${JSON.stringify(order.carrier)})`);
-    assert(order.carrier_service != null, `carrier_service must be set at order creation (got ${JSON.stringify(order.carrier_service)})`);
+    assert(order.carrier == null, `carrier must be null at order creation (got ${JSON.stringify(order.carrier)})`);
+    assert(order.carrier_service == null, `carrier_service must be null at order creation (got ${JSON.stringify(order.carrier_service)})`);
   });
 
-  // ── 18. finalizeLabeled falls back to order carrier when label data is null ─
+  // ── 18. finalizeLabeled falls back to rate carrier when labelData has null values ─
+  // (carrier is stored on the order by purchaseLabelForOrder before finalizeLabeled)
 
-  await test('finalizeLabeled falls back to order.carrier/carrier_service when labelData has null values', async () => {
+  await test('finalizeLabeled falls back to rate carrier when labelData carrier fields are null', async () => {
     const held = await createHeldOrder(app);
 
-    // Verify order has carrier from the rate (set at createOrder).
-    assert(held.carrier != null, `order.carrier must be set before label purchase (got ${JSON.stringify(held.carrier)})`);
-
-    // Force LABELING state.
+    // Carrier is null at order creation in the free-shipping model.
+    // purchaseLabelForOrder stores shippo_rate_id before LABELING so recovery can re-derive carrier.
+    // Manually set carrier/carrier_service to simulate what purchaseLabelForOrder would do.
+    const FALLBACK_CARRIER = 'USPS';
+    const FALLBACK_SERVICE = 'Priority Mail';
     await pool.query(
-      `UPDATE orders SET status = 'LABELING', prior_status = 'HELD', transition_started_at = NOW() WHERE id = $1`,
-      [held.id]
+      `UPDATE orders SET status = 'LABELING', prior_status = 'HELD',
+       carrier = $1, carrier_service = $2, transition_started_at = NOW() WHERE id = $3`,
+      [FALLBACK_CARRIER, FALLBACK_SERVICE, held.id]
     );
 
     // Call finalizeLabeled with null carrier/service (simulates USPS Ground Advantage transaction).
     const result = await finalizeLabeled(
-      { id: held.id, shipping_cents: held.shipping_cents, carrier: held.carrier, carrier_service: held.carrier_service },
+      { id: held.id, label_cost_cents: 895, carrier: FALLBACK_CARRIER, carrier_service: FALLBACK_SERVICE },
       {
         label_id:        'test_fallback_label_' + held.id,
         label_url:       'https://example.com/fallback.pdf',
         tracking_number: 'STUB_FALLBACK_' + held.id,
         carrier:         null,
         carrier_service: null,
-      }
+      },
+      895  // labelCostCents
     );
 
-    assert(result.carrier != null, `carrier must not be null after finalize (should fall back to order carrier '${held.carrier}')`);
-    assertEqual(result.carrier, held.carrier, 'carrier must match the rate carrier stored at order creation');
+    assert(result.carrier != null, `carrier must not be null after finalize`);
+    assertEqual(result.carrier, FALLBACK_CARRIER, 'carrier must fall back to the order-stored value');
     assert(result.carrier_service != null, 'carrier_service must not be null after finalize');
-    assertEqual(result.carrier_service, held.carrier_service, 'carrier_service must match the rate carrier_service stored at order creation');
+    assertEqual(result.carrier_service, FALLBACK_SERVICE, 'carrier_service must fall back to the order-stored value');
   });
 
   // ── 19. seller sees shipping_address in GET /orders/:id ──────────────────
