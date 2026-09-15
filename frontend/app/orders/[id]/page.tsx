@@ -20,6 +20,7 @@ interface Order {
   listing_id: number; buyer_id: number; seller_id: number;
   item_price_cents: number | null;
   shipping_cents: number | null;
+  seller_payout_cents: number | null;
   label_cost_cents: number | null;
   label_id: string | null;
   label_url: string | null;
