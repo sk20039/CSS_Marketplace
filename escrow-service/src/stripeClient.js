@@ -247,14 +247,17 @@ class RealStripeClient {
   // Fetches once then caches; the value only changes when you reconfigure the
   // Stripe Dashboard, so a per-process cache is safe.
   async _getTaxCode() {
-    if (this._taxCode !== undefined) return this._taxCode;
+    // Only cache a real code — if null, re-fetch each call so that setting the
+    // Stripe Tax default in the Dashboard takes effect without a restart.
+    if (this._taxCode) return this._taxCode;
     try {
       const settings = await this._stripe.tax.settings.retrieve();
-      this._taxCode = settings.defaults && settings.defaults.tax_code ? settings.defaults.tax_code : null;
+      const code = settings.defaults && settings.defaults.tax_code ? settings.defaults.tax_code : null;
+      if (code) this._taxCode = code;
+      return code;
     } catch {
-      this._taxCode = null;
+      return null;
     }
-    return this._taxCode;
   }
 
   async createPaymentIntent({ amountCents, currency = 'usd', metadata = {} }) {
