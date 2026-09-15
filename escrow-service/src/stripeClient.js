@@ -239,6 +239,22 @@ class RealStripeClient {
     // Lazily require so the `stripe` package is only touched when actually used.
     const Stripe = require('stripe');
     this._stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' });
+    // Cached tax code from stripe.tax.settings — fetched once on first calculateTax call.
+    this._taxCode = undefined;
+  }
+
+  // Returns the account's default product tax code from Stripe Tax settings.
+  // Fetches once then caches; the value only changes when you reconfigure the
+  // Stripe Dashboard, so a per-process cache is safe.
+  async _getTaxCode() {
+    if (this._taxCode !== undefined) return this._taxCode;
+    try {
+      const settings = await this._stripe.tax.settings.retrieve();
+      this._taxCode = settings.defaults && settings.defaults.tax_code ? settings.defaults.tax_code : null;
+    } catch {
+      this._taxCode = null;
+    }
+    return this._taxCode;
   }
 
   async createPaymentIntent({ amountCents, currency = 'usd', metadata = {} }) {
@@ -294,9 +310,16 @@ class RealStripeClient {
   // ---- Stripe Tax methods ----
 
   // calculateTax: calls stripe.tax.calculations.create with the buyer's shipping address
-  // as the customer address. Tax code is determined by the account's Dashboard preset
-  // (no tax_code param on line items — the preset is the authoritative source).
+  // as the customer address. Tax code is read from the account's Stripe Tax settings
+  // (Dashboard > Tax > Settings > Default product tax code) — not hardcoded here.
   async calculateTax({ lineItems, shippingCents = 0, customerDetails }) {
+    const taxCode = await this._getTaxCode();
+    if (!taxCode) {
+      throw new Error(
+        'No default product tax code is configured. ' +
+        'Set one in the Stripe Dashboard under Tax > Settings > Default product tax code.'
+      );
+    }
     const addr = customerDetails.address;
     const params = {
       currency: 'usd',
@@ -304,6 +327,7 @@ class RealStripeClient {
         amount:    li.amount,
         reference: li.reference,
         quantity:  li.quantity || 1,
+        tax_code:  taxCode,
       })),
       customer_details: {
         address: {
