@@ -732,25 +732,13 @@ function OrderContent() {
       {/* Show the Actions card only when at least one action is available.
           Sellers with a platform label in HELD status have no manual actions
           (the carrier TRANSIT scan drives HELD→SHIPPED automatically). */}
-      {((isSeller && order.status === 'HELD' && !order.label_id) ||
-        (isSeller && order.status === 'SHIPPED') ||
+      {((isSeller && order.status === 'SHIPPED') ||
         (isBuyer && ['DELIVERED', 'HELD'].includes(order.status))) ? (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
           <div className="px-6 py-4 border-b border-gray-100">
             <p className="text-sm font-semibold text-gray-700">Actions</p>
           </div>
           <div className="px-6 py-4 flex flex-wrap gap-3">
-            {/* Mark as Shipped: only for non-label orders (legacy / non-Shippo flow).
-                Platform label orders transition via Shippo carrier webhook. */}
-            {isSeller && order.status === 'HELD' && !order.label_id && (
-              <ActionButton
-                onClick={() => act(() => shipOrder(id))}
-                disabled={acting}
-                color="amber"
-                icon="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8l1 12a2 2 0 002 2h8a2 2 0 002-2l1-12"
-                label="Mark as Shipped"
-              />
-            )}
             {isSeller && order.status === 'SHIPPED' && (
               <ActionButton
                 onClick={() => act(() => deliverOrder(id))}
