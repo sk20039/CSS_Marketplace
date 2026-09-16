@@ -258,7 +258,7 @@ async function driveToDelivered(priceCents) {
   // Without a label_id the seller can call /ship directly (same as fee.test.js).
   const shipped = await post(appServer, `/orders/${held.id}/ship`, sellerToken);
   if (shipped.status !== 200) throw new Error(`ship failed: ${JSON.stringify(shipped.body)}`);
-  const delivered = await post(appServer, `/orders/${held.id}/deliver`, sellerToken);
+  const delivered = await post(appServer, `/orders/${held.id}/deliver`, adminToken);
   if (delivered.status !== 200) throw new Error(`deliver failed`);
   return delivered.body;
 }
@@ -599,7 +599,7 @@ async function runTests() {
     const shipped = await post(appServer, `/orders/${order.id}/ship`, sellerToken);
     assertEqual(shipped.status, 200, `ship failed: ${JSON.stringify(shipped.body)}`);
 
-    const delivered = await post(appServer, `/orders/${order.id}/deliver`, sellerToken);
+    const delivered = await post(appServer, `/orders/${order.id}/deliver`, adminToken);
     assertEqual(delivered.status, 200);
 
     const confirmed = await post(appServer, `/orders/${order.id}/confirm`, buyerToken);

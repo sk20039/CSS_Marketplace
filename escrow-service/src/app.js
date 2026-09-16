@@ -502,9 +502,8 @@ function buildApp() {
 
   app.post('/orders/:id/deliver', requireAuth, async (req, res, next) => {
     try {
-      const order = await orderService.getOrderWithTimeline(req.params.id);
-      if (req.user.role !== 'admin' && String(req.user.id) !== String(order.seller_id)) {
-        throw new OrderError('Forbidden: only the seller can mark this order delivered', 403);
+      if (req.user.role !== 'admin') {
+        throw new OrderError('Forbidden: only admins can manually mark an order delivered', 403);
       }
       res.json(await orderService.deliverOrder(req.params.id));
     } catch (err) { next(err); }

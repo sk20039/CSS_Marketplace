@@ -220,7 +220,7 @@ async function releaseOrderWithPlatformLabel(app, orderId) {
 
   const deliverRes = await request(app)
     .post(`/orders/${orderId}/deliver`)
-    .set('Authorization', `Bearer ${sellerToken}`)
+    .set('Authorization', `Bearer ${adminToken}`)
     .send({});
   assert(deliverRes.status === 200, `deliver failed: ${JSON.stringify(deliverRes.body)}`);
 
@@ -430,7 +430,7 @@ async function releaseOrderWithPlatformLabel(app, orderId) {
     const transfersBefore = stripeClient._transfers ? stripeClient._transfers.length : 0;
 
     // Deliver and confirm.
-    await request(app).post(`/orders/${orderId}/deliver`).set('Authorization', `Bearer ${sellerToken}`).send({});
+    await request(app).post(`/orders/${orderId}/deliver`).set('Authorization', `Bearer ${adminToken}`).send({});
     const confirmRes = await request(app)
       .post(`/orders/${orderId}/confirm`)
       .set('Authorization', `Bearer ${buyerToken}`)
@@ -469,7 +469,7 @@ async function releaseOrderWithPlatformLabel(app, orderId) {
       .send({ carrier: 'FedEx', tracking_number: 'TESTFEDEX123456789' });
 
     // Deliver → confirm.
-    await request(app).post(`/orders/${orderId}/deliver`).set('Authorization', `Bearer ${sellerToken}`).send({});
+    await request(app).post(`/orders/${orderId}/deliver`).set('Authorization', `Bearer ${adminToken}`).send({});
     const confirmRes = await request(app)
       .post(`/orders/${orderId}/confirm`)
       .set('Authorization', `Bearer ${buyerToken}`)
@@ -507,7 +507,7 @@ async function releaseOrderWithPlatformLabel(app, orderId) {
     await request(app).post(`/orders/${orderId}/ship-own-label`)
       .set('Authorization', `Bearer ${sellerToken}`)
       .send({ carrier: 'UPS', tracking_number: 'TESTUPS9999999999' });
-    await request(app).post(`/orders/${orderId}/deliver`).set('Authorization', `Bearer ${sellerToken}`).send({});
+    await request(app).post(`/orders/${orderId}/deliver`).set('Authorization', `Bearer ${adminToken}`).send({});
     const confirmRes = await request(app)
       .post(`/orders/${orderId}/confirm`)
       .set('Authorization', `Bearer ${buyerToken}`)

@@ -232,7 +232,7 @@ async function driveToDelivered(priceCents) {
   // the seller can call /ship directly, which is the correct path for this helper.
   const shipped = await post(appServer, `/orders/${held.id}/ship`, sellerToken);
   if (shipped.status !== 200) throw new Error(`ship failed: ${JSON.stringify(shipped.body)}`);
-  const delivered = await post(appServer, `/orders/${held.id}/deliver`, sellerToken);
+  const delivered = await post(appServer, `/orders/${held.id}/deliver`, adminToken);
   if (delivered.status !== 200) throw new Error(`deliver failed`);
   return delivered.body;
 }

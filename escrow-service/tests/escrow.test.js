@@ -295,7 +295,7 @@ async function shipOrder(orderId) {
 }
 
 async function deliverOrder(orderId) {
-  const res = await post(appServer, `/orders/${orderId}/deliver`, sellerToken);
+  const res = await post(appServer, `/orders/${orderId}/deliver`, adminToken);
   assertEqual(res.status, 200, `deliverOrder failed: ${JSON.stringify(res.body)}`);
   return res.body;
 }
@@ -490,7 +490,14 @@ async function runShipDeliverTests() {
     assertEqual(res.status, 403, `expected 403, got ${res.status}`);
   });
 
-  await test('POST /orders/:id/deliver transitions SHIPPED → DELIVERED', async () => {
+  await test('POST /orders/:id/deliver returns 403 for seller (admin-only endpoint)', async () => {
+    const held = await driveToHeld();
+    await shipOrder(held.id);
+    const res = await post(appServer, `/orders/${held.id}/deliver`, sellerToken);
+    assertEqual(res.status, 403, `expected 403 for seller, got ${res.status}`);
+  });
+
+  await test('POST /orders/:id/deliver transitions SHIPPED → DELIVERED (admin)', async () => {
     const held = await driveToHeld();
     await shipOrder(held.id);
     const delivered = await deliverOrder(held.id);

@@ -732,22 +732,12 @@ function OrderContent() {
       {/* Show the Actions card only when at least one action is available.
           Sellers with a platform label in HELD status have no manual actions
           (the carrier TRANSIT scan drives HELD→SHIPPED automatically). */}
-      {((isSeller && order.status === 'SHIPPED') ||
-        (isBuyer && ['DELIVERED', 'HELD'].includes(order.status))) ? (
+      {(isBuyer && ['DELIVERED', 'HELD'].includes(order.status)) ? (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
           <div className="px-6 py-4 border-b border-gray-100">
             <p className="text-sm font-semibold text-gray-700">Actions</p>
           </div>
           <div className="px-6 py-4 flex flex-wrap gap-3">
-            {isSeller && order.status === 'SHIPPED' && (
-              <ActionButton
-                onClick={() => act(() => deliverOrder(id))}
-                disabled={acting}
-                color="orange"
-                icon="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"
-                label="Mark as Delivered"
-              />
-            )}
             {isBuyer && order.status === 'DELIVERED' && (
               <ActionButton
                 onClick={() => act(() => confirmOrder(id))}
