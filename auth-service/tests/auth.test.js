@@ -57,7 +57,7 @@ const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS users (
     id                BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name              TEXT        NOT NULL,
-    email             TEXT        NOT NULL UNIQUE,
+    email             TEXT        NOT NULL,
     password_hash     TEXT        NOT NULL,
     role              TEXT        NOT NULL DEFAULT 'buyer',
     stripe_account_id TEXT,
@@ -66,7 +66,12 @@ const SCHEMA_SQL = `
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT users_role_check CHECK (role IN ('buyer','seller','admin'))
   );
+  -- Plain lookup index kept for fast WHERE email = $1 queries (app always
+  -- passes a normalised lowercase value).
   CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+  -- Case-insensitive uniqueness: mirrors the DB state after migration
+  -- 1758067200000_email_lower_unique.
+  CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_key ON users (LOWER(email));
 
   CREATE TABLE IF NOT EXISTS refresh_tokens (
     id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -747,6 +752,73 @@ async function run() {
       .set('x-internal-secret', INTERNAL_SECRET);
     assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
     assert(res.body.has_ship_from_address === true, `expected true, got ${res.body.has_ship_from_address}`);
+  });
+
+  // ── Migration: DB-level case-insensitive email uniqueness ────────────────────
+  // Verifies requirements added by migration 1758067200000_email_lower_unique:
+  //   E. PostgreSQL itself rejects a case-variant INSERT (no app normalisation)
+  //   F. users_email_lower_key unique index exists on LOWER(email)
+  //   G. No duplicate users were created
+  console.log('\nMigration: DB-level case-insensitive email uniqueness');
+
+  await test('users_email_lower_key unique index exists on LOWER(email)', async () => {
+    const { rows } = await pool.query(`
+      SELECT indexname, indexdef
+      FROM pg_indexes
+      WHERE tablename = 'users' AND indexname = 'users_email_lower_key'
+    `);
+    assert(rows.length === 1, 'users_email_lower_key index must exist in pg_indexes');
+    const def = rows[0].indexdef.toLowerCase();
+    assert(def.includes('lower(email)'),
+      `Index must be defined on LOWER(email), got: ${rows[0].indexdef}`);
+    assert(def.includes('unique'),
+      `Index must be UNIQUE, got: ${rows[0].indexdef}`);
+  });
+
+  await test('users_email_key (case-sensitive constraint) no longer exists', async () => {
+    const { rows } = await pool.query(`
+      SELECT indexname FROM pg_indexes
+      WHERE tablename = 'users' AND indexname = 'users_email_key'
+    `);
+    assert(rows.length === 0,
+      'users_email_key must have been dropped by the migration');
+  });
+
+  await test('PostgreSQL rejects case-variant INSERT even without application normalisation', async () => {
+    const base = `dbcase-${Date.now()}@example.com`;
+    // Insert lowercase directly — must succeed
+    await pool.query(
+      `INSERT INTO users (name, email, password_hash, role, email_verified)
+       VALUES ('DBTest', $1, 'x', 'buyer', false)`,
+      [base]
+    );
+    // Insert mixed-case variant directly — must fail with unique_violation (23505)
+    let threw = false;
+    let errCode;
+    try {
+      await pool.query(
+        `INSERT INTO users (name, email, password_hash, role, email_verified)
+         VALUES ('DBTest2', $1, 'x', 'buyer', false)`,
+        [base.toUpperCase()]
+      );
+    } catch (err) {
+      threw = true;
+      errCode = err.code;
+    }
+    assert(threw, 'INSERT of case-variant email must throw');
+    assert(errCode === '23505',
+      `Expected unique_violation 23505, got ${errCode}`);
+  });
+
+  await test('no case-insensitive duplicate users exist', async () => {
+    const { rows } = await pool.query(`
+      SELECT LOWER(email) AS normalized, COUNT(*) AS cnt
+      FROM users
+      GROUP BY LOWER(email)
+      HAVING COUNT(*) > 1
+    `);
+    assert(rows.length === 0,
+      `Found case-insensitive duplicate email groups: ${JSON.stringify(rows)}`);
   });
 
   // ── Email normalization — case insensitivity and whitespace ─────────────────
