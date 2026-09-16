@@ -167,6 +167,10 @@ function NewListingForm() {
       } else {
         // Listing was already created via "Get SEO Suggestions" — patch with latest title/description
         await patchListing(id, { title, description });
+        // Upload any photos selected after the SEO step (silently skipped before this fix).
+        for (const file of photos.slice(0, 5)) {
+          await uploadPhoto(id, file);
+        }
       }
       // Sync to escrow and redirect
       await syncListingToEscrow({
