@@ -143,7 +143,8 @@ async function findAndDeleteRefreshToken(raw) {
 // POST /auth/register
 router.post('/register', async (req, res, next) => {
   try {
-    const { name, email, password, role } = req.body;
+    const { name, password, role } = req.body;
+    const email = String(req.body.email ?? '').trim().toLowerCase();
     if (!name || !email || !password) {
       return res.status(400).json({ error: 'name, email, and password are required' });
     }
@@ -212,7 +213,8 @@ router.get('/verify-email', async (req, res, next) => {
 // POST /auth/login
 router.post('/login', async (req, res, next) => {
   try {
-    const { email, password } = req.body;
+    const { password } = req.body;
+    const email = String(req.body.email ?? '').trim().toLowerCase();
     if (!email || !password) return res.status(400).json({ error: 'email and password are required' });
 
     const { rows } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
@@ -375,7 +377,7 @@ router.get('/sellers/connect/status', requireAuth, async (req, res, next) => {
 // POST /auth/forgot-password
 router.post('/forgot-password', async (req, res, next) => {
   try {
-    const { email } = req.body;
+    const email = String(req.body.email ?? '').trim().toLowerCase();
     if (!email) return res.status(400).json({ error: 'email is required' });
 
     // Always return the same message regardless of whether the email exists
@@ -444,7 +446,7 @@ router.post('/reset-password', async (req, res, next) => {
 // POST /auth/resend-verification
 router.post('/resend-verification', async (req, res, next) => {
   try {
-    const { email } = req.body;
+    const email = String(req.body.email ?? '').trim().toLowerCase();
     if (!email) return res.status(400).json({ error: 'email is required' });
 
     // Always return generic response to prevent account enumeration.

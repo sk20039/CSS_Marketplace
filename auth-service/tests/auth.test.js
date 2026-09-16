@@ -749,6 +749,81 @@ async function run() {
     assert(res.body.has_ship_from_address === true, `expected true, got ${res.body.has_ship_from_address}`);
   });
 
+  // ── Email normalization — case insensitivity and whitespace ─────────────────
+  // Covers the production bug: Salmankhan20039@gmail.com failed to match
+  // salmankhan20039@gmail.com because lookups were case-sensitive.
+  // Rate-limit accounting (all limits are per in-memory app instance, reset each run):
+  //   loginLimiter:              uses 2 of the 2 remaining slots (total 10/10)
+  //   registerLimiter:           uses 1 of the 1 remaining slot  (total 5/5)
+  //   forgotPasswordLimiter:     uses 1 of 5 available slots     (total 1/5)
+  //   resendVerificationLimiter: uses 1 of the 1 remaining slot  (total 5/5)
+  console.log('\nEmail normalization — case insensitivity and whitespace');
+
+  await test('login: uppercase first letter (Salmankhan20039 pattern) resolves to lowercase account', async () => {
+    // Mirror the exact production scenario: account stored as lowercase,
+    // user types with an uppercase first letter.
+    await insertTestUser('salmankhan20039@test.invalid', true);
+    const res = await request(app)
+      .post('/auth/login')
+      .send({ email: 'Salmankhan20039@test.invalid', password: 'TestPass1!' });
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.access_token, 'should return access_token');
+    assert(res.body.user.email === 'salmankhan20039@test.invalid',
+      `response email should be the stored lowercase value, got ${res.body.user.email}`);
+  });
+
+  await test('login: mixed-case + surrounding whitespace resolves to existing account', async () => {
+    const res = await request(app)
+      .post('/auth/login')
+      .send({ email: '  BUYER@CRICKET.TEST  ', password: 'Buyer1234!' });
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.access_token, 'should return access_token');
+    assert(res.body.user.email === 'buyer@cricket.test',
+      `response email should be stored lowercase value, got ${res.body.user.email}`);
+  });
+
+  await test('register: mixed-case email stored as lowercase in DB and response', async () => {
+    const unique = `testnorm-${Date.now()}`;
+    const mixedEmail = `${unique.toUpperCase()}@EXAMPLE.COM`;
+    const expectedLower = `${unique}@example.com`;
+    const res = await request(app)
+      .post('/auth/register')
+      .send({ name: 'Norm Test', email: mixedEmail, password: 'NormPass1!' });
+    assert(res.status === 201, `expected 201, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.user.email === expectedLower,
+      `response email should be lowercase, got ${res.body.user.email}`);
+    const { rows } = await pool.query('SELECT email FROM users WHERE id = $1', [res.body.user.id]);
+    assert(rows[0].email === expectedLower,
+      `DB email should be lowercase, got ${rows[0].email}`);
+  });
+
+  await test('forgot-password: mixed-case email finds account and creates reset token', async () => {
+    const { rows: [buyer] } = await pool.query("SELECT id FROM users WHERE email = 'buyer@cricket.test'");
+    await pool.query('DELETE FROM password_reset_tokens WHERE user_id = $1', [buyer.id]);
+    const res = await request(app)
+      .post('/auth/forgot-password')
+      .send({ email: 'BUYER@Cricket.TEST' });
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    const { rows: tokens } = await pool.query(
+      'SELECT id, expires_at FROM password_reset_tokens WHERE user_id = $1', [buyer.id]
+    );
+    assert(tokens.length === 1, `expected 1 reset token, got ${tokens.length}`);
+    assert(new Date(tokens[0].expires_at) > new Date(), 'reset token must have a future expiry');
+  });
+
+  await test('resend-verification: mixed-case email finds unverified account and issues token', async () => {
+    const normResendEmail = `norm-resend-${Date.now()}@test.invalid`;
+    const normResendUser = await insertTestUser(normResendEmail, false); // unverified
+    const res = await request(app)
+      .post('/auth/resend-verification')
+      .send({ email: normResendEmail.toUpperCase() });
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    const { rows: tokens } = await pool.query(
+      'SELECT id FROM email_verification_tokens WHERE user_id = $1', [normResendUser.id]
+    );
+    assert(tokens.length === 1, `expected 1 verification token, got ${tokens.length}`);
+  });
+
   // Teardown
   await pool.end();
 
