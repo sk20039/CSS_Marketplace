@@ -100,15 +100,12 @@ function NewListingForm() {
     }
   }, [seoAudit]);
 
-  async function createAndUpload(): Promise<number | null> {
+  async function createListingRecord(): Promise<number | null> {
+    if (createdListingId !== null) return createdListingId;
+
     const price = parseFloat(priceStr);
     if (isNaN(price) || price < 10) { setError('Minimum listing price is $10.00'); return null; }
     const price_cents = Math.round(price * 100);
-
-    if (createdListingId !== null) {
-      // Already created and photos already uploaded — skip to avoid duplicates
-      return createdListingId;
-    }
 
     const res = await createListing({
       title, description, price_cents, category, condition,
@@ -121,10 +118,6 @@ function NewListingForm() {
     if (!res.ok) { setError(data.error || 'Failed to create listing'); return null; }
     const id: number = data.id;
     setCreatedListingId(id);
-
-    for (const file of photos.slice(0, 5)) {
-      await uploadPhoto(id, file);
-    }
     return id;
   }
 
@@ -132,7 +125,7 @@ function NewListingForm() {
     setError('');
     setSeoLoading(true);
     try {
-      const id = await createAndUpload();
+      const id = await createListingRecord();
       if (id === null) return;
       const audit = await auditListing(id);
       setSeoAudit(audit);
@@ -160,17 +153,26 @@ function NewListingForm() {
     try {
       let id = createdListingId;
       if (id === null) {
-        // Normal flow: create then upload
-        const newId = await createAndUpload();
+        // Normal flow: create listing record
+        const newId = await createListingRecord();
         if (newId === null) return;
         id = newId;
       } else {
         // Listing was already created via "Get SEO Suggestions" — patch with latest title/description
         await patchListing(id, { title, description });
-        // Upload any photos selected after the SEO step (silently skipped before this fix).
-        for (const file of photos.slice(0, 5)) {
-          await uploadPhoto(id, file);
-        }
+      }
+      // Upload photos — always here, never in createListingRecord, so no photo is uploaded twice
+      const failedNames: string[] = [];
+      for (const file of photos.slice(0, 5)) {
+        const photoRes = await uploadPhoto(id, file);
+        if (!photoRes.ok) failedNames.push(file.name);
+      }
+      if (failedNames.length > 0) {
+        setError(
+          `${failedNames.length} photo${failedNames.length > 1 ? 's' : ''} failed to upload: ` +
+          `${failedNames.join(', ')}. Remove the failed photo${failedNames.length > 1 ? 's' : ''} and publish again.`
+        );
+        return;
       }
       // Sync to escrow and redirect
       await syncListingToEscrow({

@@ -10,7 +10,7 @@ export async function fetchListingServer(id: string | number): Promise<any> {
 
   try {
     const res = await fetch(`${base}/listings/${id}`, {
-      next: { revalidate: 60 }, // ISR: revalidate at most once per minute
+      cache: 'no-store', // always fetch fresh — listing detail must show current photos immediately after publish
     });
     if (!res.ok) return null;
     return res.json();
