@@ -45,10 +45,22 @@ export default function LoginPage() {
     try {
       const res = await authLogin({ email, password, turnstile_token: turnstileToken });
       const data = await res.json();
+
+      // MFA-enabled user: redirect to TOTP verify page.
+      if (res.status === 202 && data.mfa_required) {
+        router.push(`/login/mfa?token=${encodeURIComponent(data.mfa_token)}`);
+        return;
+      }
+
       if (!res.ok) {
         turnstileRef.current?.reset();
         setTurnstileToken(null);
-        if (res.status === 403) {
+        // Admin forced to set up MFA before accessing the platform.
+        if (res.status === 403 && data.code === 'MFA_ENROLLMENT_REQUIRED') {
+          router.push(`/settings/security/enroll?token=${encodeURIComponent(data.mfa_enrollment_token)}`);
+          return;
+        }
+        if (res.status === 403 && !data.code) {
           setUnverifiedEmail(email);
         }
         setError(data.error || 'Login failed');

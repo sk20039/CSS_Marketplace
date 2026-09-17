@@ -4,7 +4,10 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const pool = require('./db');
 const requireAuth = require('./middleware/requireAuth');
-const { sendVerificationEmail, sendPasswordResetEmail } = require('./emailer');
+const { sendVerificationEmail, sendPasswordResetEmail, sendMfaRecoveryCodeUsedEmail } = require('./emailer');
+const { authenticator } = require('otplib');
+const { encryptSecret, decryptSecret, generateRecoveryCodes, hashRecoveryCode, verifyRecoveryCode } = require('./mfaHelpers');
+const requireAuthOrMfaEnrollment = require('./middleware/requireAuthOrMfaEnrollment');
 
 const router = express.Router();
 
@@ -84,7 +87,13 @@ function adminJwtSecret() {
 function issueAccessToken(user) {
   const secret = user.role === 'admin' ? adminJwtSecret() : jwtSecret();
   return jwt.sign(
-    { sub: user.id, email: user.email, role: user.role, has_ship_from_address: !!user.ship_from_address },
+    {
+      sub: user.id,
+      email: user.email,
+      role: user.role,
+      has_ship_from_address: !!user.ship_from_address,
+      jti: crypto.randomBytes(8).toString('hex'),
+    },
     secret,
     { expiresIn: ACCESS_EXPIRES }
   );
@@ -122,6 +131,32 @@ async function storeRefreshToken(userId) {
     [userId, hash, sha256, expiresAt]
   );
   return raw;
+}
+
+function issueMfaPendingToken(user) {
+  return jwt.sign(
+    { sub: user.id, email: user.email, role: user.role, mfa_pending: true },
+    jwtSecret(),
+    { expiresIn: '10m' }
+  );
+}
+
+function issueMfaEnrollmentToken(user) {
+  return jwt.sign(
+    { sub: user.id, email: user.email, role: user.role, mfa_enrollment: true },
+    adminJwtSecret(),
+    { expiresIn: '30m' }
+  );
+}
+
+function verifyMfaToken(token) {
+  try {
+    const payload = jwt.verify(token, jwtSecret());
+    if (!payload.mfa_pending) return null;
+    return payload;
+  } catch {
+    return null;
+  }
 }
 
 async function findAndDeleteRefreshToken(raw) {
@@ -226,6 +261,21 @@ router.post('/login', async (req, res, next) => {
       return res.status(403).json({ error: 'Please verify your email address before signing in. Check your inbox for the verification link.' });
     }
 
+    // Admin without MFA enrolled: block access until they set up an authenticator.
+    if (user.role === 'admin' && !user.mfa_enabled) {
+      const enrollmentToken = issueMfaEnrollmentToken(user);
+      return res.status(403).json({
+        error: 'Multi-factor authentication is required for admin accounts. Please set up an authenticator app.',
+        code: 'MFA_ENROLLMENT_REQUIRED',
+        mfa_enrollment_token: enrollmentToken,
+      });
+    }
+
+    // MFA-enabled users: issue a short-lived pending token; full tokens after TOTP verify.
+    if (user.mfa_enabled) {
+      return res.status(202).json({ mfa_required: true, mfa_token: issueMfaPendingToken(user) });
+    }
+
     const raw = await storeRefreshToken(user.id);
     setRefreshCookie(res, raw);
     res.json({
@@ -278,7 +328,7 @@ router.post('/refresh', async (req, res, next) => {
 router.get('/me', requireAuth, async (req, res, next) => {
   try {
     const { rows } = await pool.query(
-      'SELECT id, name, email, role, stripe_account_id, ship_from_address, created_at FROM users WHERE id = $1',
+      'SELECT id, name, email, role, stripe_account_id, ship_from_address, mfa_enabled, created_at FROM users WHERE id = $1',
       [req.user.id]
     );
     if (!rows[0]) return res.status(404).json({ error: 'User not found' });
@@ -530,6 +580,210 @@ router.get('/internal/seller/:id/has-ship-from', requireInternalSecret, async (r
     );
     if (!rows[0]) return res.status(404).json({ error: 'User not found' });
     res.json({ has_ship_from_address: !!rows[0].ship_from_address });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── MFA — TOTP multi-factor authentication ──────────────────────────────────
+
+// GET /auth/mfa/status
+router.get('/mfa/status', requireAuth, async (req, res, next) => {
+  try {
+    const { rows } = await pool.query('SELECT mfa_enabled FROM users WHERE id = $1', [req.user.id]);
+    if (!rows[0]) return res.status(404).json({ error: 'User not found' });
+    res.json({ mfa_enabled: rows[0].mfa_enabled });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /auth/mfa/enroll/start
+// Generates a new TOTP secret and 8 recovery codes, stores them (unconfirmed).
+// Returns the TOTP QR URI and plaintext recovery codes for display once.
+// Accepts a normal access token OR an mfa_enrollment token (admin forced enrollment).
+router.post('/mfa/enroll/start', requireAuthOrMfaEnrollment, async (req, res, next) => {
+  try {
+    const secret = authenticator.generateSecret();
+    const encryptedSecret = encryptSecret(secret);
+
+    const codes = generateRecoveryCodes();
+    const hashes = await Promise.all(codes.map(hashRecoveryCode));
+
+    await pool.query('UPDATE users SET mfa_totp_secret = $1 WHERE id = $2', [encryptedSecret, req.user.id]);
+
+    // Replace any existing recovery codes (re-enrollment or re-start).
+    await pool.query('DELETE FROM mfa_recovery_codes WHERE user_id = $1', [req.user.id]);
+    for (const hash of hashes) {
+      await pool.query('INSERT INTO mfa_recovery_codes (user_id, code_hash) VALUES ($1, $2)', [req.user.id, hash]);
+    }
+
+    const { rows } = await pool.query('SELECT email FROM users WHERE id = $1', [req.user.id]);
+    const email = rows[0]?.email || req.user.email;
+    const totp_uri = authenticator.keyuri(email, 'CricketMarket', secret);
+
+    res.json({ totp_uri, recovery_codes: codes });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /auth/mfa/enroll/confirm
+// Verifies a TOTP code against the stored (unconfirmed) secret and sets mfa_enabled=true.
+// Admin forced enrollment: also issues full tokens in the response.
+router.post('/mfa/enroll/confirm', requireAuthOrMfaEnrollment, async (req, res, next) => {
+  try {
+    const { code } = req.body;
+    if (!code) return res.status(400).json({ error: 'code is required' });
+
+    const { rows } = await pool.query(
+      'SELECT id, name, email, role, ship_from_address, mfa_totp_secret FROM users WHERE id = $1',
+      [req.user.id]
+    );
+    const user = rows[0];
+    if (!user || !user.mfa_totp_secret) {
+      return res.status(400).json({ error: 'MFA enrollment not started. Call /auth/mfa/enroll/start first.' });
+    }
+
+    const secret = decryptSecret(user.mfa_totp_secret);
+    if (!authenticator.check(String(code), secret)) {
+      return res.status(422).json({ error: 'Invalid authenticator code. Please try again.' });
+    }
+
+    await pool.query('UPDATE users SET mfa_enabled = true WHERE id = $1', [user.id]);
+
+    // Admin forced enrollment: issue full tokens immediately after confirmation.
+    if (req.mfaEnrollment) {
+      const { rows: updatedRows } = await pool.query(
+        'SELECT id, name, email, role, ship_from_address FROM users WHERE id = $1',
+        [user.id]
+      );
+      const updatedUser = updatedRows[0];
+      const raw = await storeRefreshToken(updatedUser.id);
+      setRefreshCookie(res, raw);
+      return res.json({
+        ok: true,
+        access_token: issueAccessToken(updatedUser),
+        user: { id: updatedUser.id, name: updatedUser.name, email: updatedUser.email, role: updatedUser.role },
+      });
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /auth/mfa/verify
+// Accepts an mfa_pending token + TOTP code; issues full tokens on success.
+router.post('/mfa/verify', async (req, res, next) => {
+  try {
+    const { mfa_token, code } = req.body;
+    if (!mfa_token || !code) return res.status(400).json({ error: 'mfa_token and code are required' });
+
+    const payload = verifyMfaToken(mfa_token);
+    if (!payload) return res.status(401).json({ error: 'Invalid or expired MFA token' });
+
+    const { rows } = await pool.query(
+      'SELECT id, name, email, role, ship_from_address, mfa_totp_secret FROM users WHERE id = $1',
+      [payload.sub]
+    );
+    const user = rows[0];
+    if (!user || !user.mfa_totp_secret) {
+      return res.status(401).json({ error: 'MFA not configured for this account' });
+    }
+
+    const secret = decryptSecret(user.mfa_totp_secret);
+    if (!authenticator.check(String(code), secret)) {
+      return res.status(422).json({ error: 'Invalid authenticator code' });
+    }
+
+    const raw = await storeRefreshToken(user.id);
+    setRefreshCookie(res, raw);
+    res.json({
+      access_token: issueAccessToken(user),
+      user: { id: user.id, name: user.name, email: user.email, role: user.role },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /auth/mfa/verify-recovery
+// Accepts an mfa_pending token + recovery code; issues full tokens on success.
+// Recovery codes are single-use; the used code is marked and the user is notified.
+router.post('/mfa/verify-recovery', async (req, res, next) => {
+  try {
+    const { mfa_token, recovery_code } = req.body;
+    if (!mfa_token || !recovery_code) {
+      return res.status(400).json({ error: 'mfa_token and recovery_code are required' });
+    }
+
+    const payload = verifyMfaToken(mfa_token);
+    if (!payload) return res.status(401).json({ error: 'Invalid or expired MFA token' });
+
+    const { rows: codeRows } = await pool.query(
+      'SELECT id, code_hash FROM mfa_recovery_codes WHERE user_id = $1 AND used_at IS NULL',
+      [payload.sub]
+    );
+
+    let matchedRow = null;
+    for (const row of codeRows) {
+      if (await verifyRecoveryCode(String(recovery_code), row.code_hash)) {
+        matchedRow = row;
+        break;
+      }
+    }
+    if (!matchedRow) {
+      return res.status(401).json({ error: 'Invalid or already-used recovery code' });
+    }
+
+    await pool.query('UPDATE mfa_recovery_codes SET used_at = NOW() WHERE id = $1', [matchedRow.id]);
+
+    const { rows } = await pool.query(
+      'SELECT id, name, email, role, ship_from_address FROM users WHERE id = $1',
+      [payload.sub]
+    );
+    const user = rows[0];
+
+    sendMfaRecoveryCodeUsedEmail(user.email).catch(() => {});
+
+    const raw = await storeRefreshToken(user.id);
+    setRefreshCookie(res, raw);
+    res.json({
+      access_token: issueAccessToken(user),
+      user: { id: user.id, name: user.name, email: user.email, role: user.role },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /auth/mfa/disable
+// Verifies a live TOTP code then disables MFA and removes all recovery codes.
+router.post('/mfa/disable', requireAuth, async (req, res, next) => {
+  try {
+    const { code } = req.body;
+    if (!code) return res.status(400).json({ error: 'code is required' });
+
+    const { rows } = await pool.query(
+      'SELECT mfa_enabled, mfa_totp_secret FROM users WHERE id = $1',
+      [req.user.id]
+    );
+    const user = rows[0];
+    if (!user || !user.mfa_enabled) {
+      return res.status(400).json({ error: 'MFA is not enabled for this account' });
+    }
+
+    const secret = decryptSecret(user.mfa_totp_secret);
+    if (!authenticator.check(String(code), secret)) {
+      return res.status(422).json({ error: 'Invalid authenticator code' });
+    }
+
+    await pool.query('UPDATE users SET mfa_enabled = false, mfa_totp_secret = NULL WHERE id = $1', [req.user.id]);
+    await pool.query('DELETE FROM mfa_recovery_codes WHERE user_id = $1', [req.user.id]);
+
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }

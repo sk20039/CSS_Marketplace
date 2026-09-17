@@ -92,6 +92,9 @@ function validateProductionEnv(env) {
   need('RESEND_API_KEY');
   need('EMAIL_FROM');
 
+  // TOTP MFA — secret encryption key.
+  needMinLen('TOTP_ENCRYPTION_KEY', MIN_SECRET_LENGTH);
+
   // Cloudflare Turnstile — CAPTCHA protection for public auth endpoints.
   need('TURNSTILE_SECRET_KEY');
   need('TURNSTILE_ALLOWED_HOSTNAME');

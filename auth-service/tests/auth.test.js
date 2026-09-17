@@ -22,6 +22,7 @@ process.env.TURNSTILE_ALLOWED_HOSTNAME = 'localhost';
 delete process.env.STRIPE_SECRET_KEY;
 delete process.env.STRIPE_WEBHOOK_SECRET;
 delete process.env.ADMIN_JWT_SECRET;
+process.env.TOTP_ENCRYPTION_KEY = 'test-totp-encryption-key-32-chars-ok!';
 
 const request = require('supertest');
 const { Pool } = require('pg');
@@ -29,6 +30,8 @@ const jwt = require('jsonwebtoken');
 const { buildApp } = require('../src/app');
 const crypto = require('crypto');
 const bcryptjs = require('bcryptjs');
+const { authenticator } = require('otplib');
+const { encryptSecret } = require('../src/mfaHelpers');
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const app = buildApp();
@@ -148,6 +151,22 @@ async function run() {
   // Setup: apply schema and seed demo users
   await pool.query('TRUNCATE TABLE password_reset_tokens, email_verification_tokens, refresh_tokens, users RESTART IDENTITY CASCADE');
   await pool.query(SCHEMA_SQL);
+  // MFA schema — added after initial schema (uses ADD COLUMN IF NOT EXISTS / CREATE TABLE IF NOT EXISTS)
+  await pool.query(`
+    ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS mfa_enabled     BOOLEAN NOT NULL DEFAULT false,
+      ADD COLUMN IF NOT EXISTS mfa_totp_secret TEXT;
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mfa_recovery_codes (
+      id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      user_id    BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      code_hash  TEXT        NOT NULL,
+      used_at    TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_mfa_recovery_codes_user ON mfa_recovery_codes(user_id);
+  `);
   const client = await pool.connect();
   let seeded;
   try {
@@ -366,13 +385,20 @@ async function run() {
     sellerRefreshCookie = res.headers['set-cookie'];
   });
 
-  await test('seeded admin (admin@cricket.test) can log in', async () => {
+  await test('seeded admin (admin@cricket.test) without MFA returns 403 MFA_ENROLLMENT_REQUIRED', async () => {
+    // Admin accounts require MFA. Login returns 403 + enrollment token when MFA is not set up.
     const res = await request(app).post('/auth/login')
       .send({ email: 'admin@cricket.test', password: 'Admin1234!', turnstile_token: 'test-token' });
-    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
-    assert(res.body.access_token, 'should return access_token');
-    assert(res.body.user.role === 'admin', `expected admin, got ${res.body.user.role}`);
-    adminToken = res.body.access_token;
+    assert(res.status === 403, `expected 403, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.code === 'MFA_ENROLLMENT_REQUIRED', `expected MFA_ENROLLMENT_REQUIRED, got ${res.body.code}`);
+    assert(typeof res.body.mfa_enrollment_token === 'string', 'mfa_enrollment_token must be present');
+    // Derive adminToken directly for subsequent authorization tests (no login needed).
+    const { rows } = await pool.query("SELECT id, email, role FROM users WHERE email = 'admin@cricket.test'");
+    const adminUser = rows[0];
+    adminToken = jwt.sign(
+      { sub: adminUser.id, email: adminUser.email, role: adminUser.role, jti: 'test-admin' },
+      process.env.JWT_SECRET
+    );
   });
 
   // ── GET /auth/me — authorization ─────────────────────────────────────────
@@ -406,7 +432,7 @@ async function run() {
   });
 
   await test('admin authorization — returns role=admin and correct email', async () => {
-    assert(adminToken, 'adminToken must be set from login test');
+    assert(adminToken, 'adminToken must be set');
     const res = await request(app).get('/auth/me').set('Authorization', `Bearer ${adminToken}`);
     assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
     assert(res.body.role === 'admin', `expected admin, got ${res.body.role}`);
@@ -914,6 +940,374 @@ async function run() {
       .post('/auth/forgot-password')
       .send({ email: 'buyer@cricket.test', turnstile_token: 'test-token' });
     assert(res.status === 200, `expected 200, got ${res.status}`);
+  });
+
+  // ── MFA — TOTP multi-factor authentication ────────────────────────────────
+  // All login calls in this section use X-Forwarded-For to get a fresh rate-
+  // limiter bucket (trust proxy: 1 honours the header for req.ip keying).
+  console.log('\nMFA — TOTP multi-factor authentication');
+
+  // Helper: create a verified user directly in DB and return id + signed token.
+  async function mfaUser(opts = {}) {
+    const email = `mfa-${Date.now()}-${crypto.randomBytes(4).toString('hex')}@test.invalid`;
+    const hash = await bcryptjs.hash('MfaPass1!', 4);
+    const { rows } = await pool.query(
+      `INSERT INTO users (name, email, password_hash, role, email_verified, mfa_enabled, mfa_totp_secret)
+       VALUES ($1, $2, $3, $4, true, $5, $6) RETURNING id, email, role`,
+      [
+        opts.name || 'MFA User',
+        email,
+        hash,
+        opts.role || 'buyer',
+        opts.mfa_enabled || false,
+        opts.mfa_totp_secret || null,
+      ]
+    );
+    const user = rows[0];
+    const token = jwt.sign(
+      { sub: user.id, email: user.email, role: user.role },
+      process.env.JWT_SECRET
+    );
+    return { user, token };
+  }
+
+  // ── requireAuth guards ────────────────────────────────────────────────────
+
+  await test('requireAuth: rejects mfa_pending token', async () => {
+    const pendingToken = jwt.sign(
+      { sub: 999, email: 'x@test.invalid', role: 'buyer', mfa_pending: true },
+      process.env.JWT_SECRET
+    );
+    const res = await request(app).get('/auth/me').set('Authorization', `Bearer ${pendingToken}`);
+    assert(res.status === 401, `expected 401, got ${res.status}`);
+  });
+
+  await test('requireAuth: rejects mfa_enrollment token', async () => {
+    const enrollToken = jwt.sign(
+      { sub: 999, email: 'x@test.invalid', role: 'admin', mfa_enrollment: true },
+      process.env.JWT_SECRET
+    );
+    const res = await request(app).get('/auth/me').set('Authorization', `Bearer ${enrollToken}`);
+    assert(res.status === 401, `expected 401, got ${res.status}`);
+  });
+
+  // ── GET /auth/mfa/status ─────────────────────────────────────────────────
+
+  await test('GET /auth/mfa/status — 401 without auth', async () => {
+    const res = await request(app).get('/auth/mfa/status');
+    assert(res.status === 401, `expected 401, got ${res.status}`);
+  });
+
+  await test('GET /auth/mfa/status — 200 returns mfa_enabled=false', async () => {
+    const { token } = await mfaUser();
+    const res = await request(app).get('/auth/mfa/status').set('Authorization', `Bearer ${token}`);
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.mfa_enabled === false, `expected false, got ${res.body.mfa_enabled}`);
+  });
+
+  // ── POST /auth/mfa/enroll/start ──────────────────────────────────────────
+
+  await test('POST /auth/mfa/enroll/start — 401 without Authorization', async () => {
+    const res = await request(app).post('/auth/mfa/enroll/start');
+    assert(res.status === 401, `expected 401, got ${res.status}`);
+  });
+
+  await test('POST /auth/mfa/enroll/start — 401 with mfa_pending token', async () => {
+    const pendingToken = jwt.sign(
+      { sub: 999, email: 'x@test.invalid', role: 'buyer', mfa_pending: true },
+      process.env.JWT_SECRET
+    );
+    const res = await request(app).post('/auth/mfa/enroll/start').set('Authorization', `Bearer ${pendingToken}`);
+    assert(res.status === 401, `expected 401, got ${res.status}`);
+  });
+
+  let enrollToken;
+  let mfaSecret;
+  let enrollUserId;
+
+  await test('POST /auth/mfa/enroll/start — 200 returns totp_uri and recovery_codes', async () => {
+    const { user, token } = await mfaUser();
+    enrollToken = token;
+    enrollUserId = user.id;
+    const res = await request(app).post('/auth/mfa/enroll/start').set('Authorization', `Bearer ${token}`);
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(typeof res.body.totp_uri === 'string' && res.body.totp_uri.startsWith('otpauth://'),
+      `totp_uri must be an otpauth URI, got: ${res.body.totp_uri}`);
+    assert(Array.isArray(res.body.recovery_codes) && res.body.recovery_codes.length === 8,
+      `expected 8 recovery_codes, got ${res.body.recovery_codes?.length}`);
+    // Extract secret from totp_uri for downstream tests
+    const url = new URL(res.body.totp_uri);
+    mfaSecret = url.searchParams.get('secret');
+    assert(mfaSecret, 'secret must be present in totp_uri query params');
+  });
+
+  // ── POST /auth/mfa/enroll/confirm ────────────────────────────────────────
+
+  await test('POST /auth/mfa/enroll/confirm — 422 for wrong TOTP code', async () => {
+    const res = await request(app)
+      .post('/auth/mfa/enroll/confirm')
+      .set('Authorization', `Bearer ${enrollToken}`)
+      .send({ code: '000000' });
+    assert(res.status === 422, `expected 422, got ${res.status}: ${JSON.stringify(res.body)}`);
+  });
+
+  await test('POST /auth/mfa/enroll/confirm — 400 if enroll/start not called', async () => {
+    const { token } = await mfaUser();
+    const res = await request(app)
+      .post('/auth/mfa/enroll/confirm')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ code: '123456' });
+    assert(res.status === 400, `expected 400, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.error && res.body.error.includes('start'), `expected 'start' hint in error: ${res.body.error}`);
+  });
+
+  await test('POST /auth/mfa/enroll/confirm — 200 valid code sets mfa_enabled=true', async () => {
+    assert(mfaSecret, 'mfaSecret must be set from enroll/start test');
+    const code = authenticator.generate(mfaSecret);
+    const res = await request(app)
+      .post('/auth/mfa/enroll/confirm')
+      .set('Authorization', `Bearer ${enrollToken}`)
+      .send({ code });
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.ok === true, 'ok must be true');
+    assert(!res.body.access_token, 'no access_token expected for non-admin enrollment');
+    // Verify DB state
+    const { rows } = await pool.query('SELECT mfa_enabled FROM users WHERE id = $1', [enrollUserId]);
+    assert(rows[0].mfa_enabled === true, 'mfa_enabled must be true in DB');
+  });
+
+  // ── Admin forced enrollment via mfa_enrollment token ────────────────────
+
+  await test('POST /auth/mfa/enroll/confirm — admin forced enrollment returns access_token', async () => {
+    // Create admin user, do start with enrollment token, confirm → expect full tokens
+    const { user } = await mfaUser({ role: 'admin', name: 'Force-Enroll Admin' });
+    const enrollmentToken = jwt.sign(
+      { sub: user.id, email: user.email, role: user.role, mfa_enrollment: true },
+      process.env.JWT_SECRET
+    );
+    // Start
+    const startRes = await request(app)
+      .post('/auth/mfa/enroll/start')
+      .set('Authorization', `Bearer ${enrollmentToken}`);
+    assert(startRes.status === 200, `enroll/start: expected 200, got ${startRes.status}`);
+    const url = new URL(startRes.body.totp_uri);
+    const secret = url.searchParams.get('secret');
+
+    // Confirm
+    const code = authenticator.generate(secret);
+    const confirmRes = await request(app)
+      .post('/auth/mfa/enroll/confirm')
+      .set('Authorization', `Bearer ${enrollmentToken}`)
+      .send({ code });
+    assert(confirmRes.status === 200, `enroll/confirm: expected 200, got ${confirmRes.status}: ${JSON.stringify(confirmRes.body)}`);
+    assert(confirmRes.body.ok === true, 'ok must be true');
+    assert(typeof confirmRes.body.access_token === 'string', 'access_token must be present for admin enrollment');
+    assert(confirmRes.body.user.role === 'admin', 'user.role must be admin');
+  });
+
+  // ── GET /auth/mfa/status — after enrollment ──────────────────────────────
+
+  await test('GET /auth/mfa/status — 200 returns mfa_enabled=true after enrollment', async () => {
+    const res = await request(app).get('/auth/mfa/status').set('Authorization', `Bearer ${enrollToken}`);
+    assert(res.status === 200, `expected 200, got ${res.status}`);
+    assert(res.body.mfa_enabled === true, `expected true, got ${res.body.mfa_enabled}`);
+  });
+
+  // ── POST /auth/login — MFA branching ────────────────────────────────────
+  // Uses X-Forwarded-For to get a fresh rate-limiter bucket.
+
+  await test('POST /auth/login — admin without MFA returns 403 MFA_ENROLLMENT_REQUIRED', async () => {
+    const adminEmail = `mfa-admin-${Date.now()}@test.invalid`;
+    const hash = await bcryptjs.hash('AdminPass1!', 4);
+    await pool.query(
+      `INSERT INTO users (name, email, password_hash, role, email_verified, mfa_enabled)
+       VALUES ('No-MFA Admin', $1, $2, 'admin', true, false)`,
+      [adminEmail, hash]
+    );
+    const res = await request(app)
+      .post('/auth/login')
+      .set('X-Forwarded-For', '10.99.1.1')
+      .send({ email: adminEmail, password: 'AdminPass1!', turnstile_token: 'test-token' });
+    assert(res.status === 403, `expected 403, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.code === 'MFA_ENROLLMENT_REQUIRED', `expected MFA_ENROLLMENT_REQUIRED code, got ${res.body.code}`);
+    assert(typeof res.body.mfa_enrollment_token === 'string', 'mfa_enrollment_token must be present');
+    // Verify the enrollment token has mfa_enrollment: true claim
+    const decoded = jwt.decode(res.body.mfa_enrollment_token);
+    assert(decoded.mfa_enrollment === true, 'mfa_enrollment claim must be true');
+  });
+
+  await test('POST /auth/login — MFA-enabled user returns 202 mfa_required', async () => {
+    const mfaEmail = `mfa-enabled-${Date.now()}@test.invalid`;
+    const hash = await bcryptjs.hash('MfaPass1!', 4);
+    const secret = authenticator.generateSecret();
+    const encSecret = encryptSecret(secret);
+    await pool.query(
+      `INSERT INTO users (name, email, password_hash, role, email_verified, mfa_enabled, mfa_totp_secret)
+       VALUES ('MFA Buyer', $1, $2, 'buyer', true, true, $3)`,
+      [mfaEmail, hash, encSecret]
+    );
+    const res = await request(app)
+      .post('/auth/login')
+      .set('X-Forwarded-For', '10.99.1.2')
+      .send({ email: mfaEmail, password: 'MfaPass1!', turnstile_token: 'test-token' });
+    assert(res.status === 202, `expected 202, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.mfa_required === true, 'mfa_required must be true');
+    assert(typeof res.body.mfa_token === 'string', 'mfa_token must be present');
+    // Verify the mfa_token has mfa_pending: true
+    const decoded = jwt.decode(res.body.mfa_token);
+    assert(decoded.mfa_pending === true, 'mfa_pending claim must be true');
+  });
+
+  // ── POST /auth/mfa/verify ────────────────────────────────────────────────
+
+  // Helper: create an MFA-enabled user and get an mfa_pending token for them.
+  async function mfaEnabledUser() {
+    const secret = authenticator.generateSecret();
+    const encSecret = encryptSecret(secret);
+    const { user } = await mfaUser({ mfa_enabled: true, mfa_totp_secret: encSecret });
+    const mfaToken = jwt.sign(
+      { sub: user.id, email: user.email, role: user.role, mfa_pending: true },
+      process.env.JWT_SECRET,
+      { expiresIn: '10m' }
+    );
+    return { user, secret, mfaToken };
+  }
+
+  await test('POST /auth/mfa/verify — 400 missing fields', async () => {
+    const res = await request(app).post('/auth/mfa/verify').send({});
+    assert(res.status === 400, `expected 400, got ${res.status}`);
+  });
+
+  await test('POST /auth/mfa/verify — 401 with invalid mfa_token', async () => {
+    const res = await request(app).post('/auth/mfa/verify').send({ mfa_token: 'bad.token', code: '123456' });
+    assert(res.status === 401, `expected 401, got ${res.status}`);
+  });
+
+  await test('POST /auth/mfa/verify — 422 for wrong TOTP code', async () => {
+    const { mfaToken } = await mfaEnabledUser();
+    const res = await request(app).post('/auth/mfa/verify').send({ mfa_token: mfaToken, code: '000000' });
+    assert(res.status === 422, `expected 422, got ${res.status}: ${JSON.stringify(res.body)}`);
+  });
+
+  await test('POST /auth/mfa/verify — 200 with valid code returns access_token + refresh cookie', async () => {
+    const { secret, mfaToken } = await mfaEnabledUser();
+    const code = authenticator.generate(secret);
+    const res = await request(app).post('/auth/mfa/verify').send({ mfa_token: mfaToken, code });
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(typeof res.body.access_token === 'string', 'access_token must be present');
+    assert(res.body.user && res.body.user.id, 'user must be present');
+    const cookies = res.headers['set-cookie'];
+    assert(cookies && cookies.some((c) => c.startsWith('refresh_token=')), 'refresh_token cookie must be set');
+  });
+
+  // ── POST /auth/mfa/verify-recovery ──────────────────────────────────────
+
+  // Helper: insert real recovery codes and return the first plaintext code.
+  async function setupRecoveryCodes(userId) {
+    const { generateRecoveryCodes, hashRecoveryCode: hrc } = require('../src/mfaHelpers');
+    const codes = generateRecoveryCodes();
+    await pool.query('DELETE FROM mfa_recovery_codes WHERE user_id = $1', [userId]);
+    for (const c of codes) {
+      const h = await hrc(c);
+      await pool.query('INSERT INTO mfa_recovery_codes (user_id, code_hash) VALUES ($1, $2)', [userId, h]);
+    }
+    return codes; // return all so tests can use them
+  }
+
+  await test('POST /auth/mfa/verify-recovery — 401 with invalid recovery code', async () => {
+    const { user, mfaToken } = await mfaEnabledUser();
+    await setupRecoveryCodes(user.id);
+    const res = await request(app)
+      .post('/auth/mfa/verify-recovery')
+      .send({ mfa_token: mfaToken, recovery_code: 'invalidcode' });
+    assert(res.status === 401, `expected 401, got ${res.status}: ${JSON.stringify(res.body)}`);
+  });
+
+  let usedRecoveryUserId;
+  let usedMfaToken;
+  let usedCode;
+
+  await test('POST /auth/mfa/verify-recovery — 200 with valid code, marks as used', async () => {
+    const { user, mfaToken } = await mfaEnabledUser();
+    usedRecoveryUserId = user.id;
+    usedMfaToken = mfaToken;
+    const codes = await setupRecoveryCodes(user.id);
+    usedCode = codes[0];
+    const res = await request(app)
+      .post('/auth/mfa/verify-recovery')
+      .send({ mfa_token: mfaToken, recovery_code: usedCode });
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(typeof res.body.access_token === 'string', 'access_token must be present');
+    // Verify code is now marked used in DB
+    const { rows } = await pool.query(
+      'SELECT used_at FROM mfa_recovery_codes WHERE user_id = $1 AND used_at IS NOT NULL',
+      [user.id]
+    );
+    assert(rows.length === 1, `expected 1 used code, got ${rows.length}`);
+  });
+
+  await test('POST /auth/mfa/verify-recovery — 401 for already-used recovery code', async () => {
+    assert(usedCode, 'usedCode must be set from previous test');
+    // New mfa_pending token for same user (previous was consumed by refresh cookie)
+    const { rows } = await pool.query('SELECT email, role FROM users WHERE id = $1', [usedRecoveryUserId]);
+    const newMfaToken = jwt.sign(
+      { sub: usedRecoveryUserId, email: rows[0].email, role: rows[0].role, mfa_pending: true },
+      process.env.JWT_SECRET,
+      { expiresIn: '10m' }
+    );
+    const res = await request(app)
+      .post('/auth/mfa/verify-recovery')
+      .send({ mfa_token: newMfaToken, recovery_code: usedCode });
+    assert(res.status === 401, `expected 401, got ${res.status}: ${JSON.stringify(res.body)}`);
+  });
+
+  // ── POST /auth/mfa/disable ───────────────────────────────────────────────
+
+  await test('POST /auth/mfa/disable — 422 for wrong TOTP code', async () => {
+    const { user, token } = await mfaUser();
+    // Set up MFA for this user via enroll start+confirm
+    const startRes = await request(app)
+      .post('/auth/mfa/enroll/start')
+      .set('Authorization', `Bearer ${token}`);
+    assert(startRes.status === 200, `enroll/start: expected 200, got ${startRes.status}`);
+    const url = new URL(startRes.body.totp_uri);
+    const secret = url.searchParams.get('secret');
+    const validCode = authenticator.generate(secret);
+    await request(app).post('/auth/mfa/enroll/confirm').set('Authorization', `Bearer ${token}`).send({ code: validCode });
+
+    const res = await request(app)
+      .post('/auth/mfa/disable')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ code: '000000' });
+    assert(res.status === 422, `expected 422, got ${res.status}: ${JSON.stringify(res.body)}`);
+  });
+
+  await test('POST /auth/mfa/disable — 200 with valid code, clears MFA', async () => {
+    // Create user with MFA already enabled via enroll flow
+    const { user, token } = await mfaUser();
+    const startRes = await request(app)
+      .post('/auth/mfa/enroll/start')
+      .set('Authorization', `Bearer ${token}`);
+    const url = new URL(startRes.body.totp_uri);
+    const secret = url.searchParams.get('secret');
+    const confirmCode = authenticator.generate(secret);
+    await request(app).post('/auth/mfa/enroll/confirm').set('Authorization', `Bearer ${token}`).send({ code: confirmCode });
+
+    // Give TOTP time to advance (or use window) — generate fresh code
+    const disableCode = authenticator.generate(secret);
+    const res = await request(app)
+      .post('/auth/mfa/disable')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ code: disableCode });
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(res.body.ok === true, 'ok must be true');
+    // Verify mfa_enabled=false in DB
+    const { rows } = await pool.query('SELECT mfa_enabled, mfa_totp_secret FROM users WHERE id = $1', [user.id]);
+    assert(rows[0].mfa_enabled === false, 'mfa_enabled must be false');
+    assert(rows[0].mfa_totp_secret === null, 'mfa_totp_secret must be cleared');
+    // Verify recovery codes deleted
+    const { rows: rcRows } = await pool.query('SELECT id FROM mfa_recovery_codes WHERE user_id = $1', [user.id]);
+    assert(rcRows.length === 0, 'recovery codes must be deleted');
   });
 
   // Teardown

@@ -47,6 +47,14 @@ const resendVerificationLimiter = rateLimit({
   message: { error: 'Too many verification email requests, please try again in an hour' },
 });
 
+const mfaVerifyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many MFA verification attempts, please try again in 15 minutes' },
+});
+
 // Stripe Connect webhook handler.
 // Must be defined before buildApp() mounts express.json() so the raw request
 // body is preserved — Stripe signature verification requires the exact bytes
@@ -141,6 +149,8 @@ function buildApp() {
   app.post('/auth/refresh',             refreshLimiter);
   app.post('/auth/forgot-password',     forgotPasswordLimiter,     verifyTurnstile);
   app.post('/auth/resend-verification', resendVerificationLimiter, verifyTurnstile);
+  app.post('/auth/mfa/verify',          mfaVerifyLimiter);
+  app.post('/auth/mfa/verify-recovery', mfaVerifyLimiter);
   app.use('/auth', authRoutes);
 
   // eslint-disable-next-line no-unused-vars
