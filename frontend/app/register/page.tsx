@@ -1,8 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import Link from 'next/link';
 import { authRegister } from '@/lib/api';
+import TurnstileWidget from '@/components/TurnstileWidget';
+import type { TurnstileInstance } from '@marsidev/react-turnstile';
 
 export default function RegisterPage() {
   const [name, setName] = useState('');
@@ -13,21 +15,28 @@ export default function RegisterPage() {
   const [loading, setLoading] = useState(false);
   const [registered, setRegistered] = useState(false);
   const [registeredEmail, setRegisteredEmail] = useState('');
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const turnstileRef = useRef<TurnstileInstance>(null);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!turnstileToken) return;
     setError('');
     setLoading(true);
     try {
-      const res = await authRegister({ name, email, password, role });
+      const res = await authRegister({ name, email, password, role, turnstile_token: turnstileToken });
       const data = await res.json();
       if (!res.ok) {
+        turnstileRef.current?.reset();
+        setTurnstileToken(null);
         setError(data.error || 'Registration failed');
         return;
       }
       setRegisteredEmail(email);
       setRegistered(true);
     } catch {
+      turnstileRef.current?.reset();
+      setTurnstileToken(null);
       setError('Network error. Is the auth service running?');
     } finally {
       setLoading(false);
@@ -165,9 +174,16 @@ export default function RegisterPage() {
               />
             </div>
 
+            <TurnstileWidget
+              ref={turnstileRef}
+              onSuccess={setTurnstileToken}
+              onExpire={() => setTurnstileToken(null)}
+              onError={() => setTurnstileToken(null)}
+            />
+
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || !turnstileToken}
               className="w-full bg-brand-700 text-white py-3 rounded-lg font-semibold hover:bg-brand-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {loading ? (

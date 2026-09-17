@@ -46,6 +46,8 @@ const VALID = {
   FRONTEND_ORIGIN:       'https://example.com',
   RESEND_API_KEY:        're_test_FAKE_KEY_FOR_CONFIG_TESTS_ONLY',
   EMAIL_FROM:            'noreply@cricketmarketusa.com',
+  TURNSTILE_SECRET_KEY:  'fake-turnstile-secret-for-config-tests-only',
+  TURNSTILE_ALLOWED_HOSTNAME: 'www.cricketmarketusa.com',
 };
 
 (async () => {
@@ -158,6 +160,39 @@ const VALID = {
 
   test('missing EMAIL_FROM is rejected', () => {
     assertError(validateProductionEnv({ ...VALID, EMAIL_FROM: undefined }), 'EMAIL_FROM', 'missing');
+  });
+
+  // ---- Turnstile ----
+  test('missing TURNSTILE_SECRET_KEY is rejected', () => {
+    assertError(validateProductionEnv({ ...VALID, TURNSTILE_SECRET_KEY: undefined }), 'TURNSTILE_SECRET_KEY', 'missing');
+  });
+
+  test('missing TURNSTILE_ALLOWED_HOSTNAME is rejected', () => {
+    assertError(validateProductionEnv({ ...VALID, TURNSTILE_ALLOWED_HOSTNAME: undefined }), 'TURNSTILE_ALLOWED_HOSTNAME', 'missing');
+  });
+
+  test('Cloudflare test secret is rejected in production', () => {
+    assertError(
+      validateProductionEnv({ ...VALID, TURNSTILE_SECRET_KEY: '1x0000000000000000000000000000000AA' }),
+      'test secret',
+      'test key'
+    );
+  });
+
+  test('localhost in TURNSTILE_ALLOWED_HOSTNAME is rejected in production', () => {
+    assertError(
+      validateProductionEnv({ ...VALID, TURNSTILE_ALLOWED_HOSTNAME: 'localhost' }),
+      'localhost',
+      'localhost in hostname'
+    );
+  });
+
+  test('comma-separated list with localhost is rejected in production', () => {
+    assertError(
+      validateProductionEnv({ ...VALID, TURNSTILE_ALLOWED_HOSTNAME: 'www.cricketmarketusa.com,localhost' }),
+      'localhost',
+      'comma list with localhost'
+    );
   });
 
   // ---- Multiple errors ----

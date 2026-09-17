@@ -92,6 +92,20 @@ function validateProductionEnv(env) {
   need('RESEND_API_KEY');
   need('EMAIL_FROM');
 
+  // Cloudflare Turnstile — CAPTCHA protection for public auth endpoints.
+  need('TURNSTILE_SECRET_KEY');
+  need('TURNSTILE_ALLOWED_HOSTNAME');
+  // Reject Cloudflare's published test secret in production.
+  const tsKey = (env['TURNSTILE_SECRET_KEY'] || '').trim();
+  if (tsKey === '1x0000000000000000000000000000000AA') {
+    errors.push('TURNSTILE_SECRET_KEY: must not use Cloudflare test secret in production');
+  }
+  // Reject localhost in the allowed-hostname list in production.
+  const allowedHosts = (env['TURNSTILE_ALLOWED_HOSTNAME'] || '').trim();
+  if (allowedHosts && allowedHosts.split(',').some(h => h.trim() === 'localhost')) {
+    errors.push('TURNSTILE_ALLOWED_HOSTNAME: must not include "localhost" in production');
+  }
+
   return errors;
 }
 

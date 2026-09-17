@@ -45,7 +45,7 @@ async function apiFetch(url: string, options: RequestInit = {}, retry = true): P
 }
 
 // ---- Auth service ----
-export async function authRegister(body: { name: string; email: string; password: string; role?: string }) {
+export async function authRegister(body: { name: string; email: string; password: string; role?: string; turnstile_token: string }) {
   const res = await fetch(`${AUTH_URL}/auth/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -105,7 +105,7 @@ export async function getSellerConnectStatus() {
   return res.json() as Promise<{ connected: boolean; charges_enabled: boolean; details_submitted: boolean; stub?: boolean; stripe_account_id?: string }>;
 }
 
-export async function authLogin(body: { email: string; password: string }) {
+export async function authLogin(body: { email: string; password: string; turnstile_token: string }) {
   const res = await fetch(`${AUTH_URL}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -115,7 +115,7 @@ export async function authLogin(body: { email: string; password: string }) {
   return res;
 }
 
-export async function authForgotPassword(body: { email: string }) {
+export async function authForgotPassword(body: { email: string; turnstile_token: string }) {
   const res = await fetch(`${AUTH_URL}/auth/forgot-password`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -133,7 +133,7 @@ export async function authResetPassword(body: { token: string; password: string 
   return res;
 }
 
-export async function authResendVerification(body: { email: string }) {
+export async function authResendVerification(body: { email: string; turnstile_token: string }) {
   const res = await fetch(`${AUTH_URL}/auth/resend-verification`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
