@@ -1,6 +1,12 @@
+'use strict';
+// Middleware used only on MFA enrollment endpoints.
+// Accepts either:
+//   - A normal access token (any authenticated user enrolling MFA voluntarily)
+//   - An mfa_enrollment token (admin forced to enroll before accessing the platform)
+// Rejects mfa_pending tokens (those are only accepted by /auth/mfa/verify).
 const jwt = require('jsonwebtoken');
 
-function requireAuth(req, res, next) {
+function requireAuthOrMfaEnrollment(req, res, next) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Missing or invalid Authorization header' });
@@ -11,22 +17,23 @@ function requireAuth(req, res, next) {
     try {
       payload = jwt.verify(token, process.env.JWT_SECRET || '');
     } catch {
-      // Admin tokens may be signed with ADMIN_JWT_SECRET — try that as fallback.
       if (process.env.ADMIN_JWT_SECRET && process.env.ADMIN_JWT_SECRET !== (process.env.JWT_SECRET || '')) {
         payload = jwt.verify(token, process.env.ADMIN_JWT_SECRET);
       } else {
         throw new Error('token invalid');
       }
     }
-    // Reject special-purpose tokens — they must not be used as normal access tokens.
-    if (payload.mfa_pending || payload.mfa_enrollment) {
+    // mfa_pending tokens are only for /auth/mfa/verify — reject them here.
+    if (payload.mfa_pending) {
       return res.status(401).json({ error: 'Invalid or expired token' });
     }
     req.user = { id: payload.sub, email: payload.email, role: payload.role };
+    // Flag indicates this session is from a forced enrollment (no prior full access).
+    req.mfaEnrollment = !!payload.mfa_enrollment;
     next();
   } catch {
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
 }
 
-module.exports = requireAuth;
+module.exports = requireAuthOrMfaEnrollment;

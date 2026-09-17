@@ -48,6 +48,7 @@ const VALID = {
   EMAIL_FROM:            'noreply@cricketmarketusa.com',
   TURNSTILE_SECRET_KEY:  'fake-turnstile-secret-for-config-tests-only',
   TURNSTILE_ALLOWED_HOSTNAME: 'www.cricketmarketusa.com',
+  TOTP_ENCRYPTION_KEY:   'a'.repeat(32),
 };
 
 (async () => {
@@ -193,6 +194,20 @@ const VALID = {
       'localhost',
       'comma list with localhost'
     );
+  });
+
+  // ---- TOTP MFA ----
+  test('missing TOTP_ENCRYPTION_KEY is rejected', () => {
+    assertError(validateProductionEnv({ ...VALID, TOTP_ENCRYPTION_KEY: undefined }), 'TOTP_ENCRYPTION_KEY', 'missing');
+  });
+
+  test('TOTP_ENCRYPTION_KEY shorter than 32 characters is rejected', () => {
+    assertError(validateProductionEnv({ ...VALID, TOTP_ENCRYPTION_KEY: 'tooshort' }), 'TOTP_ENCRYPTION_KEY', 'short');
+  });
+
+  test('TOTP_ENCRYPTION_KEY exactly 32 characters passes', () => {
+    const errors = validateProductionEnv({ ...VALID, TOTP_ENCRYPTION_KEY: 'a'.repeat(32) });
+    assertNoError(errors, 'TOTP_ENCRYPTION_KEY', '32-char key');
   });
 
   // ---- Multiple errors ----

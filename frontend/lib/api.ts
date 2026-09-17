@@ -142,6 +142,62 @@ export async function authResendVerification(body: { email: string; turnstile_to
   return res;
 }
 
+// ---- MFA ----
+
+export async function getMfaStatus(): Promise<{ mfa_enabled: boolean }> {
+  const res = await apiFetch(`${AUTH_URL}/auth/mfa/status`);
+  if (!res.ok) throw new Error('Failed to fetch MFA status');
+  return res.json();
+}
+
+export async function authMfaEnrollStart(enrollmentToken?: string | null) {
+  const token = enrollmentToken ?? getAccessToken();
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return fetch(`${AUTH_URL}/auth/mfa/enroll/start`, {
+    method: 'POST',
+    headers,
+    credentials: 'include',
+  });
+}
+
+export async function authMfaEnrollConfirm(body: { code: string }, enrollmentToken?: string | null) {
+  const token = enrollmentToken ?? getAccessToken();
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return fetch(`${AUTH_URL}/auth/mfa/enroll/confirm`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+    credentials: 'include',
+  });
+}
+
+export async function authMfaVerify(body: { mfa_token: string; code: string }) {
+  return fetch(`${AUTH_URL}/auth/mfa/verify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    credentials: 'include',
+  });
+}
+
+export async function authMfaVerifyRecovery(body: { mfa_token: string; recovery_code: string }) {
+  return fetch(`${AUTH_URL}/auth/mfa/verify-recovery`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    credentials: 'include',
+  });
+}
+
+export async function disableMfa(body: { code: string }) {
+  return apiFetch(`${AUTH_URL}/auth/mfa/disable`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
 // ---- Listing service ----
 export async function listingFetch(path: string, options: RequestInit = {}) {
   return apiFetch(`${LISTING_URL}${path}`, options);

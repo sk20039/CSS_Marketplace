@@ -54,4 +54,20 @@ async function sendPasswordResetEmail(email, token) {
   });
 }
 
-module.exports = { sendVerificationEmail, sendPasswordResetEmail };
+async function sendMfaRecoveryCodeUsedEmail(email) {
+  const msg =
+    'A recovery code was used to sign in to your Cricket Market USA account. ' +
+    'If this was not you, please sign in immediately and disable MFA under Settings › Security to revoke all recovery codes.';
+  if (!process.env.RESEND_API_KEY) {
+    console.log(`[EMAIL STUB] MFA recovery code used → ${email}`);
+    return;
+  }
+  await resendSend({
+    to: email,
+    subject: 'Security alert: recovery code used on your account',
+    text: msg,
+    html: `<p>${msg}</p>`,
+  });
+}
+
+module.exports = { sendVerificationEmail, sendPasswordResetEmail, sendMfaRecoveryCodeUsedEmail };
