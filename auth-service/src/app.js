@@ -111,6 +111,9 @@ const VERCEL_PREVIEW_RE =
 
 function buildApp() {
   const app = express();
+  // Trust Railway's (and other) reverse proxy so that req.ip and
+  // express-rate-limit use the real client IP from X-Forwarded-For.
+  app.set('trust proxy', 1);
   const allowedOrigins = (process.env.FRONTEND_ORIGIN || 'http://localhost:3003')
     .split(',').map(o => o.trim());
   app.use(cors({
