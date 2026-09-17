@@ -40,11 +40,12 @@ const listingPattern = parseRemotePattern(listingUrl);
 const cspHeader = [
   "default-src 'self'",
   // Next.js App Router requires 'unsafe-inline' for hydration scripts.
-  "script-src 'self' 'unsafe-inline' https://js.stripe.com",
+  "script-src 'self' 'unsafe-inline' https://js.stripe.com https://challenges.cloudflare.com",
   "style-src 'self' 'unsafe-inline'",
   `connect-src 'self'${apiOrigins ? ` ${apiOrigins}` : ''} https://api.stripe.com https://errors.stripe.com`,
-  // Stripe Elements renders in iframes hosted on js.stripe.com / hooks.stripe.com
-  "frame-src https://js.stripe.com https://hooks.stripe.com",
+  // Stripe Elements renders in iframes hosted on js.stripe.com / hooks.stripe.com.
+  // Turnstile widget renders in an iframe hosted on challenges.cloudflare.com.
+  "frame-src https://js.stripe.com https://hooks.stripe.com https://challenges.cloudflare.com",
   `img-src 'self' data: blob: https://*.stripe.com${listingImgSrc ? ` ${listingImgSrc}` : ''}`,
   "font-src 'self' data:",
   "object-src 'none'",

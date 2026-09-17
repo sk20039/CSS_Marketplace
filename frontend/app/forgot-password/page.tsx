@@ -1,28 +1,37 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import Link from 'next/link';
 import { authForgotPassword } from '@/lib/api';
+import TurnstileWidget from '@/components/TurnstileWidget';
+import type { TurnstileInstance } from '@marsidev/react-turnstile';
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const turnstileRef = useRef<TurnstileInstance>(null);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!turnstileToken) return;
     setError('');
     setLoading(true);
     try {
-      const res = await authForgotPassword({ email });
+      const res = await authForgotPassword({ email, turnstile_token: turnstileToken });
       if (!res.ok) {
+        turnstileRef.current?.reset();
+        setTurnstileToken(null);
         const data = await res.json();
         setError(data.error || 'Something went wrong. Please try again.');
         return;
       }
       setSubmitted(true);
     } catch {
+      turnstileRef.current?.reset();
+      setTurnstileToken(null);
       setError('Network error. Please try again.');
     } finally {
       setLoading(false);
@@ -97,9 +106,16 @@ export default function ForgotPasswordPage() {
                   />
                 </div>
 
+                <TurnstileWidget
+                  ref={turnstileRef}
+                  onSuccess={setTurnstileToken}
+                  onExpire={() => setTurnstileToken(null)}
+                  onError={() => setTurnstileToken(null)}
+                />
+
                 <button
                   type="submit"
-                  disabled={loading}
+                  disabled={loading || !turnstileToken}
                   className="w-full bg-brand-700 text-white py-3 rounded-lg font-semibold hover:bg-brand-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   {loading ? (

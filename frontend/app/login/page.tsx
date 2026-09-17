@@ -1,10 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { authLogin, syncUserToEscrow, authResendVerification } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
+import TurnstileWidget from '@/components/TurnstileWidget';
+import type { TurnstileInstance } from '@marsidev/react-turnstile';
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -15,29 +17,37 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [unverifiedEmail, setUnverifiedEmail] = useState('');
   const [resendSent, setResendSent] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const turnstileRef = useRef<TurnstileInstance>(null);
 
   async function handleResend() {
-    if (!unverifiedEmail) return;
+    if (!unverifiedEmail || !turnstileToken) return;
     setResendSent(false);
     try {
-      await authResendVerification({ email: unverifiedEmail });
+      await authResendVerification({ email: unverifiedEmail, turnstile_token: turnstileToken });
       setResendSent(true);
     } catch {
       // ignore — the backend always returns 200 for this endpoint
       setResendSent(true);
+    } finally {
+      turnstileRef.current?.reset();
+      setTurnstileToken(null);
     }
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!turnstileToken) return;
     setError('');
     setUnverifiedEmail('');
     setResendSent(false);
     setLoading(true);
     try {
-      const res = await authLogin({ email, password });
+      const res = await authLogin({ email, password, turnstile_token: turnstileToken });
       const data = await res.json();
       if (!res.ok) {
+        turnstileRef.current?.reset();
+        setTurnstileToken(null);
         if (res.status === 403) {
           setUnverifiedEmail(email);
         }
@@ -48,6 +58,8 @@ export default function LoginPage() {
       syncUserToEscrow(data.user).catch(() => {});
       router.push(data.user.role === 'seller' ? '/dashboard/seller' : data.user.role === 'admin' ? '/admin' : '/dashboard/buyer');
     } catch {
+      turnstileRef.current?.reset();
+      setTurnstileToken(null);
       setError('Network error. Is the auth service running?');
     } finally {
       setLoading(false);
@@ -87,7 +99,8 @@ export default function LoginPage() {
                       <button
                         type="button"
                         onClick={handleResend}
-                        className="text-sm font-medium underline hover:no-underline"
+                        disabled={!turnstileToken}
+                        className="text-sm font-medium underline hover:no-underline disabled:opacity-50 disabled:cursor-not-allowed disabled:no-underline"
                       >
                         Resend verification email
                       </button>
@@ -134,9 +147,16 @@ export default function LoginPage() {
               />
             </div>
 
+            <TurnstileWidget
+              ref={turnstileRef}
+              onSuccess={setTurnstileToken}
+              onExpire={() => setTurnstileToken(null)}
+              onError={() => setTurnstileToken(null)}
+            />
+
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || !turnstileToken}
               className="w-full bg-brand-700 text-white py-3 rounded-lg font-semibold hover:bg-brand-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {loading ? (

@@ -15,6 +15,9 @@ process.env.DATABASE_URL =
   'postgres://auth_user:auth_pass@127.0.0.1:5432/auth_db_test';
 process.env.JWT_SECRET = 'test-secret';
 process.env.INTERNAL_SERVICE_SECRET = 'test-internal-svc-secret-32chars!!';
+// Cloudflare test secret — short-circuits siteverify network call in tests.
+process.env.TURNSTILE_SECRET_KEY = '1x0000000000000000000000000000000AA';
+process.env.TURNSTILE_ALLOWED_HOSTNAME = 'localhost';
 // Clear Stripe keys so tests run in stub mode (no real API calls)
 delete process.env.STRIPE_SECRET_KEY;
 delete process.env.STRIPE_WEBHOOK_SECRET;
@@ -161,7 +164,7 @@ async function run() {
 
   await test('returns 400 when required fields are missing', async () => {
     // Counts toward rate limit (1/5)
-    const res = await request(app).post('/auth/register').send({ email: uniqueEmail() });
+    const res = await request(app).post('/auth/register').send({ email: uniqueEmail(), turnstile_token: 'test-token' });
     assert(res.status === 400, `expected 400, got ${res.status}`);
   });
 
@@ -171,7 +174,7 @@ async function run() {
     registeredEmail = uniqueEmail();
     const res = await request(app)
       .post('/auth/register')
-      .send({ name: 'Test User', email: registeredEmail, password: 'ValidPass1!' });
+      .send({ name: 'Test User', email: registeredEmail, password: 'ValidPass1!', turnstile_token: 'test-token' });
     assert(res.status === 201, `expected 201, got ${res.status}: ${JSON.stringify(res.body)}`);
     assert(res.body.message, 'should have a message');
     assert(res.body.user && res.body.user.id > 0, 'should return user with id');
@@ -181,8 +184,8 @@ async function run() {
   await test('returns 409 for duplicate email', async () => {
     // Two calls: first creates user (3/5), second is duplicate (4/5)
     const email = uniqueEmail();
-    await request(app).post('/auth/register').send({ name: 'A', email, password: 'Pass1234!' });
-    const res = await request(app).post('/auth/register').send({ name: 'B', email, password: 'Other1!' });
+    await request(app).post('/auth/register').send({ name: 'A', email, password: 'Pass1234!', turnstile_token: 'test-token' });
+    const res = await request(app).post('/auth/register').send({ name: 'B', email, password: 'Other1!', turnstile_token: 'test-token' });
     assert(res.status === 409, `expected 409, got ${res.status}`);
     assert(res.body.error, 'should have error message');
   });
@@ -192,14 +195,14 @@ async function run() {
 
   await test('returns 401 for invalid password', async () => {
     const res = await request(app).post('/auth/login')
-      .send({ email: 'buyer@cricket.test', password: 'WrongPassword!' });
+      .send({ email: 'buyer@cricket.test', password: 'WrongPassword!', turnstile_token: 'test-token' });
     assert(res.status === 401, `expected 401, got ${res.status}`);
     assert(res.body.error === 'Invalid credentials', `unexpected error: ${res.body.error}`);
   });
 
   await test('returns 401 for non-existent email', async () => {
     const res = await request(app).post('/auth/login')
-      .send({ email: 'nobody@nowhere.com', password: 'Whatever1!' });
+      .send({ email: 'nobody@nowhere.com', password: 'Whatever1!', turnstile_token: 'test-token' });
     assert(res.status === 401, `expected 401, got ${res.status}`);
   });
 
@@ -207,12 +210,12 @@ async function run() {
     // Use the successfully registered (but unverified) user from the registration test above.
     // This avoids a 6th /auth/register call which would hit the rate limiter (max 5/hr).
     assert(registeredEmail, 'registeredEmail must be set from the registration test');
-    const res = await request(app).post('/auth/login').send({ email: registeredEmail, password: 'ValidPass1!' });
+    const res = await request(app).post('/auth/login').send({ email: registeredEmail, password: 'ValidPass1!', turnstile_token: 'test-token' });
     assert(res.status === 403, `expected 403, got ${res.status}: ${JSON.stringify(res.body)}`);
   });
 
   await test('returns 400 when fields are missing', async () => {
-    const res = await request(app).post('/auth/login').send({ email: 'a@b.com' });
+    const res = await request(app).post('/auth/login').send({ email: 'a@b.com', turnstile_token: 'test-token' });
     assert(res.status === 400, `expected 400, got ${res.status}`);
   });
 
@@ -286,14 +289,14 @@ async function run() {
   console.log('\nPOST /auth/resend-verification');
 
   await test('missing email field returns 400', async () => {
-    const res = await request(app).post('/auth/resend-verification').send({});
+    const res = await request(app).post('/auth/resend-verification').send({ turnstile_token: 'test-token' });
     assert(res.status === 400, `expected 400, got ${res.status}`);
   });
 
   await test('unknown email returns generic 200 without leaking existence', async () => {
     const res = await request(app)
       .post('/auth/resend-verification')
-      .send({ email: 'nobody-resend@nowhere.invalid' });
+      .send({ email: 'nobody-resend@nowhere.invalid', turnstile_token: 'test-token' });
     assert(res.status === 200, `expected 200, got ${res.status}`);
     assert(res.body.message, 'should have message');
   });
@@ -301,7 +304,7 @@ async function run() {
   await test('already-verified user returns generic 200 and no token is created', async () => {
     const res = await request(app)
       .post('/auth/resend-verification')
-      .send({ email: 'buyer@cricket.test' });
+      .send({ email: 'buyer@cricket.test', turnstile_token: 'test-token' });
     assert(res.status === 200, `expected 200, got ${res.status}`);
     assert(res.body.message, 'should have message');
     const { rows: uRows } = await pool.query('SELECT id FROM users WHERE email = $1', ['buyer@cricket.test']);
@@ -321,7 +324,7 @@ async function run() {
 
     const res = await request(app)
       .post('/auth/resend-verification')
-      .send({ email: registeredEmail });
+      .send({ email: registeredEmail, turnstile_token: 'test-token' });
     assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
     assert(res.body.message, 'should have message');
 
@@ -345,7 +348,7 @@ async function run() {
 
   await test('seeded buyer (buyer@cricket.test) can log in', async () => {
     const res = await request(app).post('/auth/login')
-      .send({ email: 'buyer@cricket.test', password: 'Buyer1234!' });
+      .send({ email: 'buyer@cricket.test', password: 'Buyer1234!', turnstile_token: 'test-token' });
     assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
     assert(res.body.access_token, 'should return access_token');
     assert(res.body.user.role === 'buyer', `expected buyer, got ${res.body.user.role}`);
@@ -355,7 +358,7 @@ async function run() {
 
   await test('seeded seller (demo.seller@cricket.test) can log in', async () => {
     const res = await request(app).post('/auth/login')
-      .send({ email: 'demo.seller@cricket.test', password: 'Demo1234!' });
+      .send({ email: 'demo.seller@cricket.test', password: 'Demo1234!', turnstile_token: 'test-token' });
     assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
     assert(res.body.access_token, 'should return access_token');
     assert(res.body.user.role === 'seller', `expected seller, got ${res.body.user.role}`);
@@ -365,7 +368,7 @@ async function run() {
 
   await test('seeded admin (admin@cricket.test) can log in', async () => {
     const res = await request(app).post('/auth/login')
-      .send({ email: 'admin@cricket.test', password: 'Admin1234!' });
+      .send({ email: 'admin@cricket.test', password: 'Admin1234!', turnstile_token: 'test-token' });
     assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
     assert(res.body.access_token, 'should return access_token');
     assert(res.body.user.role === 'admin', `expected admin, got ${res.body.user.role}`);
@@ -526,7 +529,7 @@ async function run() {
     // The refresh must succeed without touching the 5 decoy rows.
     const loginRes = await request(app)
       .post('/auth/login')
-      .send({ email: 'demo.seller@cricket.test', password: 'Demo1234!' });
+      .send({ email: 'demo.seller@cricket.test', password: 'Demo1234!', turnstile_token: 'test-token' });
     assert(loginRes.status === 200, `seller login failed: ${loginRes.status}`);
     const freshCookie = loginRes.headers['set-cookie'];
     assert(freshCookie && freshCookie.length > 0, 'must receive refresh cookie');
@@ -837,7 +840,7 @@ async function run() {
     await insertTestUser('salmankhan20039@test.invalid', true);
     const res = await request(app)
       .post('/auth/login')
-      .send({ email: 'Salmankhan20039@test.invalid', password: 'TestPass1!' });
+      .send({ email: 'Salmankhan20039@test.invalid', password: 'TestPass1!', turnstile_token: 'test-token' });
     assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
     assert(res.body.access_token, 'should return access_token');
     assert(res.body.user.email === 'salmankhan20039@test.invalid',
@@ -847,7 +850,7 @@ async function run() {
   await test('login: mixed-case + surrounding whitespace resolves to existing account', async () => {
     const res = await request(app)
       .post('/auth/login')
-      .send({ email: '  BUYER@CRICKET.TEST  ', password: 'Buyer1234!' });
+      .send({ email: '  BUYER@CRICKET.TEST  ', password: 'Buyer1234!', turnstile_token: 'test-token' });
     assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
     assert(res.body.access_token, 'should return access_token');
     assert(res.body.user.email === 'buyer@cricket.test',
@@ -860,7 +863,7 @@ async function run() {
     const expectedLower = `${unique}@example.com`;
     const res = await request(app)
       .post('/auth/register')
-      .send({ name: 'Norm Test', email: mixedEmail, password: 'NormPass1!' });
+      .send({ name: 'Norm Test', email: mixedEmail, password: 'NormPass1!', turnstile_token: 'test-token' });
     assert(res.status === 201, `expected 201, got ${res.status}: ${JSON.stringify(res.body)}`);
     assert(res.body.user.email === expectedLower,
       `response email should be lowercase, got ${res.body.user.email}`);
@@ -874,7 +877,7 @@ async function run() {
     await pool.query('DELETE FROM password_reset_tokens WHERE user_id = $1', [buyer.id]);
     const res = await request(app)
       .post('/auth/forgot-password')
-      .send({ email: 'BUYER@Cricket.TEST' });
+      .send({ email: 'BUYER@Cricket.TEST', turnstile_token: 'test-token' });
     assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
     const { rows: tokens } = await pool.query(
       'SELECT id, expires_at FROM password_reset_tokens WHERE user_id = $1', [buyer.id]
@@ -888,12 +891,29 @@ async function run() {
     const normResendUser = await insertTestUser(normResendEmail, false); // unverified
     const res = await request(app)
       .post('/auth/resend-verification')
-      .send({ email: normResendEmail.toUpperCase() });
+      .send({ email: normResendEmail.toUpperCase(), turnstile_token: 'test-token' });
     assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(res.body)}`);
     const { rows: tokens } = await pool.query(
       'SELECT id FROM email_verification_tokens WHERE user_id = $1', [normResendUser.id]
     );
     assert(tokens.length === 1, `expected 1 verification token, got ${tokens.length}`);
+  });
+
+  // ── Turnstile CAPTCHA enforcement ────────────────────────────────────────
+  // Uses forgot-password (2 of the remaining slots — 3/5 total after these).
+  console.log('\nTurnstile CAPTCHA enforcement');
+
+  await test('protected endpoint without turnstile_token returns 400', async () => {
+    const res = await request(app).post('/auth/forgot-password').send({ email: 'buyer@cricket.test' });
+    assert(res.status === 400, `expected 400, got ${res.status}`);
+    assert(res.body.error === 'CAPTCHA token is required', `unexpected error: ${res.body.error}`);
+  });
+
+  await test('protected endpoint with valid test token proceeds to handler', async () => {
+    const res = await request(app)
+      .post('/auth/forgot-password')
+      .send({ email: 'buyer@cricket.test', turnstile_token: 'test-token' });
+    assert(res.status === 200, `expected 200, got ${res.status}`);
   });
 
   // Teardown

@@ -4,6 +4,7 @@ const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 const authRoutes = require('./authRoutes');
 const pool = require('./db');
+const { verifyTurnstile } = require('./middleware/verifyTurnstile');
 const { buildHealthRouter } = require('./healthRoutes');
 
 const loginLimiter = rateLimit({
@@ -132,11 +133,11 @@ function buildApp() {
   app.use(express.json());
   app.use(cookieParser());
 
-  app.post('/auth/login', loginLimiter);
-  app.post('/auth/register', registerLimiter);
-  app.post('/auth/refresh', refreshLimiter);
-  app.post('/auth/forgot-password', forgotPasswordLimiter);
-  app.post('/auth/resend-verification', resendVerificationLimiter);
+  app.post('/auth/login',               loginLimiter,              verifyTurnstile);
+  app.post('/auth/register',            registerLimiter,           verifyTurnstile);
+  app.post('/auth/refresh',             refreshLimiter);
+  app.post('/auth/forgot-password',     forgotPasswordLimiter,     verifyTurnstile);
+  app.post('/auth/resend-verification', resendVerificationLimiter, verifyTurnstile);
   app.use('/auth', authRoutes);
 
   // eslint-disable-next-line no-unused-vars
