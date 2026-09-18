@@ -3,7 +3,7 @@
 import { useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { authMfaVerify, authMfaVerifyRecovery, syncUserToEscrow } from '@/lib/api';
+import { authMfaVerify, authMfaVerifyRecovery } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 
 function MfaVerifyContent() {
@@ -32,7 +32,6 @@ function MfaVerifyContent() {
         return;
       }
       login(data.access_token, data.user);
-      syncUserToEscrow(data.user).catch(() => {});
       router.push(
         data.user.role === 'seller'
           ? '/dashboard/seller'
