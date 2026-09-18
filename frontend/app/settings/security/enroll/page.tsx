@@ -4,7 +4,7 @@ import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import AuthGuard from '@/components/AuthGuard';
-import { authMfaEnrollStart, authMfaEnrollConfirm, syncUserToEscrow } from '@/lib/api';
+import { authMfaEnrollStart, authMfaEnrollConfirm } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import QRCode from 'react-qr-code';
 
@@ -53,7 +53,6 @@ function EnrollContent({ enrollmentToken }: { enrollmentToken: string | null }) 
       // Admin forced enrollment: full tokens returned → log in immediately.
       if (data.access_token) {
         login(data.access_token, data.user);
-        syncUserToEscrow(data.user).catch(() => {});
         router.push('/admin');
         return;
       }
