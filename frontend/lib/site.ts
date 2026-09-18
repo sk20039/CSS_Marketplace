@@ -7,7 +7,7 @@ export const SITE = {
   dba: 'Cricket Sport Shop',
   address: '11003 Bluewater Lagoon Cir, Cypress, Texas 77433',
   state: 'Texas',
-  email: 'cricketsportshop@gmail.com',
+  email: 'support@cricketmarketusa.com',
   url: 'https://cricketmarketusa.com',
   platformFeePct: '8%',
   platformFeeMin: '$2.00',
