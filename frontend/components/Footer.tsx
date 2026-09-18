@@ -69,6 +69,18 @@ export default function Footer() {
             </ul>
           </div>
 
+          {/* Support */}
+          <div>
+            <p className="text-white font-semibold text-sm mb-3">Support</p>
+            <ul className="space-y-2 text-sm">
+              <li>
+                <a href="mailto:support@cricketmarketusa.com" className="hover:text-white transition-colors">
+                  support@cricketmarketusa.com
+                </a>
+              </li>
+            </ul>
+          </div>
+
           {/* Trust */}
           <div>
             <p className="text-white font-semibold text-sm mb-3">Why Cricket Market?</p>
