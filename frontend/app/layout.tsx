@@ -15,6 +15,13 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: 'Cricket Market — USA Cricket Equipment Marketplace',
   description: 'Buy and sell cricket bats, helmets, pads and more.',
+  openGraph: {
+    siteName: 'Cricket Market',
+    type: 'website',
+  },
+  twitter: {
+    card: 'summary_large_image',
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
