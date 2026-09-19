@@ -1,0 +1,35 @@
+name: Production QA Agent
+
+on:
+  schedule:
+    # Every 2 hours
+    - cron: '0 */2 * * *'
+  # Allow manual trigger from GitHub Actions UI
+  workflow_dispatch:
+
+# No JWT_SECRET or ADMIN_JWT_SECRET in this workflow.
+# Authenticated tests use a pre-issued, time-bounded buyer token (QA_BEARER_TOKEN)
+# for a dedicated zero-data QA account. JWT signing secrets remain in Railway only.
+
+jobs:
+  qa:
+    name: QA — cricketmarketusa.com
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run production QA agent
+        env:
+          QA_BEARER_TOKEN: ${{ secrets.QA_BEARER_TOKEN }}
+          RESEND_API_KEY:  ${{ secrets.RESEND_API_KEY }}
+          QA_ALERT_EMAIL:  ${{ secrets.QA_ALERT_EMAIL }}
+          EMAIL_FROM:      ${{ secrets.EMAIL_FROM }}
+        run: node scripts/qa_production.js
