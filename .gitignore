@@ -27,6 +27,9 @@ auth-service/.env
 listing-service/.env
 frontend/.env.local
 
+# BA report generated output — never commit
+scripts/ba_report_*.md
+
 # scratch/leftover
 _to_delete/
 escrow-service/_to_delete/
