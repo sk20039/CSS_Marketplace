@@ -466,7 +466,17 @@ export async function applySeoSuggestions(id: number, fields: SeoFields): Promis
   return res.json();
 }
 
-export async function patchListing(id: number, body: { title?: string; description?: string }): Promise<any> {
+export async function patchListing(id: number, body: {
+  title?: string;
+  description?: string;
+  price_cents?: number;
+  category?: string;
+  condition?: string;
+  weight_oz?: number;
+  pkg_length_in?: number;
+  pkg_width_in?: number;
+  pkg_height_in?: number;
+}): Promise<any> {
   const res = await listingFetch(`/listings/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(body),
@@ -476,4 +486,21 @@ export async function patchListing(id: number, body: { title?: string; descripti
     throw new Error((data as { error?: string }).error || 'Failed to update listing');
   }
   return res.json();
+}
+
+// Publish a draft listing. Returns the parsed JSON response directly.
+// Does NOT throw on validation failure (422) — callers must inspect result.ok.
+// Only throws on network errors (unrecoverable).
+export async function publishListing(id: number): Promise<{
+  ok: boolean;
+  missing?: string[];
+  listing?: Record<string, unknown>;
+}> {
+  const res = await listingFetch(`/listings/${id}/publish`, { method: 'POST' });
+  return res.json();
+}
+
+// Delete a single photo from a listing (used during draft editing).
+export async function deletePhoto(listingId: number, photoId: number): Promise<Response> {
+  return listingFetch(`/listings/${listingId}/photos/${photoId}`, { method: 'DELETE' });
 }

@@ -125,6 +125,50 @@ router.post('/listings/:id/photos', requireAuth, async (req, res, next) => {
   }
 });
 
+// DELETE /listings/:id/photos/:photoId — remove a single photo from a listing.
+//
+// Deletion order is DB-first to preserve consistency:
+//   1. Delete the DB record — if this fails, the file is untouched (safe).
+//   2. Delete the file from disk — if this fails (e.g. already gone), the DB
+//      record is already removed so there is nothing left to point to a
+//      missing file. ENOENT is silently ignored.
+router.delete('/listings/:id/photos/:photoId', requireAuth, async (req, res, next) => {
+  try {
+    const { rows: listingRows } = await pool.query(
+      'SELECT * FROM listings WHERE id = $1',
+      [req.params.id]
+    );
+    const listing = listingRows[0];
+    if (!listing) return res.status(404).json({ error: 'Listing not found' });
+    if (String(listing.seller_id) !== String(req.user.id)) {
+      return res.status(403).json({ error: 'Forbidden: not your listing' });
+    }
+
+    const { rows: photoRows } = await pool.query(
+      'SELECT * FROM listing_photos WHERE id = $1 AND listing_id = $2',
+      [req.params.photoId, listing.id]
+    );
+    const photo = photoRows[0];
+    if (!photo) return res.status(404).json({ error: 'Photo not found' });
+
+    // Step 1: Remove DB record first (if this throws, file is untouched).
+    await pool.query('DELETE FROM listing_photos WHERE id = $1', [photo.id]);
+
+    // Step 2: Remove file from disk. ENOENT means the file was already gone —
+    // that is safe since the DB record is already deleted.
+    const filePath = path.join(UPLOADS_DIR, path.basename(photo.filename));
+    fs.unlink(filePath, (err) => {
+      if (err && err.code !== 'ENOENT') {
+        console.error(`[photoRoutes] Failed to delete file ${filePath}:`, err.message);
+      }
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /photos/:filename
 router.get('/photos/:filename', (req, res) => {
   const filename = path.basename(req.params.filename); // prevent path traversal

@@ -31,59 +31,145 @@ async function withPhotos(listing) {
   return { ...listing, photos: rows };
 }
 
-// POST /listings — create
-router.post('/', requireAuth, async (req, res, next) => {
-  try {
-    if (req.user.role === 'seller' && !req.user.has_ship_from_address) {
-      return res.status(422).json({
+// Shared publication validator — single source of truth for publish requirements.
+// Used by both POST /listings (immediate creation) and POST /listings/:id/publish
+// (draft promotion). Any change to publish requirements must be made here only.
+//
+// Returns an array of field names that are missing or invalid.
+// An empty array means the listing is complete and ready to publish.
+// Photos are not required (matching existing normal publication behaviour).
+function validateListingForPublish(listing, user) {
+  const missing = [];
+
+  if (!listing.title || !String(listing.title).trim()) missing.push('title');
+
+  const pc = listing.price_cents;
+  if (pc == null || !Number.isInteger(Number(pc)) || Number(pc) < MIN_LISTING_PRICE_CENTS) {
+    missing.push('price_cents');
+  }
+
+  if (!VALID_CATEGORIES.includes(listing.category)) missing.push('category');
+  if (!VALID_CONDITIONS.includes(listing.condition)) missing.push('condition');
+
+  const w = Number(listing.weight_oz);
+  if (!Number.isFinite(w) || w <= 0) missing.push('weight_oz');
+  const l = Number(listing.pkg_length_in);
+  if (!Number.isFinite(l) || l <= 0) missing.push('pkg_length_in');
+  const wi = Number(listing.pkg_width_in);
+  if (!Number.isFinite(wi) || wi <= 0) missing.push('pkg_width_in');
+  const h = Number(listing.pkg_height_in);
+  if (!Number.isFinite(h) || h <= 0) missing.push('pkg_height_in');
+
+  if (user.role === 'seller' && !user.has_ship_from_address) missing.push('ship_from_address');
+
+  return missing;
+}
+
+// Maps validator output to HTTP error responses that match the existing
+// conventions used by POST /listings — preserving backward-compatible
+// status codes and message formats for API consumers.
+function publishValidationToHttpError(missing, rawPriceCents) {
+  if (missing.includes('ship_from_address')) {
+    return {
+      status: 422,
+      body: {
         error: 'You must add a ship-from address before creating listings',
         code: 'SHIP_FROM_ADDRESS_REQUIRED',
-      });
-    }
-    const {
-      title, description = '', price_cents, category = 'other', condition = 'used_good',
-      weight_oz, pkg_length_in, pkg_width_in, pkg_height_in,
-    } = req.body;
-    if (!title || price_cents == null) {
-      return res.status(400).json({ error: 'title and price_cents are required' });
-    }
-    if (!Number.isInteger(price_cents) || price_cents < MIN_LISTING_PRICE_CENTS) {
-      return res.status(400).json({ error: `price_cents must be an integer >= ${MIN_LISTING_PRICE_CENTS} (minimum listing price is $10.00)` });
-    }
-    if (!VALID_CATEGORIES.includes(category)) {
-      return res.status(400).json({ error: `category must be one of: ${VALID_CATEGORIES.join(', ')}` });
-    }
-    if (!VALID_CONDITIONS.includes(condition)) {
-      return res.status(400).json({ error: `condition must be one of: ${VALID_CONDITIONS.join(', ')}` });
-    }
-
-    // Package dimensions — all four are required to enable shipping rate calculation.
-    const PKG_FIELDS = ['weight_oz', 'pkg_length_in', 'pkg_width_in', 'pkg_height_in'];
-    const pkgValues  = { weight_oz, pkg_length_in, pkg_width_in, pkg_height_in };
-    const missingPkg = PKG_FIELDS.filter(f => pkgValues[f] == null);
-    if (missingPkg.length > 0) {
-      return res.status(422).json({
+      },
+    };
+  }
+  // "Both required" message when title is absent or price_cents is null/absent.
+  if (missing.includes('title') || (missing.includes('price_cents') && rawPriceCents == null)) {
+    return { status: 400, body: { error: 'title and price_cents are required' } };
+  }
+  if (missing.includes('price_cents')) {
+    return {
+      status: 400,
+      body: { error: `price_cents must be an integer >= ${MIN_LISTING_PRICE_CENTS} (minimum listing price is $10.00)` },
+    };
+  }
+  if (missing.includes('category')) {
+    return { status: 400, body: { error: `category must be one of: ${VALID_CATEGORIES.join(', ')}` } };
+  }
+  if (missing.includes('condition')) {
+    return { status: 400, body: { error: `condition must be one of: ${VALID_CONDITIONS.join(', ')}` } };
+  }
+  const PKG_FIELDS = ['weight_oz', 'pkg_length_in', 'pkg_width_in', 'pkg_height_in'];
+  const missingPkg = PKG_FIELDS.filter((f) => missing.includes(f));
+  if (missingPkg.length > 0) {
+    return {
+      status: 422,
+      body: {
         error: `Package details are required for shipping: ${missingPkg.join(', ')}`,
         code: 'PACKAGE_DIMS_REQUIRED',
         missing: missingPkg,
-      });
+      },
+    };
+  }
+  return null;
+}
+
+// POST /listings — create
+router.post('/', requireAuth, async (req, res, next) => {
+  try {
+    const {
+      title,
+      description = '',
+      price_cents,
+      category = 'other',
+      condition = 'used_good',
+      weight_oz,
+      pkg_length_in,
+      pkg_width_in,
+      pkg_height_in,
+      save_as_draft,
+    } = req.body;
+
+    if (save_as_draft) {
+      // Draft path: only title is required.
+      // Price, package dimensions, and ship-from address are not enforced —
+      // the seller fills those in before publishing.
+      if (!title || !String(title).trim()) {
+        return res.status(400).json({ error: 'title is required to save a draft' });
+      }
+
+      const parsedPrice  = price_cents  != null ? Number(price_cents)  : null;
+      const parsedWeight = weight_oz    != null ? Number(weight_oz)    : null;
+      const parsedLength = pkg_length_in != null ? Number(pkg_length_in) : null;
+      const parsedWidth  = pkg_width_in  != null ? Number(pkg_width_in)  : null;
+      const parsedHeight = pkg_height_in != null ? Number(pkg_height_in) : null;
+
+      const { rows: inserted } = await pool.query(
+        `INSERT INTO listings
+           (seller_id, title, description, price_cents, category, condition, status,
+            weight_oz, pkg_length_in, pkg_width_in, pkg_height_in)
+         VALUES ($1, $2, $3, $4, $5, $6, 'draft', $7, $8, $9, $10)
+         RETURNING id`,
+        [req.user.id, title, description, parsedPrice, category, condition,
+         parsedWeight, parsedLength, parsedWidth, parsedHeight]
+      );
+      const { rows: listingRows } = await pool.query(
+        'SELECT * FROM listings WHERE id = $1',
+        [inserted[0].id]
+      );
+      // No social post for drafts.
+      return res.status(201).json(await withPhotos(listingRows[0]));
     }
+
+    // Normal publish path: use shared validator for all completeness checks.
+    const missing = validateListingForPublish(
+      { title, price_cents, category, condition, weight_oz, pkg_length_in, pkg_width_in, pkg_height_in },
+      req.user
+    );
+    if (missing.length > 0) {
+      const err = publishValidationToHttpError(missing, price_cents);
+      if (err) return res.status(err.status).json(err.body);
+    }
+
     const parsedWeight = Number(weight_oz);
     const parsedLength = Number(pkg_length_in);
     const parsedWidth  = Number(pkg_width_in);
     const parsedHeight = Number(pkg_height_in);
-    if (!Number.isFinite(parsedWeight) || parsedWeight <= 0) {
-      return res.status(422).json({ error: 'weight_oz must be a positive number' });
-    }
-    if (!Number.isFinite(parsedLength) || parsedLength <= 0) {
-      return res.status(422).json({ error: 'pkg_length_in must be a positive number' });
-    }
-    if (!Number.isFinite(parsedWidth) || parsedWidth <= 0) {
-      return res.status(422).json({ error: 'pkg_width_in must be a positive number' });
-    }
-    if (!Number.isFinite(parsedHeight) || parsedHeight <= 0) {
-      return res.status(422).json({ error: 'pkg_height_in must be a positive number' });
-    }
 
     const { rows: inserted } = await pool.query(
       `INSERT INTO listings
@@ -111,10 +197,7 @@ router.post('/', requireAuth, async (req, res, next) => {
 });
 
 // GET /listings/mine — the caller's own listings, ANY status (active, sold,
-// inactive). Registered before GET /:id so "mine" isn't swallowed as an id.
-// The public GET / below always filters to status='active', so without this
-// a seller has no way to see their own listings once one sells - it would
-// just vanish from their dashboard instead of showing a "sold" badge.
+// inactive, draft). Registered before GET /:id so "mine" isn't swallowed as an id.
 router.get('/mine', requireAuth, async (req, res, next) => {
   try {
     const { rows } = await pool.query(
@@ -128,7 +211,7 @@ router.get('/mine', requireAuth, async (req, res, next) => {
   }
 });
 
-// GET /listings — search + list
+// GET /listings — search + list (active only)
 router.get('/', async (req, res, next) => {
   try {
     const { q, category, condition, min_price, max_price } = req.query;
@@ -188,7 +271,67 @@ router.get('/:id', async (req, res, next) => {
   try {
     const { rows } = await pool.query('SELECT * FROM listings WHERE id = $1', [req.params.id]);
     if (!rows[0]) return res.status(404).json({ error: 'Listing not found' });
+    // Drafts are not public — visible to the owner only via GET /listings/mine.
+    if (rows[0].status === 'draft') return res.status(404).json({ error: 'Listing not found' });
     res.json(await withPhotos(rows[0]));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /listings/:id/publish — promote a draft listing to active.
+//
+// Response contract:
+//   200  { ok: true,  listing: {...} }  — published successfully
+//   422  { ok: false, missing: [...] }  — validation failure; listing stays draft
+//   409  { error: '...' }               — not a draft, or concurrent publish won the race
+//   403  { error: '...' }               — caller does not own this listing
+//   404  { error: '...' }               — listing not found
+router.post('/:id/publish', requireAuth, async (req, res, next) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM listings WHERE id = $1', [req.params.id]);
+    if (!rows[0]) return res.status(404).json({ error: 'Listing not found' });
+
+    const listing = rows[0];
+    if (String(listing.seller_id) !== String(req.user.id)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    if (listing.status !== 'draft') {
+      return res.status(409).json({ error: 'Listing is not in draft status' });
+    }
+
+    // Same rules as normal publication — enforced by the shared validator.
+    const missing = validateListingForPublish(listing, req.user);
+    if (missing.length > 0) {
+      return res.status(422).json({ ok: false, missing });
+    }
+
+    // Atomic status change: WHERE status = 'draft' ensures that if two requests
+    // race, only one wins the UPDATE and becomes the publisher. The loser finds
+    // zero rows returned and gets a 409. postNewListingToSocial fires only after
+    // the atomic update succeeds, guaranteeing exactly one social post.
+    const { rows: updated } = await pool.query(
+      `UPDATE listings
+          SET status = 'active', updated_at = NOW()
+        WHERE id = $1 AND status = 'draft'
+        RETURNING id`,
+      [listing.id]
+    );
+    if (updated.length === 0) {
+      return res.status(409).json({ error: 'Listing was already published by a concurrent request' });
+    }
+
+    const { rows: listingRows } = await pool.query(
+      'SELECT * FROM listings WHERE id = $1',
+      [listing.id]
+    );
+    const published = await withPhotos(listingRows[0]);
+    res.json({ ok: true, listing: published });
+
+    // Photos already uploaded to the draft are included in the published listing
+    // object passed here, so the social post can reference them (unlike normal
+    // creation where photos arrive in a separate follow-up call).
+    postNewListingToSocial(published).catch(() => {});
   } catch (err) {
     next(err);
   }
@@ -213,6 +356,10 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ error: 'No valid fields to update' });
     }
+    // Prevent manually setting a listing back to draft via PATCH.
+    if (updates.status === 'draft') {
+      return res.status(400).json({ error: 'Cannot set status to draft via PATCH' });
+    }
     if (updates.price_cents !== undefined) {
       if (!Number.isInteger(updates.price_cents) || updates.price_cents < MIN_LISTING_PRICE_CENTS) {
         return res.status(400).json({ error: `price_cents must be an integer >= ${MIN_LISTING_PRICE_CENTS} (minimum listing price is $10.00)` });
@@ -226,9 +373,9 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
     }
     // Package dims: must all be provided together if any are being updated.
     const PKG_PATCH_FIELDS = ['weight_oz', 'pkg_length_in', 'pkg_width_in', 'pkg_height_in'];
-    const pkgPresent = PKG_PATCH_FIELDS.filter(f => updates[f] !== undefined);
+    const pkgPresent = PKG_PATCH_FIELDS.filter((f) => updates[f] !== undefined);
     if (pkgPresent.length > 0 && pkgPresent.length < 4) {
-      const missing = PKG_PATCH_FIELDS.filter(f => updates[f] === undefined);
+      const missing = PKG_PATCH_FIELDS.filter((f) => updates[f] === undefined);
       return res.status(422).json({
         error: `Package dimensions must all be updated together. Missing: ${missing.join(', ')}`,
         code: 'PACKAGE_DIMS_PARTIAL',
@@ -243,25 +390,21 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
     }
 
     let pIdx = 1;
-    const setClauses = Object.keys(updates).map(k => `${k} = $${pIdx++}`).join(', ');
+    const setClauses = Object.keys(updates).map((k) => `${k} = $${pIdx++}`).join(', ');
     const values = [...Object.values(updates), listing.id];
     await pool.query(
       `UPDATE listings SET ${setClauses}, updated_at = NOW() WHERE id = $${pIdx}`,
       values
     );
 
-    const { rows: updated } = await pool.query('SELECT * FROM listings WHERE id = $1', [listing.id]);
-    res.json(await withPhotos(updated[0]));
+    const { rows: updatedRows } = await pool.query('SELECT * FROM listings WHERE id = $1', [listing.id]);
+    res.json(await withPhotos(updatedRows[0]));
   } catch (err) {
     next(err);
   }
 });
 
 // PATCH /listings/:id/mark-sold — internal, service-to-service only.
-// Called by escrow-service the moment a payment is captured (funds actually
-// held in escrow), so the listing stops appearing as buyable the instant a
-// purchase is real - closing the gap where a second buyer could otherwise
-// buy the same listing while an earlier order is already in escrow.
 router.patch('/:id/mark-sold', requireInternalSecret, async (req, res, next) => {
   try {
     const { rows } = await pool.query('SELECT * FROM listings WHERE id = $1', [req.params.id]);
@@ -278,9 +421,6 @@ router.patch('/:id/mark-sold', requireInternalSecret, async (req, res, next) => 
 });
 
 // PATCH /listings/:id/mark-active — internal, service-to-service only.
-// Called by escrow-service when a HELD order is cancelled before shipment,
-// so the listing goes back on sale immediately rather than staying stuck as
-// 'sold' after the buyer's refund completes.
 router.patch('/:id/mark-active', requireInternalSecret, async (req, res, next) => {
   try {
     const { rows } = await pool.query('SELECT * FROM listings WHERE id = $1', [req.params.id]);

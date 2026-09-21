@@ -3,19 +3,37 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import AuthGuard from '@/components/AuthGuard';
-import { listingFetch, getOrders, connectSellerStripe, getSellerConnectStatus, syncUserToEscrow, authMe, saveShipFromAddress, type ShipFromAddress } from '@/lib/api';
+import {
+  listingFetch, getOrders, connectSellerStripe, getSellerConnectStatus,
+  syncUserToEscrow, syncListingToEscrow, publishListing,
+  authMe, saveShipFromAddress, type ShipFromAddress,
+} from '@/lib/api';
 import { useAuth, setAccessToken } from '@/lib/auth';
 import { ORDER_STATUS_STYLE } from '@/lib/constants';
 
 interface Listing {
-  id: number; title: string; price_cents: number; status: string; category: string;
+  id: number;
+  title: string;
+  price_cents: number | null;
+  status: string;
+  category: string;
   photos: { id: number; filename: string; display_order: number }[];
 }
+
 interface Order {
   id: number; status: string; amount_cents: number; listing_id: number; buyer_id: number;
 }
 
-type ConnectStatus = { connected: boolean; charges_enabled: boolean; details_submitted: boolean; stub?: boolean } | null;
+interface EscrowPendingItem {
+  id: number;
+  title: string;
+  seller_id: number;
+  price_cents: number;
+}
+
+type ConnectStatus = {
+  connected: boolean; charges_enabled: boolean; details_submitted: boolean; stub?: boolean;
+} | null;
 
 export default function SellerDashboard() {
   return (
@@ -42,9 +60,20 @@ function SellerContent() {
   const [connectError, setConnectError] = useState('');
   const [shipFromAddress, setShipFromAddress] = useState<ShipFromAddress | null>(null);
   const [showAddrForm, setShowAddrForm] = useState(false);
-  const [addrForm, setAddrForm] = useState<ShipFromAddress>({ name: '', line1: '', line2: null, city: '', state: '', zip: '', phone: '' });
+  const [addrForm, setAddrForm] = useState<ShipFromAddress>({
+    name: '', line1: '', line2: null, city: '', state: '', zip: '', phone: '',
+  });
   const [addrSaving, setAddrSaving] = useState(false);
   const [addrError, setAddrError] = useState('');
+
+  // Draft publish state
+  const [selectedDrafts, setSelectedDrafts] = useState<Set<number>>(new Set());
+  const [publishingDrafts, setPublishingDrafts] = useState(false);
+  const [draftErrors, setDraftErrors] = useState<Record<number, string>>({});
+
+  // Escrow sync failures after bulk publish (persist across listing refresh)
+  const [escrowPending, setEscrowPending] = useState<EscrowPendingItem[]>([]);
+  const [retryingSyncId, setRetryingSyncId] = useState<number | null>(null);
 
   useEffect(() => {
     if (!user || !accessToken) return;
@@ -62,10 +91,15 @@ function SellerContent() {
     }).catch(() => {});
   }, [user, accessToken]);
 
+  async function refreshListings() {
+    const data = await listingFetch('/listings/mine').then((r) => r.json());
+    setListings(data.listings ?? []);
+  }
+
   useEffect(() => {
     if (!user) return;
     Promise.all([
-      listingFetch(`/listings/mine`).then((r) => r.json()).then((d) => setListings(d.listings || [])),
+      listingFetch('/listings/mine').then((r) => r.json()).then((d) => setListings(d.listings ?? [])),
       getOrders({ seller_id: String(user.id) }).then(setOrders),
     ]).finally(() => setLoading(false));
   }, [user]);
@@ -109,10 +143,90 @@ function SellerContent() {
     }
   }
 
-  const activeOrders = orders.filter((o) => !['RELEASED', 'REFUNDED'].includes(o.status));
-  const completedOrders = orders.filter((o) => ['RELEASED', 'REFUNDED'].includes(o.status));
-  const totalEarned = completedOrders.filter((o) => o.status === 'RELEASED').reduce((s, o) => s + o.amount_cents, 0);
-  const activeListings = listings.filter((l) => l.status === 'active');
+  // --- Draft publish ---
+
+  function toggleDraftSelected(id: number) {
+    setSelectedDrafts((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll(draftIds: number[]) {
+    setSelectedDrafts((prev) =>
+      prev.size === draftIds.length ? new Set() : new Set(draftIds)
+    );
+  }
+
+  async function handlePublishSelected() {
+    if (!user || selectedDrafts.size === 0) return;
+    setPublishingDrafts(true);
+    const newErrors: Record<number, string> = {};
+    const newEscrowPending: EscrowPendingItem[] = [];
+    const successIds: number[] = [];
+
+    for (const id of Array.from(selectedDrafts)) {
+      try {
+        const result = await publishListing(id);
+        if (!result.ok) {
+          newErrors[id] = `Missing: ${(result.missing ?? []).join(', ') || 'incomplete fields'}`;
+        } else {
+          successIds.push(id);
+          const published = result.listing as any;
+          const price_cents: number = published?.price_cents;
+          const title: string = published?.title ?? listings.find((l) => l.id === id)?.title ?? '';
+          // Await escrow sync so failures are visible, not silently dropped
+          try {
+            const syncRes = await syncListingToEscrow({ id, seller_id: user.id, title, price_cents });
+            if (!syncRes.ok) throw new Error('sync not ok');
+          } catch {
+            newEscrowPending.push({ id, title, seller_id: user.id, price_cents });
+          }
+        }
+      } catch {
+        // Network or parse error — do not abort remaining drafts
+        newErrors[id] = 'Network error — try again';
+      }
+    }
+
+    setDraftErrors(newErrors);
+    // Keep only failed drafts selected; clear successfully published ones
+    setSelectedDrafts(new Set(Object.keys(newErrors).map(Number)));
+    if (newEscrowPending.length > 0) {
+      setEscrowPending((prev) => [...prev, ...newEscrowPending]);
+    }
+    // Refresh listing list so published items move to active section
+    await refreshListings();
+    setPublishingDrafts(false);
+  }
+
+  async function handleRetryEscrowSync(item: EscrowPendingItem) {
+    setRetryingSyncId(item.id);
+    try {
+      const res = await syncListingToEscrow({
+        id: item.id,
+        seller_id: item.seller_id,
+        title: item.title,
+        price_cents: item.price_cents,
+      });
+      if (res.ok) {
+        setEscrowPending((prev) => prev.filter((i) => i.id !== item.id));
+      }
+    } catch {
+      // Still show — user can try again
+    } finally {
+      setRetryingSyncId(null);
+    }
+  }
+
+  const draftListings    = listings.filter((l) => l.status === 'draft');
+  const nonDraftListings = listings.filter((l) => l.status !== 'draft');
+  const activeOrders     = orders.filter((o) => !['RELEASED', 'REFUNDED'].includes(o.status));
+  const completedOrders  = orders.filter((o) => ['RELEASED', 'REFUNDED'].includes(o.status));
+  const totalEarned      = completedOrders.filter((o) => o.status === 'RELEASED')
+                                          .reduce((s, o) => s + o.amount_cents, 0);
+  const activeListings   = nonDraftListings.filter((l) => l.status === 'active');
 
   if (loading) {
     return (
@@ -162,6 +276,29 @@ function SellerContent() {
           </Link>
         </div>
       </div>
+
+      {/* Escrow sync failure banner */}
+      {escrowPending.length > 0 && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-5">
+          <p className="font-semibold text-amber-900 text-sm mb-3">
+            {escrowPending.length} listing{escrowPending.length > 1 ? 's were' : ' was'} published but marketplace sync failed.
+          </p>
+          <div className="space-y-2">
+            {escrowPending.map((item) => (
+              <div key={item.id} className="flex items-center justify-between">
+                <span className="text-sm text-amber-800 truncate max-w-xs">{item.title}</span>
+                <button
+                  onClick={() => handleRetryEscrowSync(item)}
+                  disabled={retryingSyncId === item.id}
+                  className="shrink-0 ml-3 text-xs font-semibold bg-amber-600 text-white px-3 py-1.5 rounded-lg hover:bg-amber-700 disabled:opacity-50 transition-colors"
+                >
+                  {retryingSyncId === item.id ? 'Retrying…' : 'Retry Sync'}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Stripe Connect banner */}
       {connectStatus && (
@@ -255,7 +392,7 @@ function SellerContent() {
                 ) : (
                   <>
                     <p className="font-semibold text-amber-900 text-sm">Add a Ship-from Address</p>
-                    <p className="text-xs text-amber-700 mt-0.5">Required before you can create listings.</p>
+                    <p className="text-xs text-amber-700 mt-0.5">Required before you can publish listings (not needed to save drafts).</p>
                   </>
                 )}
               </div>
@@ -314,7 +451,7 @@ function SellerContent() {
         )}
       </div>
 
-      {/* Stats */}
+      {/* Stats — counts exclude drafts */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         {[
           {
@@ -322,7 +459,7 @@ function SellerContent() {
             icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />,
           },
           {
-            label: 'Total Listings', value: listings.length,
+            label: 'Published Listings', value: nonDraftListings.length,
             icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />,
           },
           {
@@ -358,7 +495,54 @@ function SellerContent() {
         </section>
       )}
 
-      {/* My Listings */}
+      {/* Drafts section */}
+      {draftListings.length > 0 && (
+        <section>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-3">
+              <h2 className="text-lg font-semibold text-gray-900">Drafts ({draftListings.length})</h2>
+              <button
+                type="button"
+                onClick={() => toggleSelectAll(draftListings.map((d) => d.id))}
+                className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                {selectedDrafts.size === draftListings.length ? 'Deselect all' : 'Select all'}
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={handlePublishSelected}
+              disabled={selectedDrafts.size === 0 || publishingDrafts}
+              className="inline-flex items-center gap-2 bg-brand-700 text-white text-sm font-semibold px-4 py-2 rounded-lg hover:bg-brand-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {publishingDrafts ? (
+                <>
+                  <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                  </svg>
+                  Publishing…
+                </>
+              ) : (
+                `Publish Selected${selectedDrafts.size > 0 ? ` (${selectedDrafts.size})` : ''}`
+              )}
+            </button>
+          </div>
+          <div className="space-y-2">
+            {draftListings.map((draft) => (
+              <DraftRow
+                key={draft.id}
+                draft={draft}
+                selected={selectedDrafts.has(draft.id)}
+                onToggle={toggleDraftSelected}
+                error={draftErrors[draft.id]}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* My Listings (published only) */}
       <section>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-lg font-semibold text-gray-900">My Listings</h2>
@@ -366,7 +550,7 @@ function SellerContent() {
             + Add new
           </Link>
         </div>
-        {listings.length === 0 ? (
+        {nonDraftListings.length === 0 ? (
           <div className="text-center py-20 bg-white rounded-xl border border-gray-200">
             <svg className="w-14 h-14 text-gray-200 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
@@ -378,10 +562,68 @@ function SellerContent() {
           </div>
         ) : (
           <div className="space-y-2">
-            {listings.map((l) => <ListingRow key={l.id} listing={l} />)}
+            {nonDraftListings.map((l) => <ListingRow key={l.id} listing={l} />)}
           </div>
         )}
       </section>
+    </div>
+  );
+}
+
+function DraftRow({
+  draft, selected, onToggle, error,
+}: {
+  draft: Listing;
+  selected: boolean;
+  onToggle: (id: number) => void;
+  error?: string;
+}) {
+  const photo = draft.photos?.[0];
+  const imgUrl = photo ? `${process.env.NEXT_PUBLIC_LISTING_URL}/photos/${photo.filename}` : null;
+
+  return (
+    <div className={`flex items-center justify-between bg-white rounded-xl border px-5 py-3.5 transition-all ${
+      error ? 'border-red-200' : 'border-amber-200'
+    }`}>
+      <div className="flex items-center gap-4 min-w-0">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={() => onToggle(draft.id)}
+          className="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500 shrink-0"
+        />
+        <div className="w-12 h-12 rounded-lg overflow-hidden bg-amber-50 shrink-0">
+          {imgUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={imgUrl} alt={draft.title} className="w-full h-full object-cover" />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center text-amber-300">
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+            </div>
+          )}
+        </div>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-gray-900 truncate">{draft.title}</p>
+          <div className="flex items-center gap-2 mt-0.5">
+            <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">Draft</span>
+            {draft.price_cents != null
+              ? <span className="text-xs text-gray-400">${(draft.price_cents / 100).toFixed(2)}</span>
+              : <span className="text-xs text-gray-400 italic">No price set</span>
+            }
+          </div>
+          {error && (
+            <p className="text-xs text-red-600 mt-0.5">{error}</p>
+          )}
+        </div>
+      </div>
+      <Link
+        href={`/listings/new?edit=${draft.id}`}
+        className="shrink-0 ml-4 text-sm font-semibold text-brand-700 hover:underline"
+      >
+        Edit
+      </Link>
     </div>
   );
 }
@@ -440,11 +682,13 @@ function ListingRow({ listing: l }: { listing: Listing }) {
         <p className="text-sm font-semibold text-gray-900 truncate max-w-xs">{l.title}</p>
       </div>
       <div className="flex items-center gap-3">
-        <p className="text-sm font-bold text-gray-900">${(l.price_cents / 100).toFixed(2)}</p>
+        <p className="text-sm font-bold text-gray-900">
+          {l.price_cents != null ? `$${(l.price_cents / 100).toFixed(2)}` : '—'}
+        </p>
         <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${
-          l.status === 'active' ? 'bg-brand-100 text-brand-800' :
-          l.status === 'sold'   ? 'bg-gray-100 text-gray-500' :
-                                  'bg-amber-100 text-amber-700'
+          l.status === 'active'   ? 'bg-brand-100 text-brand-800' :
+          l.status === 'sold'     ? 'bg-gray-100 text-gray-500' :
+                                    'bg-amber-100 text-amber-700'
         }`}>
           {l.status.charAt(0).toUpperCase() + l.status.slice(1)}
         </span>
