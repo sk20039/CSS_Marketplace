@@ -396,7 +396,10 @@ router.post('/:id/reactivate', requireAuth, async (req, res, next) => {
 
     // Gate 2: escrow sync — must succeed before the listing becomes active.
     // Supports both an explicit override URL and Railway's auto-injected variable.
-    const escrowUrl = process.env.ESCROW_SERVICE_URL || process.env.RAILWAY_SERVICE_ESCROW_SERVICE_URL;
+    // Railway injects RAILWAY_SERVICE_ESCROW_SERVICE_URL without a scheme
+    // (e.g. "escrow-service-production-1e20.up.railway.app") so we normalise it.
+    let escrowUrl = process.env.ESCROW_SERVICE_URL || process.env.RAILWAY_SERVICE_ESCROW_SERVICE_URL;
+    if (escrowUrl && !/^https?:\/\//i.test(escrowUrl)) escrowUrl = `https://${escrowUrl}`;
     if (escrowUrl) {
       const timeoutMs = parseInt(process.env.ESCROW_SYNC_TIMEOUT_MS || '8000', 10);
       const controller = new AbortController();
