@@ -96,6 +96,8 @@ function NewListingForm() {
 
   // Existing photos already uploaded to the draft (edit mode)
   const [existingPhotos, setExistingPhotos] = useState<ExistingPhoto[]>([]);
+  // Per-photo inline delete error (keyed by photo id)
+  const [photoDeleteErrors, setPhotoDeleteErrors] = useState<Record<number, string>>({});
 
   // Loading / error states
   const [error, setError] = useState('');
@@ -163,8 +165,8 @@ function NewListingForm() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previews]);
 
-  // Maximum new photos allowed (total cap is 5)
-  const remainingPhotoSlots = Math.max(0, 5 - existingPhotos.length);
+  // Remaining upload slots: 5 minus already-uploaded minus currently selected-but-not-yet-uploaded
+  const remainingPhotoSlots = Math.max(0, 5 - existingPhotos.length - photos.length);
 
   // --- Helpers ---
 
@@ -195,7 +197,8 @@ function NewListingForm() {
 
   async function uploadNewPhotos(id: number): Promise<string[]> {
     const failedNames: string[] = [];
-    for (const file of photos.slice(0, remainingPhotoSlots)) {
+    const maxNew = Math.max(0, 5 - existingPhotos.length);
+    for (const file of photos.slice(0, maxNew)) {
       const photoRes = await uploadPhoto(id, file);
       if (!photoRes.ok) failedNames.push(file.name);
     }
@@ -273,14 +276,26 @@ function NewListingForm() {
   // --- Delete an existing photo in edit mode ---
   async function handleDeleteExistingPhoto(photo: ExistingPhoto) {
     if (!editId) return;
+    setPhotoDeleteErrors((prev) => { const n = { ...prev }; delete n[photo.id]; return n; });
     try {
       const res = await deletePhoto(editId, photo.id);
       if (res.ok) {
         setExistingPhotos((prev) => prev.filter((p) => p.id !== photo.id));
+      } else {
+        setPhotoDeleteErrors((prev) => ({ ...prev, [photo.id]: 'Could not remove — please try again' }));
       }
     } catch {
-      // Non-fatal — user can try again
+      setPhotoDeleteErrors((prev) => ({ ...prev, [photo.id]: 'Network error — please try again' }));
     }
+  }
+
+  // --- Remove a newly selected (not yet uploaded) photo ---
+  function handleRemoveNewPhoto(index: number) {
+    setPreviews((prev) => {
+      URL.revokeObjectURL(prev[index]);
+      return prev.filter((_, i) => i !== index);
+    });
+    setPhotos((prev) => prev.filter((_, i) => i !== index));
   }
 
   // --- Retry escrow sync (single publish path) ---
@@ -435,7 +450,9 @@ function NewListingForm() {
   }
 
   function handleFiles(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files || []).slice(0, remainingPhotoSlots);
+    // Cap by total slots available for new photos (existing already uploaded count against the 5 limit)
+    const maxNew = Math.max(0, 5 - existingPhotos.length);
+    const files = Array.from(e.target.files || []).slice(0, maxNew);
     setPhotos(files);
     setPreviews((prev) => {
       prev.forEach((url) => URL.revokeObjectURL(url));
@@ -890,22 +907,27 @@ function NewListingForm() {
             <div className="mb-4">
               <p className="text-xs text-gray-500 mb-2">Uploaded photos (click ✕ to remove)</p>
               <div className="flex gap-3 flex-wrap">
-                {existingPhotos.map((photo) => (
-                  <div key={photo.id} className="relative group">
+                {existingPhotos.map((photo, i) => (
+                  <div key={photo.id} className="relative">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={`${process.env.NEXT_PUBLIC_LISTING_URL}/photos/${photo.filename}`}
-                      alt="Uploaded photo"
+                      alt={`Uploaded photo ${i + 1}`}
                       className="w-20 h-20 object-cover rounded-xl border border-gray-200"
                     />
                     <button
                       type="button"
                       onClick={() => handleDeleteExistingPhoto(photo)}
-                      className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600"
-                      aria-label="Remove photo"
+                      className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center hover:bg-red-600 shadow-sm"
+                      aria-label={`Remove photo ${i + 1}`}
                     >
                       &times;
                     </button>
+                    {photoDeleteErrors[photo.id] && (
+                      <p className="text-xs text-red-600 mt-1 w-20 text-center leading-tight">
+                        {photoDeleteErrors[photo.id]}
+                      </p>
+                    )}
                   </div>
                 ))}
               </div>
@@ -936,13 +958,22 @@ function NewListingForm() {
               {previews.length > 0 && (
                 <div className="flex gap-3 mt-4 flex-wrap">
                   {previews.map((src, i) => (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      key={i}
-                      src={src}
-                      alt={`preview ${i + 1}`}
-                      className="w-20 h-20 object-cover rounded-xl border border-gray-200"
-                    />
+                    <div key={i} className="relative">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={src}
+                        alt={`preview ${i + 1}`}
+                        className="w-20 h-20 object-cover rounded-xl border border-gray-200"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveNewPhoto(i)}
+                        className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center hover:bg-red-600 shadow-sm"
+                        aria-label={`Remove photo ${i + 1}`}
+                      >
+                        &times;
+                      </button>
+                    </div>
                   ))}
                 </div>
               )}
