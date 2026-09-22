@@ -6,6 +6,7 @@ import AuthGuard from '@/components/AuthGuard';
 import {
   listingFetch, getOrders, connectSellerStripe, getSellerConnectStatus,
   syncUserToEscrow, syncListingToEscrow, publishListing,
+  deactivateListing, reactivateListing, deleteDraftListing,
   authMe, saveShipFromAddress, type ShipFromAddress,
 } from '@/lib/api';
 import { useAuth, setAccessToken } from '@/lib/auth';
@@ -74,6 +75,15 @@ function SellerContent() {
   // Escrow sync failures after bulk publish (persist across listing refresh)
   const [escrowPending, setEscrowPending] = useState<EscrowPendingItem[]>([]);
   const [retryingSyncId, setRetryingSyncId] = useState<number | null>(null);
+
+  // Listing management actions
+  type PendingAction =
+    | { type: 'deactivate'; id: number; title: string }
+    | { type: 'reactivate'; id: number; title: string }
+    | { type: 'delete_draft'; id: number; title: string };
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const [listingActionLoading, setListingActionLoading] = useState<number | null>(null);
+  const [listingActionErrors, setListingActionErrors] = useState<Record<number, string>>({});
 
   useEffect(() => {
     if (!user || !accessToken) return;
@@ -217,6 +227,48 @@ function SellerContent() {
       // Still show — user can try again
     } finally {
       setRetryingSyncId(null);
+    }
+  }
+
+  async function executePendingAction() {
+    if (!pendingAction) return;
+    const { type, id, title } = pendingAction;
+    setPendingAction(null);
+    setListingActionLoading(id);
+    setListingActionErrors((prev) => { const next = { ...prev }; delete next[id]; return next; });
+    try {
+      if (type === 'deactivate') {
+        const res = await deactivateListing(id);
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          setListingActionErrors((prev) => ({ ...prev, [id]: (data as any).error || 'Failed to deactivate' }));
+        } else {
+          await refreshListings();
+        }
+      } else if (type === 'reactivate') {
+        const res = await reactivateListing(id);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const msg = (data as any).code === 'ESCROW_SYNC_FAILED'
+            ? 'Marketplace sync failed — please try again.'
+            : ((data as any).error || 'Failed to reactivate');
+          setListingActionErrors((prev) => ({ ...prev, [id]: msg }));
+        } else {
+          await refreshListings();
+        }
+      } else if (type === 'delete_draft') {
+        const res = await deleteDraftListing(id);
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          setListingActionErrors((prev) => ({ ...prev, [id]: (data as any).error || 'Failed to delete' }));
+        } else {
+          await refreshListings();
+        }
+      }
+    } catch {
+      setListingActionErrors((prev) => ({ ...prev, [id]: 'Network error — please try again' }));
+    } finally {
+      setListingActionLoading((cur) => (cur === id ? null : cur));
     }
   }
 
@@ -535,7 +587,9 @@ function SellerContent() {
                 draft={draft}
                 selected={selectedDrafts.has(draft.id)}
                 onToggle={toggleDraftSelected}
-                error={draftErrors[draft.id]}
+                error={draftErrors[draft.id] || listingActionErrors[draft.id]}
+                onDelete={(id, title) => setPendingAction({ type: 'delete_draft', id, title })}
+                deleteLoading={listingActionLoading === draft.id}
               />
             ))}
           </div>
@@ -562,21 +616,41 @@ function SellerContent() {
           </div>
         ) : (
           <div className="space-y-2">
-            {nonDraftListings.map((l) => <ListingRow key={l.id} listing={l} />)}
+            {nonDraftListings.map((l) => (
+              <ListingRow
+                key={l.id}
+                listing={l}
+                onDeactivate={(id, title) => setPendingAction({ type: 'deactivate', id, title })}
+                onReactivate={(id, title) => setPendingAction({ type: 'reactivate', id, title })}
+                actionLoading={listingActionLoading === l.id}
+                actionError={listingActionErrors[l.id]}
+              />
+            ))}
           </div>
         )}
       </section>
+
+      {/* Confirmation dialog */}
+      {pendingAction && (
+        <ConfirmDialog
+          action={pendingAction}
+          onConfirm={executePendingAction}
+          onCancel={() => setPendingAction(null)}
+        />
+      )}
     </div>
   );
 }
 
 function DraftRow({
-  draft, selected, onToggle, error,
+  draft, selected, onToggle, error, onDelete, deleteLoading,
 }: {
   draft: Listing;
   selected: boolean;
   onToggle: (id: number) => void;
   error?: string;
+  onDelete: (id: number, title: string) => void;
+  deleteLoading: boolean;
 }) {
   const photo = draft.photos?.[0];
   const imgUrl = photo ? `${process.env.NEXT_PUBLIC_LISTING_URL}/photos/${photo.filename}` : null;
@@ -618,12 +692,22 @@ function DraftRow({
           )}
         </div>
       </div>
-      <Link
-        href={`/listings/new?edit=${draft.id}`}
-        className="shrink-0 ml-4 text-sm font-semibold text-brand-700 hover:underline"
-      >
-        Edit
-      </Link>
+      <div className="flex items-center gap-3 shrink-0 ml-4">
+        <Link
+          href={`/listings/new?edit=${draft.id}`}
+          className="text-sm font-semibold text-brand-700 hover:underline"
+        >
+          Edit
+        </Link>
+        <button
+          type="button"
+          onClick={() => onDelete(draft.id, draft.title)}
+          disabled={deleteLoading}
+          className="text-sm font-semibold text-red-600 hover:text-red-700 disabled:opacity-50 transition-colors"
+        >
+          {deleteLoading ? 'Deleting…' : 'Delete'}
+        </button>
+      </div>
     </div>
   );
 }
@@ -657,45 +741,142 @@ function OrderRow({ order: o }: { order: Order }) {
   );
 }
 
-function ListingRow({ listing: l }: { listing: Listing }) {
+function ListingRow({
+  listing: l,
+  onDeactivate,
+  onReactivate,
+  actionLoading,
+  actionError,
+}: {
+  listing: Listing;
+  onDeactivate: (id: number, title: string) => void;
+  onReactivate: (id: number, title: string) => void;
+  actionLoading: boolean;
+  actionError?: string;
+}) {
   const photo = l.photos?.[0];
   const imgUrl = photo ? `${process.env.NEXT_PUBLIC_LISTING_URL}/photos/${photo.filename}` : null;
 
   return (
-    <Link
-      href={`/listings/${l.id}`}
-      className="flex items-center justify-between bg-white rounded-xl border border-gray-200 px-5 py-3.5 hover:shadow-md hover:border-brand-200 transition-all group"
-    >
-      <div className="flex items-center gap-4">
-        <div className="w-12 h-12 rounded-lg overflow-hidden bg-gray-100 shrink-0">
-          {imgUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={imgUrl} alt={l.title} className="w-full h-full object-cover" />
-          ) : (
-            <div className="w-full h-full flex items-center justify-center text-gray-300">
-              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-              </svg>
-            </div>
+    <div className="bg-white rounded-xl border border-gray-200 px-5 py-3.5 transition-all hover:shadow-sm">
+      <div className="flex items-center justify-between">
+        <Link
+          href={`/listings/${l.id}`}
+          className="flex items-center gap-4 min-w-0 group flex-1"
+        >
+          <div className="w-12 h-12 rounded-lg overflow-hidden bg-gray-100 shrink-0">
+            {imgUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={imgUrl} alt={l.title} className="w-full h-full object-cover" />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center text-gray-300">
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+              </div>
+            )}
+          </div>
+          <p className="text-sm font-semibold text-gray-900 truncate max-w-xs group-hover:text-brand-700 transition-colors">{l.title}</p>
+        </Link>
+        <div className="flex items-center gap-3 shrink-0 ml-4">
+          <p className="text-sm font-bold text-gray-900">
+            {l.price_cents != null ? `$${(l.price_cents / 100).toFixed(2)}` : '—'}
+          </p>
+          <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${
+            l.status === 'active'   ? 'bg-brand-100 text-brand-800' :
+            l.status === 'sold'     ? 'bg-gray-100 text-gray-500' :
+                                      'bg-amber-100 text-amber-700'
+          }`}>
+            {l.status.charAt(0).toUpperCase() + l.status.slice(1)}
+          </span>
+          {l.status === 'active' && (
+            <button
+              type="button"
+              onClick={() => onDeactivate(l.id, l.title)}
+              disabled={actionLoading}
+              className="text-xs font-semibold text-gray-500 hover:text-red-600 disabled:opacity-50 transition-colors border border-gray-200 rounded-lg px-2.5 py-1 hover:border-red-200"
+            >
+              {actionLoading ? '…' : 'Deactivate'}
+            </button>
+          )}
+          {l.status === 'inactive' && (
+            <button
+              type="button"
+              onClick={() => onReactivate(l.id, l.title)}
+              disabled={actionLoading}
+              className="text-xs font-semibold text-brand-700 hover:text-brand-800 disabled:opacity-50 transition-colors border border-brand-200 rounded-lg px-2.5 py-1 hover:border-brand-400"
+            >
+              {actionLoading ? '…' : 'Reactivate'}
+            </button>
           )}
         </div>
-        <p className="text-sm font-semibold text-gray-900 truncate max-w-xs">{l.title}</p>
       </div>
-      <div className="flex items-center gap-3">
-        <p className="text-sm font-bold text-gray-900">
-          {l.price_cents != null ? `$${(l.price_cents / 100).toFixed(2)}` : '—'}
-        </p>
-        <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${
-          l.status === 'active'   ? 'bg-brand-100 text-brand-800' :
-          l.status === 'sold'     ? 'bg-gray-100 text-gray-500' :
-                                    'bg-amber-100 text-amber-700'
-        }`}>
-          {l.status.charAt(0).toUpperCase() + l.status.slice(1)}
-        </span>
-        <svg className="w-4 h-4 text-gray-300 group-hover:text-brand-600 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-        </svg>
+      {actionError && (
+        <p className="text-xs text-red-600 mt-2 ml-16">{actionError}</p>
+      )}
+    </div>
+  );
+}
+
+type ConfirmActionType = 'deactivate' | 'reactivate' | 'delete_draft';
+
+const CONFIRM_COPY: Record<ConfirmActionType, { title: string; body: (t: string) => string; confirm: string; danger: boolean }> = {
+  deactivate: {
+    title: 'Deactivate listing',
+    body: (t) => `"${t}" will be hidden from buyers. You can reactivate it at any time.`,
+    confirm: 'Deactivate',
+    danger: false,
+  },
+  reactivate: {
+    title: 'Reactivate listing',
+    body: (t) => `"${t}" will be visible to buyers and available for purchase again.`,
+    confirm: 'Reactivate',
+    danger: false,
+  },
+  delete_draft: {
+    title: 'Delete draft',
+    body: (t) => `"${t}" and all its photos will be permanently deleted. This cannot be undone.`,
+    confirm: 'Delete permanently',
+    danger: true,
+  },
+};
+
+function ConfirmDialog({
+  action,
+  onConfirm,
+  onCancel,
+}: {
+  action: { type: ConfirmActionType; id: number; title: string };
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const copy = CONFIRM_COPY[action.type];
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+      <div className="bg-white rounded-2xl shadow-xl max-w-sm w-full p-6">
+        <h3 className="text-base font-bold text-gray-900 mb-2">{copy.title}</h3>
+        <p className="text-sm text-gray-600 mb-6">{copy.body(action.title)}</p>
+        <div className="flex gap-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="flex-1 border border-gray-200 text-gray-700 py-2 rounded-lg font-semibold text-sm hover:bg-gray-50 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            className={`flex-1 py-2 rounded-lg font-bold text-sm text-white transition-colors ${
+              copy.danger
+                ? 'bg-red-600 hover:bg-red-700'
+                : 'bg-brand-700 hover:bg-brand-800'
+            }`}
+          >
+            {copy.confirm}
+          </button>
+        </div>
       </div>
-    </Link>
+    </div>
   );
 }
