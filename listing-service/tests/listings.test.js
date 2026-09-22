@@ -709,6 +709,53 @@ async function run() {
     assert(header === 'nosniff', `expected nosniff header, got: ${header}`);
   });
 
+  // Photo upload — size limit (HTTP 413)
+  // Boundary: multer limit is set to MAX_FILE_SIZE + 1 so that busboy's >= comparison
+  // accepts files of exactly MAX_FILE_SIZE (5 MB) and rejects files of MAX_FILE_SIZE + 1.
+  console.log('\nPOST /listings/:id/photos — size limit (413)');
+
+  // Exactly 5 MB = 5 * 1024 * 1024 = 5,242,880 bytes total
+  const EXACTLY_5MB = Buffer.concat([JPEG_BYTES, Buffer.alloc(5 * 1024 * 1024 - JPEG_BYTES.length)]);
+  // Exactly 5 MB + 1 byte = 5,242,881 bytes total
+  const FIVE_MB_PLUS_ONE = Buffer.concat([JPEG_BYTES, Buffer.alloc(5 * 1024 * 1024 + 1 - JPEG_BYTES.length)]);
+
+  await cleanup();
+  await test('file exactly 5 MB is accepted', async () => {
+    const id = await createListingForPhoto();
+    const res = await request(app)
+      .post(`/listings/${id}/photos`)
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .attach('photo', EXACTLY_5MB, { filename: 'exact5mb.jpg', contentType: 'image/jpeg' });
+    assert(res.status === 201, `expected 201 at exactly 5 MB, got ${res.status}: ${JSON.stringify(res.body)}`);
+  });
+
+  await cleanup();
+  await test('file 5 MB + 1 byte returns 413 with clear message', async () => {
+    const id = await createListingForPhoto();
+    const res = await request(app)
+      .post(`/listings/${id}/photos`)
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .attach('photo', FIVE_MB_PLUS_ONE, { filename: 'over5mb.jpg', contentType: 'image/jpeg' });
+    assert(res.status === 413, `expected 413, got ${res.status}: ${JSON.stringify(res.body)}`);
+    assert(
+      res.body.error === 'Each photo must be 5 MB or smaller.',
+      `unexpected error message: ${JSON.stringify(res.body)}`
+    );
+  });
+
+  await cleanup();
+  await test('file 5 MB + 1 byte creates no DB row', async () => {
+    const id = await createListingForPhoto();
+    await request(app)
+      .post(`/listings/${id}/photos`)
+      .set('Authorization', `Bearer ${sellerToken}`)
+      .attach('photo', FIVE_MB_PLUS_ONE, { filename: 'over5mb.jpg', contentType: 'image/jpeg' });
+    const { rows } = await pool.query(
+      'SELECT COUNT(*) AS c FROM listing_photos WHERE listing_id = $1', [id]
+    );
+    assert(parseInt(rows[0].c, 10) === 0, `expected 0 photo rows, got ${rows[0].c}`);
+  });
+
   // Teardown
   await pool.end();
 
