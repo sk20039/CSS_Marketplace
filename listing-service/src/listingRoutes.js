@@ -1,4 +1,6 @@
 const express = require('express');
+const path = require('path');
+const fs = require('fs');
 const pool = require('./db');
 const requireAuth = require('./middleware/requireAuth');
 const { postNewListingToSocial } = require('./blotatoService');
@@ -14,6 +16,12 @@ const MIN_LISTING_PRICE_CENTS = 1000; // $10.00 minimum listing price
 // sold/active). Must be set via INTERNAL_SERVICE_SECRET. Never falls back to
 // JWT_SECRET — user tokens must not authenticate internal service endpoints.
 const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET || '';
+
+// Uploads directory — mirrors the same env-var logic in photoRoutes so that
+// permanent draft deletion can resolve the same file paths.
+const UPLOADS_DIR = process.env.UPLOADS_DIR
+  ? path.resolve(process.env.UPLOADS_DIR)
+  : path.join(__dirname, '..', 'uploads');
 
 function requireInternalSecret(req, res, next) {
   const secret = req.headers['x-internal-secret'];
@@ -337,7 +345,122 @@ router.post('/:id/publish', requireAuth, async (req, res, next) => {
   }
 });
 
-// PATCH /listings/:id — partial update
+// POST /listings/:id/reactivate — restore an inactive listing to active.
+//
+// Safety ordering (all three gates run in sequence; any failure leaves the
+// listing inactive and returns without calling the next step):
+//
+//   1. validateListingForPublish — listing must be complete (title, price,
+//      category, condition, package dims, ship-from address). Incomplete
+//      listings return 422 without ever contacting escrow.
+//
+//   2. Escrow sync — awaited with ESCROW_SYNC_TIMEOUT_MS timeout (default 8 s).
+//      A slow or unavailable escrow returns 502 + ESCROW_SYNC_FAILED. The seller
+//      token is forwarded in the Authorization header so escrow can authenticate
+//      the caller; it is never logged or included in any response body.
+//
+//      Escrow URL resolution (first match wins):
+//        ESCROW_SERVICE_URL             — explicit override (local dev, staging)
+//        RAILWAY_SERVICE_ESCROW_SERVICE_URL — auto-injected by Railway in production
+//
+//      If neither is set (CI without escrow) the sync step is skipped.
+//
+//   3. Atomic DB update — WHERE status = 'inactive' guards concurrent races;
+//      the loser gets 409.
+//
+// Response contract:
+//   200  { ok: true, listing: {...} }            — reactivated successfully
+//   422  { ok: false, missing: [...] }           — incomplete listing; no escrow call
+//   502  { error, code: 'ESCROW_SYNC_FAILED' }   — sync timed out or failed
+//   409  { error: '...' }                        — not inactive, or concurrent race
+//   403  { error: '...' }                        — caller does not own this listing
+//   404  { error: '...' }                        — listing not found
+router.post('/:id/reactivate', requireAuth, async (req, res, next) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM listings WHERE id = $1', [req.params.id]);
+    const listing = rows[0];
+    if (!listing) return res.status(404).json({ error: 'Listing not found' });
+    if (String(listing.seller_id) !== String(req.user.id)) {
+      return res.status(403).json({ error: 'Forbidden: not your listing' });
+    }
+    if (listing.status !== 'inactive') {
+      return res.status(409).json({ error: 'Only inactive listings can be reactivated' });
+    }
+
+    // Gate 1: completeness check — identical rules to publish. Incomplete
+    // listings must not become active regardless of whether escrow is available.
+    const missing = validateListingForPublish(listing, req.user);
+    if (missing.length > 0) {
+      return res.status(422).json({ ok: false, missing });
+    }
+
+    // Gate 2: escrow sync — must succeed before the listing becomes active.
+    // Supports both an explicit override URL and Railway's auto-injected variable.
+    const escrowUrl = process.env.ESCROW_SERVICE_URL || process.env.RAILWAY_SERVICE_ESCROW_SERVICE_URL;
+    if (escrowUrl) {
+      const timeoutMs = parseInt(process.env.ESCROW_SYNC_TIMEOUT_MS || '8000', 10);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const syncRes = await fetch(`${escrowUrl}/api/sync/listing`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            // Forward the seller's auth token so escrow can authenticate the
+            // caller. Never logged; never included in any response body.
+            Authorization: req.headers.authorization || '',
+          },
+          body: JSON.stringify({
+            id: listing.id,
+            seller_id: listing.seller_id,
+            title: listing.title,
+            price_cents: listing.price_cents,
+          }),
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+        if (!syncRes.ok) {
+          return res.status(502).json({
+            error: 'Marketplace sync failed — listing remains inactive. Please try again.',
+            code: 'ESCROW_SYNC_FAILED',
+          });
+        }
+      } catch {
+        clearTimeout(timeoutId);
+        return res.status(502).json({
+          error: 'Marketplace sync failed — listing remains inactive. Please try again.',
+          code: 'ESCROW_SYNC_FAILED',
+        });
+      }
+    }
+
+    // Gate 3: atomic status change — WHERE status = 'inactive' ensures that if
+    // two requests race, only one wins. The loser gets a 409.
+    const { rows: updated } = await pool.query(
+      `UPDATE listings SET status = 'active', updated_at = NOW()
+       WHERE id = $1 AND status = 'inactive'
+       RETURNING id`,
+      [listing.id]
+    );
+    if (updated.length === 0) {
+      return res.status(409).json({ error: 'Listing status changed concurrently — please refresh' });
+    }
+
+    const { rows: final } = await pool.query('SELECT * FROM listings WHERE id = $1', [listing.id]);
+    res.json({ ok: true, listing: await withPhotos(final[0]) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PATCH /listings/:id — partial update of content fields only.
+//
+// Status changes are NEVER accepted through this endpoint regardless of value.
+// Status transitions must happen through dedicated endpoints:
+//   active → inactive : DELETE /listings/:id
+//   inactive → active : POST /listings/:id/reactivate
+//   draft → active   : POST /listings/:id/publish
+//   active → sold    : PATCH /listings/:id/mark-sold (internal)
 router.patch('/:id', requireAuth, async (req, res, next) => {
   try {
     const { rows } = await pool.query('SELECT * FROM listings WHERE id = $1', [req.params.id]);
@@ -347,7 +470,14 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
       return res.status(403).json({ error: 'Forbidden: not your listing' });
     }
 
-    const allowed = ['title', 'description', 'price_cents', 'category', 'condition', 'status',
+    // Reject any attempt to change status through PATCH, regardless of the value.
+    if (req.body.status !== undefined) {
+      return res.status(400).json({
+        error: 'Status changes are not allowed via PATCH. Use the dedicated deactivate, reactivate, publish, or sold endpoints.',
+      });
+    }
+
+    const allowed = ['title', 'description', 'price_cents', 'category', 'condition',
                      'weight_oz', 'pkg_length_in', 'pkg_width_in', 'pkg_height_in'];
     const updates = {};
     for (const key of allowed) {
@@ -355,10 +485,6 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
     }
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ error: 'No valid fields to update' });
-    }
-    // Prevent manually setting a listing back to draft via PATCH.
-    if (updates.status === 'draft') {
-      return res.status(400).json({ error: 'Cannot set status to draft via PATCH' });
     }
     if (updates.price_cents !== undefined) {
       if (!Number.isInteger(updates.price_cents) || updates.price_cents < MIN_LISTING_PRICE_CENTS) {
@@ -436,7 +562,11 @@ router.patch('/:id/mark-active', requireInternalSecret, async (req, res, next) =
   }
 });
 
-// DELETE /listings/:id — soft delete
+// DELETE /listings/:id — soft-delete: active → inactive.
+//
+// Only active listings may be deactivated through this route. Attempting to
+// deactivate a draft, sold, or already-inactive listing returns 409 to prevent
+// accidental state corruption.
 router.delete('/:id', requireAuth, async (req, res, next) => {
   try {
     const { rows } = await pool.query('SELECT * FROM listings WHERE id = $1', [req.params.id]);
@@ -444,6 +574,9 @@ router.delete('/:id', requireAuth, async (req, res, next) => {
     if (!listing) return res.status(404).json({ error: 'Listing not found' });
     if (String(listing.seller_id) !== String(req.user.id)) {
       return res.status(403).json({ error: 'Forbidden: not your listing' });
+    }
+    if (listing.status !== 'active') {
+      return res.status(409).json({ error: 'Only active listings can be deactivated' });
     }
     await pool.query(
       "UPDATE listings SET status = 'inactive', updated_at = NOW() WHERE id = $1",
@@ -453,6 +586,77 @@ router.delete('/:id', requireAuth, async (req, res, next) => {
   } catch (err) {
     next(err);
   }
+});
+
+// DELETE /listings/:id/permanent — hard-delete a draft listing and all its photos.
+//
+// Uses a full database transaction with SELECT FOR UPDATE to prevent races:
+//   BEGIN
+//     SELECT ... FOR UPDATE          — exclusive row lock
+//     verify ownership               — 403 on mismatch
+//     verify status = 'draft'        — 409 if not a draft
+//     DELETE listing_photos          — photo DB records
+//     DELETE listing                 — the listing itself
+//   COMMIT
+// Only after a successful commit are the physical files removed from disk.
+// ENOENT is silently ignored; other unlink errors are logged but do not fail
+// the response (the DB records are already gone).
+router.delete('/:id/permanent', requireAuth, async (req, res, next) => {
+  const client = await pool.connect();
+  let photoFilenames = [];
+  try {
+    await client.query('BEGIN');
+
+    const { rows } = await client.query(
+      'SELECT * FROM listings WHERE id = $1 FOR UPDATE',
+      [req.params.id]
+    );
+    const listing = rows[0];
+    if (!listing) {
+      await client.query('ROLLBACK');
+      client.release();
+      return res.status(404).json({ error: 'Listing not found' });
+    }
+    if (String(listing.seller_id) !== String(req.user.id)) {
+      await client.query('ROLLBACK');
+      client.release();
+      return res.status(403).json({ error: 'Forbidden: not your listing' });
+    }
+    if (listing.status !== 'draft') {
+      await client.query('ROLLBACK');
+      client.release();
+      return res.status(409).json({ error: 'Only draft listings can be permanently deleted' });
+    }
+
+    // Collect filenames before deletion so we can clean up files post-commit.
+    const { rows: photoRows } = await client.query(
+      'SELECT filename FROM listing_photos WHERE listing_id = $1',
+      [listing.id]
+    );
+    photoFilenames = photoRows.map((r) => r.filename);
+
+    await client.query('DELETE FROM listing_photos WHERE listing_id = $1', [listing.id]);
+    await client.query('DELETE FROM listings WHERE id = $1', [listing.id]);
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    client.release();
+    return next(err);
+  }
+  client.release();
+
+  // Post-commit file cleanup. The DB records are gone, so a missing file is safe.
+  for (const filename of photoFilenames) {
+    const filePath = path.join(UPLOADS_DIR, path.basename(filename));
+    fs.unlink(filePath, (err) => {
+      if (err && err.code !== 'ENOENT') {
+        console.error(`[listingRoutes] Failed to delete file ${filePath}:`, err.message);
+      }
+    });
+  }
+
+  res.json({ ok: true });
 });
 
 module.exports = router;

@@ -504,3 +504,20 @@ export async function publishListing(id: number): Promise<{
 export async function deletePhoto(listingId: number, photoId: number): Promise<Response> {
   return listingFetch(`/listings/${listingId}/photos/${photoId}`, { method: 'DELETE' });
 }
+
+// Deactivate an active listing (active → inactive, soft delete).
+export async function deactivateListing(id: number): Promise<Response> {
+  return listingFetch(`/listings/${id}`, { method: 'DELETE' });
+}
+
+// Reactivate an inactive listing (inactive → active).
+// Returns 502 with code ESCROW_SYNC_FAILED if marketplace sync fails —
+// caller should surface a retry banner rather than treating it as a hard error.
+export async function reactivateListing(id: number): Promise<Response> {
+  return listingFetch(`/listings/${id}/reactivate`, { method: 'POST' });
+}
+
+// Permanently delete a draft listing and all its photos.
+export async function deleteDraftListing(id: number): Promise<Response> {
+  return listingFetch(`/listings/${id}/permanent`, { method: 'DELETE' });
+}
