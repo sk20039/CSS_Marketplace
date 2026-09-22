@@ -98,6 +98,8 @@ function NewListingForm() {
   const [existingPhotos, setExistingPhotos] = useState<ExistingPhoto[]>([]);
   // Per-photo inline delete error (keyed by photo id)
   const [photoDeleteErrors, setPhotoDeleteErrors] = useState<Record<number, string>>({});
+  // Inline message for files rejected at selection time due to size
+  const [photoSizeError, setPhotoSizeError] = useState('');
 
   // Loading / error states
   const [error, setError] = useState('');
@@ -450,13 +452,24 @@ function NewListingForm() {
   }
 
   function handleFiles(e: React.ChangeEvent<HTMLInputElement>) {
+    const MAX_BYTES = 5 * 1024 * 1024;
     // Cap by total slots available for new photos (existing already uploaded count against the 5 limit)
     const maxNew = Math.max(0, 5 - existingPhotos.length);
-    const files = Array.from(e.target.files || []).slice(0, maxNew);
-    setPhotos(files);
+    const all = Array.from(e.target.files || []);
+    const oversized = all.filter((f) => f.size > MAX_BYTES);
+    const valid = all.filter((f) => f.size <= MAX_BYTES).slice(0, maxNew);
+    if (oversized.length > 0) {
+      const names = oversized.map((f) => f.name).join(', ');
+      setPhotoSizeError(
+        `${names} ${oversized.length === 1 ? 'exceeds' : 'exceed'} 5 MB and ${oversized.length === 1 ? 'was' : 'were'} not added.`
+      );
+    } else {
+      setPhotoSizeError('');
+    }
+    setPhotos(valid);
     setPreviews((prev) => {
       prev.forEach((url) => URL.revokeObjectURL(url));
-      return files.map((f) => URL.createObjectURL(f));
+      return valid.map((f) => URL.createObjectURL(f));
     });
   }
 
@@ -934,6 +947,10 @@ function NewListingForm() {
             </div>
           )}
 
+          {photoSizeError && (
+            <p className="text-sm text-red-600 mb-3">{photoSizeError}</p>
+          )}
+
           {remainingPhotoSlots > 0 ? (
             <>
               <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -955,31 +972,32 @@ function NewListingForm() {
                   className="hidden"
                 />
               </label>
-              {previews.length > 0 && (
-                <div className="flex gap-3 mt-4 flex-wrap">
-                  {previews.map((src, i) => (
-                    <div key={i} className="relative">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={src}
-                        alt={`preview ${i + 1}`}
-                        className="w-20 h-20 object-cover rounded-xl border border-gray-200"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveNewPhoto(i)}
-                        className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center hover:bg-red-600 shadow-sm"
-                        aria-label={`Remove photo ${i + 1}`}
-                      >
-                        &times;
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
             </>
           ) : (
-            <p className="text-sm text-gray-400">Maximum of 5 photos reached. Remove an existing photo to add a new one.</p>
+            <p className="text-sm text-gray-400 mt-2">Maximum of 5 photos reached. Remove a photo to add a new one.</p>
+          )}
+
+          {previews.length > 0 && (
+            <div className="flex gap-3 mt-4 flex-wrap">
+              {previews.map((src, i) => (
+                <div key={i} className="relative">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={src}
+                    alt={`preview ${i + 1}`}
+                    className="w-20 h-20 object-cover rounded-xl border border-gray-200"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveNewPhoto(i)}
+                    className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center hover:bg-red-600 shadow-sm"
+                    aria-label={`Remove photo ${i + 1}`}
+                  >
+                    &times;
+                  </button>
+                </div>
+              ))}
+            </div>
           )}
         </div>
 

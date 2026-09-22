@@ -59,7 +59,9 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: MAX_FILE_SIZE },
+  // busboy fires LIMIT_FILE_SIZE when bytes >= limit, so set limit to MAX_FILE_SIZE + 1
+  // to ensure a file of exactly MAX_FILE_SIZE bytes is accepted.
+  limits: { fileSize: MAX_FILE_SIZE + 1 },
   fileFilter(req, file, cb) {
     if (ALLOWED_MIME.has(file.mimetype)) {
       cb(null, true);
@@ -93,8 +95,13 @@ router.post('/listings/:id/photos', requireAuth, async (req, res, next) => {
 
     await new Promise((resolve, reject) => {
       upload.single('photo')(req, res, (err) => {
-        if (err) reject(err);
-        else resolve();
+        if (err) {
+          if (err.code === 'LIMIT_FILE_SIZE') {
+            err.statusCode = 413;
+            err.message = 'Each photo must be 5 MB or smaller.';
+          }
+          reject(err);
+        } else resolve();
       });
     });
 
