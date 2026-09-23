@@ -137,8 +137,14 @@ function NewListingForm() {
         setCategory(listing.category ?? 'bat');
         setCondition(listing.condition ?? 'used_good');
         if (listing.weight_oz) {
-          setWeightValue(String(listing.weight_oz));
-          setWeightUnit('oz');
+          const oz = listing.weight_oz;
+          if (oz >= 16) {
+            setWeightValue(String(oz / 16));
+            setWeightUnit('lb');
+          } else {
+            setWeightValue(String(oz));
+            setWeightUnit('oz');
+          }
         }
         if (listing.pkg_length_in) setPkgLength(String(listing.pkg_length_in));
         if (listing.pkg_width_in)  setPkgWidth(String(listing.pkg_width_in));
@@ -869,7 +875,7 @@ function NewListingForm() {
             </label>
             <div className="flex items-center gap-2 max-w-xs">
               <input
-                type="number" required={!editId} min="0.01" step="0.01"
+                type="number" required={!editId} min="0.01" step="any"
                 value={weightValue} onChange={(e) => setWeightValue(e.target.value)}
                 placeholder="e.g. 2.5"
                 className="flex-1 border-2 border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-brand-600 transition-colors"

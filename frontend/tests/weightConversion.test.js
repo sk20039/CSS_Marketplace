@@ -66,5 +66,62 @@ expect('zero oz → 0',             toWeightOz('0', 'oz'), 0);
 expect('existing 32 oz listing — oz unit round-trips',
   toWeightOz('32', 'oz'), 32);
 
+// ---------------------------------------------------------------------------
+// preloadWeightDisplay — mirrors the draft-preload logic in page.tsx
+// If weight_oz >= 16 → display in lb; else display in oz
+// ---------------------------------------------------------------------------
+function preloadWeightDisplay(weight_oz) {
+  if (weight_oz >= 16) {
+    return { value: String(weight_oz / 16), unit: 'lb' };
+  }
+  return { value: String(weight_oz), unit: 'oz' };
+}
+
+console.log('\npreloadWeightDisplay — draft reopen display');
+
+// 32 oz loads as 2 lb
+(function () {
+  const { value, unit } = preloadWeightDisplay(32);
+  expect('32 oz → value "2"', value, '2');
+  expect('32 oz → unit "lb"', unit, 'lb');
+})();
+
+// 24 oz loads as 1.5 lb
+(function () {
+  const { value, unit } = preloadWeightDisplay(24);
+  expect('24 oz → value "1.5"', value, '1.5');
+  expect('24 oz → unit "lb"', unit, 'lb');
+})();
+
+// 15 oz loads as 15 oz (< 16 threshold)
+(function () {
+  const { value, unit } = preloadWeightDisplay(15);
+  expect('15 oz → value "15"', value, '15');
+  expect('15 oz → unit "oz"', unit, 'oz');
+})();
+
+console.log('\npreloadWeightDisplay — load-then-save preserves original oz value');
+
+// Load and save round-trips
+expect('32 oz: preload→save round-trip',
+  toWeightOz(...Object.values(preloadWeightDisplay(32))), 32);
+expect('24 oz: preload→save round-trip',
+  toWeightOz(...Object.values(preloadWeightDisplay(24))), 24);
+expect('15 oz: preload→save round-trip',
+  toWeightOz(...Object.values(preloadWeightDisplay(15))), 15);
+
+// Repeated editing: load → save → reload → save must not drift
+(function () {
+  const cases = [32, 24, 15, 16, 8];
+  console.log('\npreloadWeightDisplay — repeated editing does not drift');
+  cases.forEach((originalOz) => {
+    const { value: v1, unit: u1 } = preloadWeightDisplay(originalOz);
+    const savedOz1 = toWeightOz(v1, u1);
+    const { value: v2, unit: u2 } = preloadWeightDisplay(savedOz1);
+    const savedOz2 = toWeightOz(v2, u2);
+    expect(`${originalOz} oz: two save cycles still ${originalOz} oz`, savedOz2, originalOz);
+  });
+})();
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
