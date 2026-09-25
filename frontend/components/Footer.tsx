@@ -11,7 +11,7 @@ export default function Footer() {
               Cricket<span className="text-brand-500">Market</span>
             </p>
             <p className="text-sm leading-relaxed">
-              USA&apos;s trusted C2C marketplace for cricket equipment. Buy and sell with confidence — payments are protected until you confirm delivery.
+              A new US marketplace built for cricketers to buy and sell equipment securely.
             </p>
           </div>
 
@@ -43,6 +43,7 @@ export default function Footer() {
                 { href: '/register',          label: 'Register' },
                 { href: '/dashboard/buyer',   label: 'Buyer Dashboard' },
                 { href: '/listings/new',      label: 'Sell Equipment' },
+                { href: '/about',             label: 'About' },
               ].map((l) => (
                 <li key={l.href}>
                   <Link href={l.href} className="hover:text-white transition-colors">{l.label}</Link>
@@ -61,6 +62,7 @@ export default function Footer() {
                 { href: '/legal/buyer-protection', label: 'Buyer Protection' },
                 { href: '/legal/refunds',          label: 'Refunds & Cancellations' },
                 { href: '/legal/prohibited-items', label: 'Prohibited Items' },
+                { href: '/fees',                   label: 'Fees' },
               ].map((l) => (
                 <li key={l.href}>
                   <Link href={l.href} className="hover:text-white transition-colors">{l.label}</Link>

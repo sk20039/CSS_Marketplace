@@ -77,8 +77,8 @@ const TRUST_BADGES = [
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
       </svg>
     ),
-    title: 'Verified Listings',
-    text: 'Every listing reviewed before going live',
+    title: 'Cricket Only Platform',
+    text: 'Built specifically for buying and selling cricket equipment.',
   },
   {
     icon: (
@@ -120,7 +120,7 @@ export default function HomePage() {
             <span className="text-brand-500">Cricket Equipment</span>
           </h1>
           <p className="text-gray-400 text-lg sm:text-xl max-w-2xl mx-auto mb-8">
-            From cricket bats to helmets, find quality used gear from players across the USA, with secure buyer protection.
+            Buy and sell new and used cricket equipment across the USA.
           </p>
           <div className="flex flex-wrap items-center justify-center gap-4">
             <Link
@@ -249,12 +249,12 @@ export default function HomePage() {
             {
               step: '01',
               title: 'Find Your Gear',
-              text: 'Browse hundreds of listings or search by category, condition, and price range.',
+              text: 'Browse cricket listings or search by category, condition, and price range.',
             },
             {
               step: '02',
               title: 'Pay Securely',
-              text: 'Your payment is held securely — never released until you confirm the item arrived as described.',
+              text: 'Buyer payments are held during the protection period and released according to our Buyer Protection terms.',
             },
             {
               step: '03',
