@@ -30,7 +30,7 @@ function capture(distinctId, event, properties) {
   const client = getClient();
   if (!client) return;
   try {
-    client.capture({ distinctId: String(distinctId), event, properties: properties || {} });
+    client.capture({ distinctId: String(distinctId), event, properties: properties || {}, disableGeoip: true });
   } catch {
     return;
   }
