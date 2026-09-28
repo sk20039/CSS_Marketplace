@@ -22,7 +22,7 @@ const NAV = [
 
 export default function PrivacyPage() {
   return (
-    <LegalPage title="Privacy Policy" updated="August 27, 2026" navLinks={NAV}>
+    <LegalPage title="Privacy Policy" updated="September 28, 2026" navLinks={NAV}>
       <Note>
         This is a draft for attorney review. It does not constitute legal advice and is subject
         to revision before public launch.
@@ -70,6 +70,24 @@ export default function PrivacyPage() {
           <strong>Log data:</strong> Server request logs including IP address, browser type, and
           pages visited, retained for security and debugging.
         </LI>
+        <LI>
+          <strong>Product analytics:</strong> We use PostHog, a product analytics service, to
+          understand how visitors and registered users use Cricket Market. Analytics events may
+          include: the origin and path of pages visited; listing and order identifiers; item
+          category, condition, and a broad price range (for example,
+          &ldquo;$100&ndash;$200&rdquo;); search result count and whether a text search was used;
+          registration and login completion; listing draft and publication steps; checkout and
+          transaction milestones; shipping carrier and service; browser type and version; device
+          type; and browser language. For logged-out visitors, events are associated with a
+          temporary anonymous identifier held in browser memory. For logged-in users, events are
+          associated with an internal numeric account ID; those events are pseudonymous. URL query
+          strings and fragments are removed from page addresses before transmission. GeoIP
+          enrichment is disabled; we do not receive city, country, or approximate location data
+          from PostHog. We do not intentionally transmit to PostHog: names, email addresses, phone
+          numbers, postal addresses, passwords, authentication tokens, payment card details,
+          private messages, listing descriptions, raw search text, exact listing prices, exact
+          payment amounts, or shipping tracking numbers.
+        </LI>
       </UL>
       <H3>1.3 Payment Information</H3>
       <P>
@@ -115,6 +133,12 @@ export default function PrivacyPage() {
         <LI>
           <strong>Vercel, Inc.</strong> &mdash; frontend hosting and content delivery.
         </LI>
+        <LI>
+          <strong>PostHog, Inc.</strong> &mdash; product analytics. Cricket Market is configured
+          to use PostHog US Cloud. PostHog receives the analytics events described in
+          Section&nbsp;1.2. Session recording, automatic interaction capture, heatmaps, GeoIP
+          enrichment, surveys, experiments, and advertising tracking are not enabled.
+        </LI>
       </UL>
       <H3>3.3 Legal Requirements</H3>
       <P>
@@ -159,7 +183,12 @@ export default function PrivacyPage() {
         </LI>
       </UL>
       <P>
-        We do not use advertising cookies, analytics cookies, or third-party tracking pixels.
+        We do not use advertising cookies or third-party tracking pixels. Our product analytics
+        provider (PostHog) is configured without a persistent analytics cookie or localStorage
+        entry; the anonymous session identifier is held in browser memory and resets when the page
+        is fully reloaded or the tab is closed. Activity by logged-in users may be associated with
+        the same internal account ID across sessions through the account login process, not through
+        a persistent analytics cookie. Analytics are not used for cross-site advertising.
       </P>
 
       <H2 id="retention">6. Data Retention</H2>
