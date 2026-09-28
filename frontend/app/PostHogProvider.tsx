@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import posthog from 'posthog-js';
 import { useAuth } from '@/lib/auth';
 import { analytics, setSuppressCapture } from '@/lib/posthog';
+import { sanitizeBeforeSend } from '@/lib/posthogSanitizer';
 
 const PH_KEY  = process.env.NEXT_PUBLIC_POSTHOG_KEY  ?? '';
 const PH_HOST = process.env.NEXT_PUBLIC_POSTHOG_HOST ?? 'https://us.i.posthog.com';
@@ -27,6 +28,13 @@ export default function PostHogProvider({ children }: { children: React.ReactNod
         disable_session_recording:      true,
         enable_heatmaps:                false,
         advanced_disable_feature_flags: true,
+        // identified_only: anonymous events are still captured and sent to PostHog;
+        // person profiles are only created when posthog.identify() is called.
+        person_profiles:                'identified_only',
+        // Strip query strings/fragments from URL properties and disable GeoIP enrichment.
+        before_send:                    sanitizeBeforeSend,
+        // Prevent the SDK from including URL hashes in $current_url at capture time.
+        disable_capture_url_hashes:     true,
       });
       phReady.current = true;
     } catch { /* quiet — missing key or blocked */ }
