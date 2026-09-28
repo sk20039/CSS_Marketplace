@@ -27,12 +27,10 @@ export default function PostHogProvider({ children }: { children: React.ReactNod
         disable_session_recording:      true,
         enable_heatmaps:                false,
         advanced_disable_feature_flags: true,
-        // Override server-side defaultIdentifiedOnly so events fire for anonymous
-        // visitors too (marketplace tracks page views / listing views pre-login).
-        person_profiles:                'always',
-        // Disable async GZip compression — CompressionStream can hang in some
-        // environments (e.g. headless browsers), preventing fetch from being called.
-        disable_compression:            true,
+        // identified_only: anonymous events are still captured and sent to PostHog;
+        // person profiles are only created when posthog.identify() is called.
+        // This avoids creating person records for every anonymous visitor.
+        person_profiles:                'identified_only',
       });
       phReady.current = true;
     } catch { /* quiet — missing key or blocked */ }
