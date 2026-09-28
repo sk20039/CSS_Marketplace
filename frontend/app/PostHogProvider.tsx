@@ -27,6 +27,9 @@ export default function PostHogProvider({ children }: { children: React.ReactNod
         disable_session_recording:      true,
         enable_heatmaps:                false,
         advanced_disable_feature_flags: true,
+        // Override server-side defaultIdentifiedOnly so events fire for anonymous
+        // visitors too (marketplace tracks page views / listing views pre-login).
+        person_profiles:                'always',
       });
       phReady.current = true;
     } catch { /* quiet — missing key or blocked */ }
