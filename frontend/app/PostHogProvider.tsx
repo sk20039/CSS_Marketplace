@@ -30,6 +30,9 @@ export default function PostHogProvider({ children }: { children: React.ReactNod
         // Override server-side defaultIdentifiedOnly so events fire for anonymous
         // visitors too (marketplace tracks page views / listing views pre-login).
         person_profiles:                'always',
+        // Disable async GZip compression — CompressionStream can hang in some
+        // environments (e.g. headless browsers), preventing fetch from being called.
+        disable_compression:            true,
       });
       phReady.current = true;
     } catch { /* quiet — missing key or blocked */ }
