@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
 import { AuthProvider } from '@/lib/auth';
+import PostHogProvider from '@/app/PostHogProvider';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 
@@ -29,11 +30,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className={inter.variable}>
       <body className="bg-gray-50 min-h-screen flex flex-col">
         <AuthProvider>
-          <Navbar />
-          <main className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8">
-            {children}
-          </main>
-          <Footer />
+          <PostHogProvider>
+            <Navbar />
+            <main className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8">
+              {children}
+            </main>
+            <Footer />
+          </PostHogProvider>
         </AuthProvider>
       </body>
     </html>

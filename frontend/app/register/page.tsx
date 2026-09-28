@@ -3,6 +3,7 @@
 import { useState, useRef } from 'react';
 import Link from 'next/link';
 import { authRegister } from '@/lib/api';
+import { analytics } from '@/lib/posthog';
 import TurnstileWidget from '@/components/TurnstileWidget';
 import type { TurnstileInstance } from '@marsidev/react-turnstile';
 
@@ -32,6 +33,7 @@ export default function RegisterPage() {
         setError(data.error || 'Registration failed');
         return;
       }
+      analytics.capture('signup_completed', { role });
       setRegisteredEmail(email);
       setRegistered(true);
     } catch {

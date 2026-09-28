@@ -9,6 +9,7 @@ import {
   applySeoSuggestions, patchListing, publishListing, deletePhoto, listingFetch,
 } from '@/lib/api';
 import ErrorAlert from '@/components/ErrorAlert';
+import { analytics, priceBand } from '@/lib/posthog';
 import { useAuth } from '@/lib/auth';
 import type { SeoAuditResult, SeoFields } from '@/lib/types';
 
@@ -260,6 +261,8 @@ function NewListingForm() {
         return;
       }
 
+      analytics.capture('draft_saved', { category });
+
       if (addAnother) {
         // Reset entire form for the next item
         setTitle(''); setDescription(''); setPriceStr('');
@@ -403,6 +406,13 @@ function NewListingForm() {
         const publishedListing = pubResult.listing as any;
         const price_cents = publishedListing?.price_cents ?? Math.round(parseFloat(priceStr) * 100);
 
+        analytics.capture('listing_published', {
+          listing_id: createdListingId,
+          category,
+          condition,
+          price_band: priceBand(price_cents),
+        });
+
         try {
           const syncRes = await syncListingToEscrow({
             id: createdListingId,
@@ -442,6 +452,13 @@ function NewListingForm() {
         );
         return;
       }
+
+      analytics.capture('listing_published', {
+        listing_id: id,
+        category,
+        condition,
+        price_band: priceBand(Math.round(parseFloat(priceStr) * 100)),
+      });
 
       await syncListingToEscrow({
         id,

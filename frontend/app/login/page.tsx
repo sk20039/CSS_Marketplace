@@ -4,6 +4,7 @@ import { useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { authLogin, syncUserToEscrow, authResendVerification } from '@/lib/api';
+import { analytics } from '@/lib/posthog';
 import { useAuth } from '@/lib/auth';
 import TurnstileWidget from '@/components/TurnstileWidget';
 import type { TurnstileInstance } from '@marsidev/react-turnstile';
@@ -68,6 +69,9 @@ export default function LoginPage() {
       }
       login(data.access_token, data.user);
       syncUserToEscrow(data.user).catch(() => {});
+      if (data.user.role !== 'admin') {
+        analytics.capture('login_completed', { mfa_used: false });
+      }
       router.push(data.user.role === 'seller' ? '/dashboard/seller' : data.user.role === 'admin' ? '/admin' : '/dashboard/buyer');
     } catch {
       turnstileRef.current?.reset();

@@ -8,6 +8,7 @@ import OrderTimeline from '@/components/OrderTimeline';
 import { getOrder, cancelOrder, purchaseLabel, shipWithOwnLabel, getOrderShippingRates, shipOrder, deliverOrder, confirmOrder, disputeOrder, getMessages, sendMessage, submitReview, getOrderReview, uploadEvidence, listEvidence, downloadEvidence, submitSellerResponse, getSellerResponse } from '@/lib/api';
 import type { EvidenceItem, SellerDisputeResponse, ShippingRate } from '@/lib/api';
 import { useUser } from '@/lib/auth';
+import { analytics } from '@/lib/posthog';
 import ErrorAlert from '@/components/ErrorAlert';
 
 interface ShippingAddress {
@@ -216,6 +217,10 @@ function OrderContent() {
       const data = await res.json();
       if (!res.ok) { setLabelError(data.error || 'Label purchase failed'); return; }
       setOrder(data.order || data);
+      analytics.capture('shipping_label_purchased', {
+        carrier: selectedRate.carrier,
+        service: selectedRate.service,
+      });
       refresh();
     } catch {
       setLabelError('Network error — please try again');

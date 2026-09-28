@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { getListing, createOrder, getUserReviews, type ShippingAddress } from '@/lib/api';
+import { analytics, priceBand } from '@/lib/posthog';
 import { useUser } from '@/lib/auth';
 import { CONDITION_LABELS, CATEGORY_LABELS } from '@/lib/constants';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -188,10 +189,22 @@ export default function ListingDetailClient({ initialListing }: ListingDetailCli
   const user = useUser();
   const [listing, setListing] = useState<Listing | null>(initialListing ?? null);
   const [loading, setLoading] = useState(!initialListing);
+  const viewedRef = useRef(false);
   const [error, setError] = useState('');
   const [activePhoto, setActivePhoto] = useState(0);
   const [sellerRating, setSellerRating] = useState<{ average_rating: number | null; count: number } | null>(null);
   const [showCheckout, setShowCheckout] = useState(false);
+
+  useEffect(() => {
+    if (!listing || viewedRef.current) return;
+    viewedRef.current = true;
+    analytics.capture('listing_viewed', {
+      listing_id: listing.id,
+      category:   listing.category,
+      condition:  listing.condition,
+      price_band: priceBand(listing.price_cents),
+    });
+  }, [listing]);
 
   useEffect(() => {
     if (initialListing) {
@@ -213,6 +226,11 @@ export default function ListingDetailClient({ initialListing }: ListingDetailCli
   function handleBuy() {
     if (!user) { router.push('/login'); return; }
     if (!listing) return;
+    analytics.capture('checkout_started', {
+      listing_id: listing.id,
+      category:   listing.category,
+      price_band: priceBand(listing.price_cents),
+    });
     setShowCheckout(true);
   }
 
