@@ -1530,7 +1530,9 @@ async function finalizeLabeled(order, labelData, labelCostCents) {
     client.release();
   }
 
-  return getOrderWithTimeline(order.id);
+  const finalized = await getOrderWithTimeline(order.id);
+  notifications.notifyLabelPurchased(finalized).catch(() => {});
+  return finalized;
 }
 
 // Revert a LABELING order back to HELD when recovery confirms no label was
@@ -1821,7 +1823,13 @@ async function shipWithOwnLabel(orderId, { carrier, trackingNumber }) {
     console.warn(`[ship-own-label] registerTracking failed for order ${orderId}:`, err.message);
   }
 
-  notifications.notifyShipped(order).catch(() => {});
+  // Pass carrier and tracking_number from function args — the pre-fetched
+  // order object predates the UPDATE that wrote them to the DB.
+  notifications.notifyShipped({
+    ...order,
+    carrier:         carrier.trim(),
+    tracking_number: trackingNumber.trim(),
+  }).catch(() => {});
   return getOrderWithTimeline(orderId);
 }
 

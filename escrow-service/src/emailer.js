@@ -18,14 +18,15 @@ const transport = createTransport();
 const _capturedEmails = [];
 
 async function sendEmail({ to, subject, text }) {
+  const replyTo = process.env.EMAIL_REPLY_TO || 'support@cricketmarketusa.com';
   if (!transport) {
-    _capturedEmails.push({ to, subject, text });
+    _capturedEmails.push({ to, subject, text, replyTo });
     console.log(`[EMAIL STUB] To: ${to}`);
     console.log(`[EMAIL STUB] Subject: ${subject}`);
     console.log(`[EMAIL STUB] ${text.split('\n')[0]}`);
     return;
   }
-  await transport.sendMail({ from: FROM, to, subject, text });
+  await transport.sendMail({ from: FROM, to, subject, text, replyTo });
 }
 
 function _clearCaptured() { _capturedEmails.length = 0; }

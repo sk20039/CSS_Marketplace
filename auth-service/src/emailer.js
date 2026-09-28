@@ -5,13 +5,14 @@ const FROM = process.env.EMAIL_FROM || 'noreply@cricket.test';
 // Send one email via the Resend HTTPS API.
 // Throws if the API returns a non-2xx status so callers can surface the error.
 async function resendSend({ to, subject, text, html }) {
+  const replyTo = process.env.EMAIL_REPLY_TO || 'support@cricketmarketusa.com';
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ from: FROM, to, subject, text, html }),
+    body: JSON.stringify({ from: FROM, to, subject, text, html, reply_to: replyTo }),
   });
   if (!res.ok) {
     const body = await res.text();
