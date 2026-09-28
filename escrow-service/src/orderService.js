@@ -13,6 +13,7 @@ const { stripeClient } = require('./stripeClient');
 const { categorizeDispute } = require('./disputeCategorizer');
 const notifications = require('./notifications');
 const shippoClient = require('./shippoClient');
+const posthog = require('./posthog');
 
 const DELIVERY_WINDOW_MS =
   Number(process.env.DELIVERY_WINDOW_HOURS || 48) * 60 * 60 * 1000;
@@ -518,6 +519,7 @@ async function finalizeCaptured(order, stripeCapture, { triggeredBy }) {
     listingId: order.listing_id,
   });
 
+  posthog.capture(order.buyer_id, 'purchase_completed', { order_id: order.id });
   notifications.notifyOrderCaptured(order).catch(() => {});
   return getOrderWithTimeline(order.id);
 }
@@ -715,6 +717,9 @@ async function finalizeReleased(order, stripeTransfer, { triggeredBy }) {
     client.release();
   }
 
+  if (triggeredBy === 'buyer_confirm') {
+    posthog.capture(order.buyer_id, 'delivery_confirmed', { order_id: order.id });
+  }
   notifications.notifyReleased(order, { triggeredBy }).catch(() => {});
   return getOrderWithTimeline(order.id);
 }
@@ -1075,6 +1080,7 @@ async function disputeOrder(id, reasonText) {
   }
 
   const order = await getOrder(id);
+  posthog.capture(order.buyer_id, 'dispute_opened', { order_id: order.id });
   notifications.notifyDisputed(order).catch(() => {});
   return getOrderWithTimeline(id);
 }

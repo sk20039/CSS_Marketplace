@@ -11,6 +11,7 @@ import {
 } from '@/lib/api';
 import { useAuth, setAccessToken } from '@/lib/auth';
 import { ORDER_STATUS_STYLE } from '@/lib/constants';
+import { analytics, priceBand } from '@/lib/posthog';
 
 interface Listing {
   id: number;
@@ -184,6 +185,12 @@ function SellerContent() {
         } else {
           successIds.push(id);
           const published = result.listing as any;
+          analytics.capture('listing_published', {
+            listing_id: id,
+            category:   published?.category,
+            condition:  published?.condition,
+            price_band: published?.price_cents != null ? priceBand(published.price_cents) : undefined,
+          });
           const price_cents: number = published?.price_cents;
           const title: string = published?.title ?? listings.find((l) => l.id === id)?.title ?? '';
           // Await escrow sync so failures are visible, not silently dropped

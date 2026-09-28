@@ -4,6 +4,7 @@ import { useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { authMfaVerify, authMfaVerifyRecovery } from '@/lib/api';
+import { analytics } from '@/lib/posthog';
 import { useAuth } from '@/lib/auth';
 
 function MfaVerifyContent() {
@@ -32,6 +33,9 @@ function MfaVerifyContent() {
         return;
       }
       login(data.access_token, data.user);
+      if (data.user.role !== 'admin') {
+        analytics.capture('login_completed', { mfa_used: true });
+      }
       router.push(
         data.user.role === 'seller'
           ? '/dashboard/seller'

@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useState, Suspense } from 'react';
+import { useEffect, useRef, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import ListingCard from '@/components/ListingCard';
 import SearchSidebar from '@/components/SearchSidebar';
 import { getListings } from '@/lib/api';
+import { analytics } from '@/lib/posthog';
 
 interface Listing {
   id: number;
@@ -28,6 +29,7 @@ function MarketplaceContent() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [sort, setSort] = useState('');
+  const searchFiredRef = useRef('');
 
   const query = searchParams.get('q');
   const category = searchParams.get('category');
@@ -38,10 +40,23 @@ function MarketplaceContent() {
     searchParams.forEach((v, k) => { params[k] = v; });
     if (sort) params['sort'] = sort;
 
+    const hasFilters = !!(params.category || params.condition || params.min_price || params.max_price || params.q);
+    const searchKey  = searchParams.toString() + '|' + sort;
+
     getListings(params)
       .then((data) => {
         setListings(data.listings || []);
         setTotal(data.total || 0);
+        if (hasFilters && searchFiredRef.current !== searchKey) {
+          searchFiredRef.current = searchKey;
+          analytics.capture('search_performed', {
+            category:       params.category  || null,
+            condition:      params.condition || null,
+            sort:           sort             || null,
+            result_count:   data.total       || 0,
+            has_text_query: !!params.q,
+          });
+        }
       })
       .catch(() => {})
       .finally(() => setLoading(false));
