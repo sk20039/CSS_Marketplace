@@ -40,9 +40,11 @@ const listingPattern = parseRemotePattern(listingUrl);
 const cspHeader = [
   "default-src 'self'",
   // Next.js App Router requires 'unsafe-inline' for hydration scripts.
-  "script-src 'self' 'unsafe-inline' https://js.stripe.com https://challenges.cloudflare.com",
+  // posthog-js dynamically loads a remote config script from us-assets.i.posthog.com
+  // even when autocapture/session-recording/heatmaps are disabled.
+  "script-src 'self' 'unsafe-inline' https://js.stripe.com https://challenges.cloudflare.com https://us-assets.i.posthog.com",
   "style-src 'self' 'unsafe-inline'",
-  `connect-src 'self'${apiOrigins ? ` ${apiOrigins}` : ''} https://api.stripe.com https://errors.stripe.com https://us.i.posthog.com`,
+  `connect-src 'self'${apiOrigins ? ` ${apiOrigins}` : ''} https://api.stripe.com https://errors.stripe.com https://us.i.posthog.com https://us-assets.i.posthog.com`,
   // Stripe Elements renders in iframes hosted on js.stripe.com / hooks.stripe.com.
   // Turnstile widget renders in an iframe hosted on challenges.cloudflare.com.
   "frame-src https://js.stripe.com https://hooks.stripe.com https://challenges.cloudflare.com",
