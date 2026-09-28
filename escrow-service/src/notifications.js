@@ -50,16 +50,55 @@ async function notifyOrderCaptured(order) {
   ]);
 }
 
+// ---- LABEL PURCHASED ----
+async function notifyLabelPurchased(order) {
+  const seller = await getUser(order.seller_id);
+  if (!seller) return;
+
+  const carrier  = order.carrier         || null;
+  const service  = order.carrier_service || null;
+  const tracking = order.tracking_number || null;
+  const link     = orderUrl(order.id);
+
+  let details = '';
+  if (carrier)  details += `\nCarrier:       ${carrier}`;
+  if (service)  details += `\nService:       ${service}`;
+  if (tracking) details += `\nTracking #:    ${tracking}`;
+
+  await sendEmail({
+    to:      seller.email,
+    subject: `Shipping label purchased — Order #${order.id}`,
+    text:
+      `Hi ${seller.name},\n\n` +
+      `Your shipping label for Order #${order.id} has been purchased successfully.` +
+      details + '\n\n' +
+      `View order: ${link}`,
+  });
+}
+
 // ---- SHIPPED ----
 async function notifyShipped(order) {
   const buyer = await getUser(order.buyer_id);
   if (!buyer) return;
+
+  const carrier  = order.carrier         || null;
+  const tracking = order.tracking_number || null;
+  let trackingLine = '';
+  if (carrier && tracking) {
+    trackingLine = `\nCarrier: ${carrier} — Tracking: ${tracking}\n`;
+  } else if (tracking) {
+    trackingLine = `\nTracking: ${tracking}\n`;
+  } else if (carrier) {
+    trackingLine = `\nCarrier: ${carrier}\n`;
+  }
+
   await sendEmail({
     to:      buyer.email,
     subject: `Your order has been shipped — Order #${order.id}`,
     text:
       `Hi ${buyer.name},\n\n` +
-      `The seller has shipped your order (${money(order.amount_cents)}). ` +
+      `The seller has shipped your order (${money(order.amount_cents)}).` +
+      trackingLine + '\n' +
       `Once you receive it, please confirm receipt. ` +
       `You have 48 hours after delivery is marked to confirm or file a dispute.\n\n` +
       `View order: ${orderUrl(order.id)}`,
@@ -287,6 +326,7 @@ async function notifyTrackingException(order, trackingStatus) {
 
 module.exports = {
   notifyOrderCaptured,
+  notifyLabelPurchased,
   notifyShipped,
   notifyDelivered,
   notifyCancelled,
