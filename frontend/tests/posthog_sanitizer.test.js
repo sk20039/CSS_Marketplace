@@ -36,6 +36,8 @@ const URL_PROPS = [
   '$referrer',
   '$initial_current_url',
   '$initial_referrer',
+  '$session_entry_url',
+  '$session_entry_referrer',
 ];
 
 function sanitizeUrl(raw) {
@@ -248,6 +250,124 @@ test('event object is not mutated (returns a new object)', () => {
   sanitizeBeforeSend(original);
   assertEqual(original.properties.$current_url, originalUrl, 'original event must not be mutated');
   assert(!('$geoip_disable' in original.properties), 'original must not have $geoip_disable added');
+});
+
+// ── $session_entry_url ────────────────────────────────────────────────────
+
+console.log('\n$session_entry_url and $session_entry_referrer');
+
+test('$session_entry_url query string stripped', () => {
+  const event = {
+    uuid: 'se1', event: 'page_viewed',
+    properties: {
+      $session_entry_url: 'https://www.cricketmarketusa.com/listings/19?utm_source=facebook&utm_medium=social&utm_campaign=launch_test',
+    },
+  };
+  const result = sanitizeBeforeSend(event);
+  assertEqual(result.properties.$session_entry_url, 'https://www.cricketmarketusa.com/listings/19');
+});
+
+test('$session_entry_url fragment stripped', () => {
+  const event = {
+    uuid: 'se2', event: 'page_viewed',
+    properties: { $session_entry_url: 'https://www.cricketmarketusa.com/listings#bats' },
+  };
+  const result = sanitizeBeforeSend(event);
+  assertEqual(result.properties.$session_entry_url, 'https://www.cricketmarketusa.com/listings');
+});
+
+test('$session_entry_url query string and fragment both stripped', () => {
+  const event = {
+    uuid: 'se3', event: 'page_viewed',
+    properties: { $session_entry_url: 'https://www.cricketmarketusa.com/?ref=email#top' },
+  };
+  const result = sanitizeBeforeSend(event);
+  assertEqual(result.properties.$session_entry_url, 'https://www.cricketmarketusa.com/');
+});
+
+test('$session_entry_url malformed URL returned as-is (no throw)', () => {
+  const event = {
+    uuid: 'se4', event: 'page_viewed',
+    properties: { $session_entry_url: 'not-a-valid-url' },
+  };
+  const result = sanitizeBeforeSend(event);
+  assertEqual(result.properties.$session_entry_url, 'not-a-valid-url');
+});
+
+test('$session_entry_url empty string returned unchanged', () => {
+  const event = {
+    uuid: 'se5', event: 'page_viewed',
+    properties: { $session_entry_url: '' },
+  };
+  const result = sanitizeBeforeSend(event);
+  assertEqual(result.properties.$session_entry_url, '');
+});
+
+test('$session_entry_url absent — no property added', () => {
+  const event = {
+    uuid: 'se6', event: 'page_viewed',
+    properties: { pathname: '/listings' },
+  };
+  const result = sanitizeBeforeSend(event);
+  assert(!('$session_entry_url' in result.properties), '$session_entry_url must not be added when absent');
+});
+
+test('$session_entry_referrer query string stripped', () => {
+  const event = {
+    uuid: 'se7', event: 'page_viewed',
+    properties: { $session_entry_referrer: 'https://www.google.com/search?q=cricket+bat&hl=en' },
+  };
+  const result = sanitizeBeforeSend(event);
+  assertEqual(result.properties.$session_entry_referrer, 'https://www.google.com/search');
+});
+
+test('$session_entry_referrer $direct sentinel preserved', () => {
+  const event = {
+    uuid: 'se8', event: 'page_viewed',
+    properties: { $session_entry_referrer: '$direct' },
+  };
+  const result = sanitizeBeforeSend(event);
+  assertEqual(result.properties.$session_entry_referrer, '$direct');
+});
+
+test('$session_entry_referrer fragment stripped', () => {
+  const event = {
+    uuid: 'se9', event: 'page_viewed',
+    properties: { $session_entry_referrer: 'https://twitter.com/home#referral' },
+  };
+  const result = sanitizeBeforeSend(event);
+  assertEqual(result.properties.$session_entry_referrer, 'https://twitter.com/home');
+});
+
+test('UTM properties preserved alongside $session_entry_url', () => {
+  // The SDK extracts utm_* into separate properties before before_send runs.
+  // Those separate utm_* properties must not be touched; only the URL string is stripped.
+  const event = {
+    uuid: 'se10', event: 'page_viewed',
+    properties: {
+      $session_entry_url: 'https://www.cricketmarketusa.com/listings/19?utm_source=facebook&utm_medium=social&utm_campaign=launch_test',
+      utm_source:   'facebook',
+      utm_medium:   'social',
+      utm_campaign: 'launch_test',
+    },
+  };
+  const result = sanitizeBeforeSend(event);
+  assertEqual(result.properties.$session_entry_url, 'https://www.cricketmarketusa.com/listings/19',
+    '$session_entry_url must have query stripped');
+  assertEqual(result.properties.utm_source,   'facebook',     'utm_source must be preserved');
+  assertEqual(result.properties.utm_medium,   'social',       'utm_medium must be preserved');
+  assertEqual(result.properties.utm_campaign, 'launch_test',  'utm_campaign must be preserved');
+});
+
+test('$session_entry_pathname not touched', () => {
+  // pathname is origin+path only — no query string — and requirement says do not change it
+  const event = {
+    uuid: 'se11', event: 'page_viewed',
+    properties: { $session_entry_pathname: '/listings/19' },
+  };
+  const result = sanitizeBeforeSend(event);
+  assertEqual(result.properties.$session_entry_pathname, '/listings/19',
+    '$session_entry_pathname must pass through unchanged');
 });
 
 // ── person_profiles config check ──────────────────────────────────────────

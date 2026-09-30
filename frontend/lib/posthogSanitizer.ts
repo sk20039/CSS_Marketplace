@@ -9,6 +9,8 @@ const URL_PROPS = [
   '$referrer',
   '$initial_current_url',
   '$initial_referrer',
+  '$session_entry_url',
+  '$session_entry_referrer',
 ] as const;
 
 /**
