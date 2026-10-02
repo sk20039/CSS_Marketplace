@@ -5,6 +5,7 @@ import { AuthProvider } from '@/lib/auth';
 import PostHogProvider from '@/app/PostHogProvider';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
+import ChatWidget from '@/components/ChatWidget';
 
 const inter = Inter({
   subsets: ['latin'],
@@ -36,6 +37,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               {children}
             </main>
             <Footer />
+            <ChatWidget />
           </PostHogProvider>
         </AuthProvider>
       </body>
