@@ -105,12 +105,20 @@ export default function HomePage() {
   return (
     <div className="space-y-14">
       {/* Hero */}
-      <section className="-mx-4 sm:-mx-6 lg:-mx-8 -mt-8 bg-gray-900 relative overflow-hidden">
-        <div className="absolute inset-0 bg-gradient-to-br from-gray-900 via-gray-900 to-brand-900 opacity-90" />
-        <div className="absolute inset-0 opacity-5" style={{
-          backgroundImage: 'radial-gradient(circle at 20% 50%, #22c55e 0%, transparent 50%), radial-gradient(circle at 80% 20%, #16a34a 0%, transparent 40%)',
-        }} />
-        <div className="relative max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-20 text-center">
+      <section className="-mx-4 sm:-mx-6 lg:-mx-8 -mt-8 relative overflow-hidden min-h-[440px] sm:min-h-[540px] flex items-center">
+        {/* Background image — Next.js auto-serves as WebP */}
+        <Image
+          src="/hero-cricket-bg.png"
+          alt=""
+          fill
+          priority
+          quality={80}
+          className="object-cover object-center"
+          sizes="100vw"
+        />
+        {/* Dark overlay for text readability */}
+        <div className="absolute inset-0 bg-gray-950/65" />
+        <div className="relative w-full max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-20 text-center">
           <div className="inline-flex items-center gap-2 bg-green-100 border border-green-300 text-green-900 text-sm font-medium px-4 py-1.5 rounded-full mb-6">
             <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
             USA&apos;s Cricket Equipment Marketplace
@@ -119,7 +127,7 @@ export default function HomePage() {
             Buy & Sell Premium<br />
             <span className="text-brand-500">Cricket Equipment</span>
           </h1>
-          <p className="text-gray-400 text-lg sm:text-xl max-w-2xl mx-auto mb-8">
+          <p className="text-gray-300 text-lg sm:text-xl max-w-2xl mx-auto mb-8">
             From cricket bats to helmets, find quality used gear from players across the USA, with secure buyer protection.
           </p>
           <div className="flex flex-wrap items-center justify-center gap-4">
@@ -131,7 +139,7 @@ export default function HomePage() {
             </Link>
             <Link
               href="/register"
-              className="bg-white/10 backdrop-blur text-white font-semibold px-8 py-3.5 rounded-lg border border-white/20 hover:bg-white/20 transition-colors text-base"
+              className="bg-white/10 backdrop-blur text-white font-semibold px-8 py-3.5 rounded-lg border border-white/30 hover:bg-white/20 transition-colors text-base"
             >
               Start Selling
             </Link>
