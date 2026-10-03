@@ -796,6 +796,14 @@ function ListingRow({
           }`}>
             {l.status.charAt(0).toUpperCase() + l.status.slice(1)}
           </span>
+          {(l.status === 'active' || l.status === 'inactive') && (
+            <Link
+              href={`/listings/${l.id}/edit`}
+              className="text-xs font-semibold text-gray-600 hover:text-brand-700 transition-colors border border-gray-200 rounded-lg px-2.5 py-1 hover:border-brand-300"
+            >
+              Edit
+            </Link>
+          )}
           {l.status === 'active' && (
             <button
               type="button"

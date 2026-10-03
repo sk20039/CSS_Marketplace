@@ -464,16 +464,45 @@ router.post('/:id/reactivate', requireAuth, async (req, res, next) => {
 //   inactive → active : POST /listings/:id/reactivate
 //   draft → active   : POST /listings/:id/publish
 //   active → sold    : PATCH /listings/:id/mark-sold (internal)
+//
+// Concurrency safety:
+//   The read-modify-write is wrapped in a transaction with SELECT FOR UPDATE,
+//   which holds an exclusive row lock from the SELECT through the UPDATE and
+//   COMMIT. This serialises concurrent PATCHes: the second waits, then reads
+//   the post-first-commit state before writing — preventing lost updates.
+//   The lock also blocks /mark-sold (which runs a plain UPDATE) from changing
+//   the status between our ownership check and our write.
+//
+//   The UPDATE additionally includes WHERE status NOT IN ('sold') as a
+//   belt-and-suspenders guard against the narrow window before BEGIN (if
+//   mark-sold committed before our SELECT FOR UPDATE we still 409 early; this
+//   guard catches any residual edge case). rowCount === 0 after the UPDATE
+//   returns 409 LISTING_SOLD.
+//
+//   RETURNING updated_at gives us the exact timestamp of our write. If escrow
+//   sync then fails, the revert UPDATE includes AND updated_at = $ourTimestamp
+//   so it only restores old values if no concurrent write has since changed the
+//   row. If updated_at has moved on (a concurrent PATCH committed between our
+//   COMMIT and our revert), the revert finds 0 rows and skips — preserving the
+//   newer write.
+//
+// Escrow synchronisation (title/price changes on active/inactive listings):
+//   After committing the DB write, this endpoint calls POST /api/sync/listing
+//   on the escrow service, forwarding the seller's auth token. If the sync
+//   fails the DB write is reverted (subject to the updated_at guard above) and
+//   a 502 is returned. The escrow is called OUTSIDE the transaction so the row
+//   lock is released before the up-to-8s network call.
+//
+//   Note: createOrder in escrow-service calls fetchAuthoritativeListing (a live
+//   GET /listings/:id) at the moment each order is created — NOT the local
+//   escrow cache. Order amount_cents / item_price_cents are locked in the orders
+//   row at creation time, so a listing price edit cannot silently change an
+//   existing order's capture amount. The escrow sync here keeps the admin-view
+//   mirror accurate; it is not a checkout price path.
 router.patch('/:id', requireAuth, async (req, res, next) => {
   try {
-    const { rows } = await pool.query('SELECT * FROM listings WHERE id = $1', [req.params.id]);
-    const listing = rows[0];
-    if (!listing) return res.status(404).json({ error: 'Listing not found' });
-    if (String(listing.seller_id) !== String(req.user.id)) {
-      return res.status(403).json({ error: 'Forbidden: not your listing' });
-    }
-
-    // Reject any attempt to change status through PATCH, regardless of the value.
+    // ── Input validation (stateless — no DB access needed) ─────────────────
+    // Reject status changes before touching the DB.
     if (req.body.status !== undefined) {
       return res.status(400).json({
         error: 'Status changes are not allowed via PATCH. Use the dedicated deactivate, reactivate, publish, or sold endpoints.',
@@ -518,16 +547,151 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
       updates[f] = v;
     }
 
-    let pIdx = 1;
-    const setClauses = Object.keys(updates).map((k) => `${k} = $${pIdx++}`).join(', ');
-    const values = [...Object.values(updates), listing.id];
-    await pool.query(
-      `UPDATE listings SET ${setClauses}, updated_at = NOW() WHERE id = $${pIdx}`,
-      values
-    );
+    // ── Transactional read-modify-write ─────────────────────────────────────
+    // SELECT FOR UPDATE holds an exclusive row lock for the duration of the
+    // transaction. Concurrent PATCHes queue behind it; each reads the
+    // post-previous-commit state before writing. We COMMIT before the async
+    // escrow I/O so the lock is released in microseconds, not up to 8 seconds.
+    const client = await pool.connect();
+    let listing, oldValues, newUpdatedAt;
+    try {
+      await client.query('BEGIN');
 
-    const { rows: updatedRows } = await pool.query('SELECT * FROM listings WHERE id = $1', [listing.id]);
-    res.json(await withPhotos(updatedRows[0]));
+      const { rows } = await client.query(
+        'SELECT * FROM listings WHERE id = $1 FOR UPDATE',
+        [req.params.id]
+      );
+      listing = rows[0];
+      if (!listing) {
+        await client.query('ROLLBACK');
+        client.release();
+        return res.status(404).json({ error: 'Listing not found' });
+      }
+      if (String(listing.seller_id) !== String(req.user.id)) {
+        await client.query('ROLLBACK');
+        client.release();
+        return res.status(403).json({ error: 'Forbidden: not your listing' });
+      }
+      if (listing.status === 'sold') {
+        await client.query('ROLLBACK');
+        client.release();
+        return res.status(409).json({ error: 'Sold listings cannot be edited', code: 'LISTING_SOLD' });
+      }
+
+      // Snapshot old values for potential escrow-failure revert.
+      oldValues = {};
+      for (const key of Object.keys(updates)) {
+        oldValues[key] = listing[key];
+      }
+
+      let pIdx = 1;
+      const setClauses = Object.keys(updates).map((k) => `${k} = $${pIdx++}`).join(', ');
+      const values = [...Object.values(updates), listing.id];
+
+      // WHERE status NOT IN ('sold') is a belt-and-suspenders guard: the FOR
+      // UPDATE lock blocks concurrent mark-sold while the transaction is open,
+      // but this condition also catches the narrow window before our BEGIN.
+      //
+      // RETURNING updated_at::text preserves full microsecond precision as a
+      // string. JavaScript Date only has millisecond precision, so comparing a
+      // Date object against a TIMESTAMPTZ column that has non-zero microseconds
+      // always fails. We store the raw text and pass it back with ::timestamptz
+      // so PostgreSQL does the full-precision comparison in the revert step.
+      const { rows: written, rowCount } = await client.query(
+        `UPDATE listings SET ${setClauses}, updated_at = NOW()
+         WHERE id = $${pIdx} AND status NOT IN ('sold')
+         RETURNING updated_at::text AS updated_at_str`,
+        values
+      );
+      if (rowCount === 0) {
+        await client.query('ROLLBACK');
+        client.release();
+        return res.status(409).json({ error: 'Sold listings cannot be edited', code: 'LISTING_SOLD' });
+      }
+      // Full-precision timestamp string (e.g. "2026-10-03 12:00:00.123456+00").
+      newUpdatedAt = written[0].updated_at_str;
+
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      client.release();
+      throw err;
+    }
+    client.release();
+
+    // ── Escrow sync (outside the transaction) ───────────────────────────────
+    // Only when title or price_cents changed, and only for non-draft listings.
+    const escrowRelevantChanged =
+      (updates.title      !== undefined && String(updates.title)       !== String(listing.title)) ||
+      (updates.price_cents !== undefined && Number(updates.price_cents) !== Number(listing.price_cents));
+
+    if (escrowRelevantChanged && listing.status !== 'draft') {
+      let escrowUrl = process.env.ESCROW_SERVICE_URL || process.env.RAILWAY_SERVICE_ESCROW_SERVICE_URL;
+      if (escrowUrl && !/^https?:\/\//i.test(escrowUrl)) escrowUrl = `https://${escrowUrl}`;
+
+      if (escrowUrl) {
+        const timeoutMs = parseInt(process.env.ESCROW_SYNC_TIMEOUT_MS || '8000', 10);
+        const controller = new AbortController();
+        const timeoutId  = setTimeout(() => controller.abort(), timeoutMs);
+        let syncFailed = false;
+        try {
+          const syncRes = await fetch(`${escrowUrl}/api/sync/listing`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: req.headers.authorization || '',
+            },
+            body: JSON.stringify({
+              id:          listing.id,
+              seller_id:   listing.seller_id,
+              title:       updates.title      !== undefined ? updates.title      : listing.title,
+              price_cents: updates.price_cents !== undefined ? Number(updates.price_cents) : Number(listing.price_cents),
+            }),
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
+          if (!syncRes.ok) syncFailed = true;
+        } catch {
+          clearTimeout(timeoutId);
+          syncFailed = true;
+        }
+
+        if (syncFailed) {
+          // Revert — but only if our write is still the current version.
+          // AND updated_at = $newUpdatedAt ensures we skip the revert when a
+          // concurrent PATCH has committed since our COMMIT (their write is
+          // preserved; we log a warning instead).
+          try {
+            let rIdx = 1;
+            const revertClauses = Object.keys(oldValues).map((k) => `${k} = $${rIdx++}`).join(', ');
+            // newUpdatedAt is the full-precision text string from RETURNING
+            // updated_at::text. Casting with ::timestamptz lets PostgreSQL
+            // compare with microsecond precision, ensuring we only revert when
+            // our write is still the current version of the row.
+            const { rowCount: rCount } = await pool.query(
+              `UPDATE listings SET ${revertClauses}, updated_at = NOW()
+               WHERE id = $${rIdx} AND updated_at = $${rIdx + 1}::timestamptz`,
+              [...Object.values(oldValues), listing.id, newUpdatedAt]
+            );
+            if (rCount === 0) {
+              console.error(
+                `[listingRoutes] Escrow sync failed for listing ${listing.id} but a concurrent ` +
+                `write changed updated_at — revert skipped. DB has newer data; escrow may be stale.`
+              );
+            }
+          } catch (revertErr) {
+            console.error(`[listingRoutes] Failed to revert listing ${listing.id} after escrow sync failure:`, revertErr.message);
+          }
+          return res.status(502).json({
+            error: 'Marketplace sync failed — changes not saved. Please try again.',
+            code: 'ESCROW_SYNC_FAILED',
+          });
+        }
+      }
+    }
+
+    const { rows: finalRows } = await pool.query('SELECT * FROM listings WHERE id = $1', [listing.id]);
+    res.json(await withPhotos(finalRows[0]));
   } catch (err) {
     next(err);
   }
