@@ -71,7 +71,7 @@ export default function SearchSidebar() {
     <div className="px-5 py-4 space-y-6">
       {/* Category */}
       <div>
-        <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3">Category</p>
+        <p className="text-xs font-semibold uppercase tracking-wider text-[#64748B] mb-3">Category</p>
         <ul className="space-y-1.5">
           <li>
             <button
@@ -79,7 +79,7 @@ export default function SearchSidebar() {
               className={`w-full text-left text-sm px-3 py-2 rounded-lg transition-colors ${
                 selectedCat === ''
                   ? 'bg-brand-700 text-white font-medium'
-                  : 'text-gray-700 hover:bg-gray-50'
+                  : 'text-gray-700 hover:bg-[#E8EAED]'
               }`}
             >
               All Categories
@@ -92,7 +92,7 @@ export default function SearchSidebar() {
                 className={`w-full text-left text-sm px-3 py-2 rounded-lg transition-colors ${
                   selectedCat === c.value
                     ? 'bg-brand-700 text-white font-medium'
-                    : 'text-gray-700 hover:bg-gray-50'
+                    : 'text-gray-700 hover:bg-[#E8EAED]'
                 }`}
               >
                 {c.label}
@@ -104,7 +104,7 @@ export default function SearchSidebar() {
 
       {/* Condition */}
       <div>
-        <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3">Condition</p>
+        <p className="text-xs font-semibold uppercase tracking-wider text-[#64748B] mb-3">Condition</p>
         <div className="space-y-1.5">
           {CONDITIONS.map((c) => (
             <button
@@ -113,7 +113,7 @@ export default function SearchSidebar() {
               className={`w-full text-left text-sm px-3 py-2 rounded-lg transition-colors ${
                 condition === c.value
                   ? 'bg-brand-50 text-brand-800 font-medium border border-brand-200'
-                  : 'text-gray-700 hover:bg-gray-50'
+                  : 'text-gray-700 hover:bg-[#E8EAED]'
               }`}
             >
               {c.label}
@@ -124,7 +124,7 @@ export default function SearchSidebar() {
 
       {/* Price */}
       <div>
-        <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3">Price (USD)</p>
+        <p className="text-xs font-semibold uppercase tracking-wider text-[#64748B] mb-3">Price (USD)</p>
         <div className="flex items-center gap-2">
           <input
             type="number"
@@ -132,7 +132,7 @@ export default function SearchSidebar() {
             placeholder="Min"
             value={minPrice}
             onChange={(e) => setMinPrice(e.target.value)}
-            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-brand-500 transition-colors"
+            className="w-full bg-white border border-[#DDE1E6] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-brand-500 transition-colors"
           />
           <span className="text-gray-300 font-bold">–</span>
           <input
@@ -141,7 +141,7 @@ export default function SearchSidebar() {
             placeholder="Max"
             value={maxPrice}
             onChange={(e) => setMaxPrice(e.target.value)}
-            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-brand-500 transition-colors"
+            className="w-full bg-white border border-[#DDE1E6] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-brand-500 transition-colors"
           />
         </div>
       </div>
@@ -156,7 +156,7 @@ export default function SearchSidebar() {
           onClick={() => setMobileOpen((o) => !o)}
           aria-expanded={mobileOpen}
           aria-controls="mobile-filters"
-          className="flex items-center gap-2 w-full border border-gray-200 bg-white rounded-xl px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 transition-colors"
+          className="flex items-center gap-2 w-full border border-[#DDE1E6] bg-[#F1F3F5] rounded-xl px-4 py-3 text-sm font-medium text-gray-700 hover:bg-[#E8EAED] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 transition-colors"
         >
           <svg className="w-4 h-4 text-gray-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
@@ -176,8 +176,8 @@ export default function SearchSidebar() {
         </button>
 
         {mobileOpen && (
-          <div id="mobile-filters" className="mt-2 bg-white border border-gray-200 rounded-xl overflow-hidden">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+          <div id="mobile-filters" className="mt-2 bg-[#F1F3F5] border border-[#DDE1E6] rounded-xl overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-[#DDE1E6]">
               <p className="font-semibold text-gray-900 text-sm">Filters</p>
               {hasFilters && (
                 <button onClick={reset} className="text-xs text-brand-700 font-medium hover:underline">
@@ -200,8 +200,8 @@ export default function SearchSidebar() {
 
       {/* ── Desktop: fixed sidebar (hidden on mobile) ── */}
       <aside className="hidden md:block w-60 shrink-0">
-        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden sticky top-36">
-          <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+        <div className="bg-[#F1F3F5] border border-[#DDE1E6] rounded-xl overflow-hidden sticky top-36">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-[#DDE1E6]">
             <p className="font-semibold text-gray-900 text-sm">Filters</p>
             {hasFilters && (
               <button onClick={reset} className="text-xs text-brand-700 font-medium hover:underline">
