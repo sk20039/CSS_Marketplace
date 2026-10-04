@@ -249,6 +249,44 @@ describe('rate limiter unavailable', () => {
   });
 });
 
+describe('rate limiting — KV over-limit returns 429 without calling DeepSeek', () => {
+  // Seed KV mock to return count=31 (one over the limit of 30).
+  // This uses a dedicated probe key path so no real paid API calls are made.
+  beforeEach(() => {
+    process.env.KV_REST_API_URL   = 'https://fake-kv.vercel.com';
+    process.env.KV_REST_API_TOKEN = 'fake-probe-token';
+  });
+
+  afterEach(() => {
+    delete process.env.KV_REST_API_URL;
+    delete process.env.KV_REST_API_TOKEN;
+    jest.restoreAllMocks();
+  });
+
+  it('returns 429 and never calls DeepSeek when KV reports count > 30', async () => {
+    // Mock: KV pipeline returns count=31; no second fetch for DeepSeek should happen.
+    let fetchCallCount = 0;
+    global.fetch = jest.fn().mockImplementationOnce(async () => {
+      fetchCallCount++;
+      return {
+        ok: true,
+        json: async () => [{ result: 31 }, { result: 1 }],
+      };
+    });
+
+    const res = await POST(makeRequest({ messages: VALID_MESSAGES }, {
+      'x-forwarded-for': 'rate-test-probe',
+    }) as never);
+
+    expect(res.status).toBe(429);
+    const body = await res.json();
+    expect(body.error).toMatch(/too many/i);
+    // Only one fetch call (KV); DeepSeek was never called.
+    expect(fetchCallCount).toBe(1);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('rate limiting', () => {
   // Import _resetMemStore to clean state between tests.
   let resetMemStore: () => void;

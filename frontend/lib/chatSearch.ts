@@ -31,6 +31,15 @@ const CATEGORY_MAP: Array<[RegExp, Category]> = [
   [/\baccessor(?:y|ies)\b|\bother\b|\bball\b|\bgrip\b/i, 'other'],
 ];
 
+// Conversational prefixes stripped before keyword extraction.
+const STOP_PREFIX_RE =
+  /^(?:show\s+me|do\s+you\s+have(?:\s+any)?|i(?:'m|\s+am)?\s+looking\s+for|find(?:\s+me)?|browse|search(?:\s+for)?|any|have\s+any|got\s+any|are\s+there\s+any)\s*/i;
+
+// Domain filler words removed after the category word is stripped, so only
+// brand/model keywords (like "CEAT" or "English willow") remain as q.
+const FILLER_RE =
+  /\b(?:cricket|for\s+sale|available|please|some|the|a|an|used|new|good|fair|under|over)\b/gi;
+
 // Condition keywords → canonical condition value.
 const CONDITION_MAP: Array<[RegExp, Condition]> = [
   [/\bnew\b/i,                      'new'],
@@ -79,10 +88,12 @@ export function hasSearchIntent(message: string): boolean {
 export function extractSearchParams(message: string): SearchParams {
   const params: SearchParams = { limit: 5 };
 
-  // Category
+  // Category — also remember which regex matched for keyword extraction below.
+  let matchedCategoryRe: RegExp | undefined;
   for (const [re, cat] of CATEGORY_MAP) {
     if (re.test(message)) {
       params.category = cat;
+      matchedCategoryRe = re;
       break;
     }
   }
@@ -108,11 +119,21 @@ export function extractSearchParams(message: string): SearchParams {
     params.max_price = Math.max(a, b);
   }
 
-  // q: only pass a text search when no category was detected.
-  // When a category is present the category filter alone is sufficient;
-  // passing the full conversational message as q causes a full-phrase LIKE
-  // that never matches any listing title.
-  if (!params.category) {
+  // q: when a category is detected, strip the stop prefix, the matched category
+  // word, and domain filler words to isolate a brand/model keyword (e.g. "CEAT"
+  // from "show me CEAT bats"). Only set q if a meaningful keyword remains.
+  // Without a category, pass the raw message (capped to 80 chars) as before.
+  if (params.category && matchedCategoryRe) {
+    const kw = message
+      .replace(STOP_PREFIX_RE, '')
+      .replace(matchedCategoryRe, '')
+      .replace(FILLER_RE, '')
+      .replace(/[?!.,]/g, '')
+      .trim()
+      .replace(/\s+/g, ' ')
+      .slice(0, 40);
+    if (kw && /\w{2}/.test(kw)) params.q = kw;
+  } else if (!params.category) {
     const q = message.slice(0, 80).trim();
     if (q) params.q = q;
   }

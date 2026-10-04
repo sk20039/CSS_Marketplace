@@ -72,9 +72,33 @@ describe('extractSearchParams', () => {
   it('sets limit to 5', () => {
     expect(extractSearchParams('any bats?').limit).toBe(5);
   });
-  it('truncates q to 80 chars', () => {
+  it('truncates q to 80 chars when no category', () => {
     const long = 'a'.repeat(100);
     expect(extractSearchParams(long).q?.length).toBeLessThanOrEqual(80);
+  });
+
+  // Fix 1: full conversational message must NOT become q when a category is present.
+  it('does not set q for a purely conversational bat query', () => {
+    const p = extractSearchParams('do you have any cricket bats for sale?');
+    expect(p.category).toBe('bat');
+    expect(p.q).toBeUndefined();
+  });
+  it('does not set q for "show me cricket bats"', () => {
+    const p = extractSearchParams('show me cricket bats');
+    expect(p.category).toBe('bat');
+    expect(p.q).toBeUndefined();
+  });
+
+  // Brand + category: brand keyword must be preserved as q.
+  it('preserves brand keyword when category is also detected', () => {
+    const p = extractSearchParams('show me CEAT bats');
+    expect(p.category).toBe('bat');
+    expect(p.q).toBe('CEAT');
+  });
+  it('preserves multi-word brand keyword', () => {
+    const p = extractSearchParams('show me English willow bats');
+    expect(p.category).toBe('bat');
+    expect(p.q).toMatch(/English\s+willow/i);
   });
 });
 
@@ -158,7 +182,7 @@ describe('fetchListingResults', () => {
     expect(results).toBeNull();
   });
 
-  it('skips malformed listings and returns the valid ones', async () => {
+  it('skips listings with non-numeric id strings', async () => {
     global.fetch = jest.fn().mockResolvedValueOnce({
       ok: true,
       json: async () => ({
@@ -171,6 +195,23 @@ describe('fetchListingResults', () => {
     const results = await fetchListingResults({ limit: 5 }, 'http://listing', signal);
     expect(results).toHaveLength(1);
     expect(results![0].id).toBe(4);
+  });
+
+  // Fix 2: listing service returns BIGINT ids as strings ("21" not 21).
+  it('accepts string numeric ids from the listing service (pg BIGINT)', async () => {
+    global.fetch = jest.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        listings: [
+          { id: '21', title: 'KSC Tapeball Bat', price_cents: 5999, condition: 'used_good', category: 'bat' },
+          { id: '22', title: 'SG Pads', price_cents: 3000, condition: 'new', category: 'pads' },
+        ],
+      }),
+    } as Response);
+    const results = await fetchListingResults({ limit: 5 }, 'http://listing', signal);
+    expect(results).toHaveLength(2);
+    expect(results![0].id).toBe(21);
+    expect(results![1].id).toBe(22);
   });
 });
 
