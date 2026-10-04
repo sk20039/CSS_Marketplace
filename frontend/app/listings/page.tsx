@@ -157,24 +157,31 @@ function MarketplaceContent() {
 }
 
 export default function ListingsPage() {
+  useEffect(() => {
+    document.body.classList.add('listings-bg-black');
+    return () => document.body.classList.remove('listings-bg-black');
+  }, []);
+
   return (
-    <Suspense fallback={
-      <div className="md:flex md:gap-6 mt-6">
-        <div className="hidden md:block w-60 shrink-0 h-96 bg-white rounded-xl border border-gray-200 animate-pulse" />
-        <div className="flex-1 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-4">
-          {Array.from({ length: 8 }).map((_, i) => (
-            <div key={i} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-              <div className="aspect-square bg-gray-100 animate-pulse" />
-              <div className="p-3 space-y-2">
-                <div className="h-4 bg-gray-100 rounded animate-pulse" />
-                <div className="h-5 bg-gray-100 rounded w-1/2 animate-pulse" />
+    <div className="-mx-4 sm:-mx-6 lg:-mx-8 -my-8 px-4 sm:px-6 lg:px-8 py-8 bg-white">
+      <Suspense fallback={
+        <div className="md:flex md:gap-6 mt-6">
+          <div className="hidden md:block w-60 shrink-0 h-96 bg-white rounded-xl border border-gray-200 animate-pulse" />
+          <div className="flex-1 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-4">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <div key={i} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                <div className="aspect-square bg-gray-100 animate-pulse" />
+                <div className="p-3 space-y-2">
+                  <div className="h-4 bg-gray-100 rounded animate-pulse" />
+                  <div className="h-5 bg-gray-100 rounded w-1/2 animate-pulse" />
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
-      </div>
-    }>
-      <MarketplaceContent />
-    </Suspense>
+      }>
+        <MarketplaceContent />
+      </Suspense>
+    </div>
   );
 }
