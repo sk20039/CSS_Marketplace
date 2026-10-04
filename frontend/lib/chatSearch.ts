@@ -108,10 +108,14 @@ export function extractSearchParams(message: string): SearchParams {
     params.max_price = Math.max(a, b);
   }
 
-  // q: use the message itself, trimmed to 80 chars, as a broad text search.
-  // This lets the listing-service LIKE search handle the rest.
-  const q = message.slice(0, 80).trim();
-  if (q) params.q = q;
+  // q: only pass a text search when no category was detected.
+  // When a category is present the category filter alone is sufficient;
+  // passing the full conversational message as q causes a full-phrase LIKE
+  // that never matches any listing title.
+  if (!params.category) {
+    const q = message.slice(0, 80).trim();
+    if (q) params.q = q;
+  }
 
   return params;
 }
@@ -121,8 +125,11 @@ export function extractSearchParams(message: string): SearchParams {
 function validateListing(raw: unknown): ListingResult | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const r = raw as Record<string, unknown>;
+  // id may be a number or a numeric string (pg BIGINT → string via pg driver)
+  const rawId = r.id;
+  const id = typeof rawId === 'number' ? rawId : Number(rawId);
   if (
-    typeof r.id !== 'number' ||
+    !Number.isFinite(id) ||
     typeof r.title !== 'string' ||
     typeof r.price_cents !== 'number' ||
     typeof r.condition !== 'string' ||
@@ -131,8 +138,8 @@ function validateListing(raw: unknown): ListingResult | null {
     return null;
   }
   return {
-    id: r.id,
-    title: stripHtml(r.title).slice(0, 120),         // cap length
+    id,
+    title: stripHtml(r.title).slice(0, 120),
     price_cents: r.price_cents,
     condition: stripHtml(r.condition).slice(0, 20),
     category: stripHtml(r.category).slice(0, 20),
