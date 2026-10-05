@@ -48,3 +48,5 @@ skills-lock.json
 video_output/_audio/
 video_output/_check_voices.ps1
 video_output/*_voiced.mp4
+video_output/background_*.mp3
+video_output/*_final.mp4
