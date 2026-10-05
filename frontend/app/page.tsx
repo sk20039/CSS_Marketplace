@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import ListingCard from '@/components/ListingCard';
+import PromoVideoSection from '@/components/PromoVideoSection';
 import { getListings } from '@/lib/api';
 
 interface Listing {
@@ -146,6 +147,9 @@ export default function HomePage() {
           </div>
         </div>
       </section>
+
+      {/* Promo video */}
+      <PromoVideoSection />
 
       {/* Trust badges */}
       <section>
