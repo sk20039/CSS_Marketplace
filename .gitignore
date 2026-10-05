@@ -31,6 +31,11 @@ frontend/.env.local
 _to_delete/
 escrow-service/_to_delete/
 
+# promo video — generated artefacts and isolated venv
+video_venv/
+video_output/*.mp4
+video_output/preview_*.png
+
 # OS/editor
 .DS_Store
 Thumbs.db
@@ -39,3 +44,4 @@ Thumbs.db
 .agents/
 .claude/
 skills-lock.json
+.env*
