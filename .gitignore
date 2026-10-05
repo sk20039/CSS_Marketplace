@@ -45,3 +45,6 @@ Thumbs.db
 .claude/
 skills-lock.json
 .env*
+video_output/_audio/
+video_output/_check_voices.ps1
+video_output/*_voiced.mp4
