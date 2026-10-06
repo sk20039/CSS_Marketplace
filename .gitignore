@@ -48,6 +48,9 @@ scripts/ba_report_*.md
 _to_delete/
 escrow-service/_to_delete/
 
+# Video production assets — large binaries, never commit
+video_output/
+
 # OS/editor
 .DS_Store
 Thumbs.db
