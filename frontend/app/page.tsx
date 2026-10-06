@@ -5,6 +5,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import ListingCard from '@/components/ListingCard';
 import PromoVideoSection from '@/components/PromoVideoSection';
+import SellerTutorialSection from '@/components/SellerTutorialSection';
 import { getListings } from '@/lib/api';
 
 interface Listing {
@@ -150,6 +151,9 @@ export default function HomePage() {
 
       {/* Promo video */}
       <PromoVideoSection />
+
+      {/* Seller tutorial video */}
+      <SellerTutorialSection />
 
       {/* Trust badges */}
       <section>
