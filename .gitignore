@@ -22,10 +22,24 @@ frontend/tsconfig.tsbuildinfo
 
 # env secrets - never commit real keys
 .env
+.env.local
 escrow-service/.env
 auth-service/.env
 listing-service/.env
 frontend/.env.local
+
+# Vercel project metadata (contains project/org IDs — not secrets but not needed in repo)
+.vercel/
+frontend/.vercel/
+
+# Playwright / CI test artefacts
+test-results/
+playwright-report/
+
+# Diagnostic and one-off scripts
+scripts/diag_posthog*.py
+scripts/verify_posthog*.py
+scripts/configure_prod_vars.py
 
 # BA report generated output — never commit
 scripts/ba_report_*.md
