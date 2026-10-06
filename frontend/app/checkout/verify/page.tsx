@@ -77,8 +77,10 @@ function CheckoutVerifyContent() {
       router.push(`/listings/${listingId}?buy=1`);
     } else if (user.role === 'buyer') {
       router.push('/listings');
+    } else if (user.role === 'seller') {
+      router.push('/dashboard/seller');
     } else {
-      router.push('/dashboard');
+      router.push('/admin');
     }
   }
 
