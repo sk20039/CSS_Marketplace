@@ -35,6 +35,9 @@ escrow-service/_to_delete/
 video_venv/
 video_output/*.mp4
 video_output/preview_*.png
+video_output/tutorial_*.png
+video_output/safeguide_*.png
+video_output/safeview_*.png
 
 # OS/editor
 .DS_Store
