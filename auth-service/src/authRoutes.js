@@ -837,10 +837,16 @@ router.post('/otp/request', async (req, res, next) => {
     const code = generateCode();
     await storeOtp(email, code, user.id);
 
-    // Non-blocking — if email fails the code is still in the DB; user can retry
-    sendOtpEmail(email, code).catch((err) => {
-      console.error('[otp/request] email failed (non-fatal):', err.message);
-    });
+    // Await the send — a provider failure must surface to the caller.
+    // 503 reveals nothing about account existence; it means the email service
+    // is unavailable right now. The stored code remains valid so the handler
+    // is safe to retry once the provider recovers.
+    try {
+      await sendOtpEmail(email, code);
+    } catch (emailErr) {
+      console.error('[otp/request] email delivery failed:', emailErr.message);
+      return res.status(503).json({ error: 'Could not send verification code. Please try again shortly.' });
+    }
 
     res.json({ status: 'code_sent' });
   } catch (err) {
