@@ -5,7 +5,7 @@ const jwt = require('jsonwebtoken');
 const pool = require('./db');
 const requireAuth = require('./middleware/requireAuth');
 const { sendVerificationEmail, sendPasswordResetEmail, sendMfaRecoveryCodeUsedEmail, sendOtpEmail } = require('./emailer');
-const { generateCode, storeOtp, consumeOtp, checkRateLimit, REQ_WINDOW_MS, REQ_MAX, VER_WINDOW_MS, VER_MAX } = require('./otpService');
+const { generateCode, invalidatePreviousCodes, storeOtp, consumeOtp, checkRateLimit, REQ_WINDOW_MS, REQ_MAX, VER_WINDOW_MS, VER_MAX } = require('./otpService');
 const { authenticator } = require('otplib');
 const { encryptSecret, decryptSecret, generateRecoveryCodes, hashRecoveryCode, verifyRecoveryCode } = require('./mfaHelpers');
 const requireAuthOrMfaEnrollment = require('./middleware/requireAuthOrMfaEnrollment');
@@ -829,6 +829,10 @@ router.post('/otp/request', async (req, res, next) => {
       );
       user = created[0];
     }
+
+    // Invalidate any live codes before issuing a new one.
+    // Prevents accumulation of valid codes across resends.
+    await invalidatePreviousCodes(email);
 
     const code = generateCode();
     await storeOtp(email, code, user.id);

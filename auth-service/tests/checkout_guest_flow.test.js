@@ -23,7 +23,7 @@ const request  = require('supertest');
 const { Pool } = require('pg');
 const jwt      = require('jsonwebtoken');
 const { buildApp } = require('../src/app');
-const { generateCode, storeOtp } = require('../src/otpService');
+const { generateCode, storeOtp, invalidatePreviousCodes } = require('../src/otpService');
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const app  = buildApp();
@@ -314,6 +314,39 @@ test('otp/request rejects seller account with no new account created', async () 
 
   const after = await pool.query('SELECT COUNT(*) FROM users WHERE email = $1', [email]);
   assertEqual(before.rows[0].count, after.rows[0].count, 'no duplicate user should be created');
+});
+
+test('resend invalidates previous live codes', async () => {
+  const email = uniqueEmail();
+  cleanupEmails.push(email);
+  // First request — use distinct IP to avoid shared test-suite rate limit bucket
+  const r1 = await request(app)
+    .post('/auth/otp/request')
+    .set('X-Forwarded-For', '10.50.1.1')
+    .send({ email, name: 'Resend Test', turnstile_token: TS_TOKEN });
+  assertEqual(r1.status, 200);
+
+  // Replace auto-generated code with known value
+  const row = await getStoredCode(email);
+  assert(row, 'should have first code after request');
+  const oldCode = '100200';
+  await pool.query('UPDATE otp_codes SET used_at = NOW() WHERE id = $1', [row.id]);
+  await storeOtp(email, oldCode, row.user_id);
+
+  // Confirm old code is live before resend
+  const liveBefore = await getStoredCode(email);
+  assert(liveBefore, 'old code should be live before resend');
+
+  // Resend via the endpoint (triggers invalidatePreviousCodes)
+  const r2 = await request(app)
+    .post('/auth/otp/request')
+    .set('X-Forwarded-For', '10.50.1.1')
+    .send({ email, turnstile_token: TS_TOKEN });
+  assertEqual(r2.status, 200, 'resend should succeed');
+
+  // Old code must be rejected
+  const rv = await verifyOtp(email, oldCode);
+  assertEqual(rv.status, 401, 'old code must be rejected (401) after resend');
 });
 
 // ── Summary ───────────────────────────────────────────────────────────────────
