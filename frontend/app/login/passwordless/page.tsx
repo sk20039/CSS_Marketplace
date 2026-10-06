@@ -13,7 +13,6 @@ type Step = 'request' | 'verify';
 function PasswordlessContent() {
   const router       = useRouter();
   const searchParams = useSearchParams();
-  const redirect     = searchParams.get('redirect') || '/dashboard';
   const { user, initializing, login } = useAuth();
 
   const [step,    setStep]    = useState<Step>('request');
@@ -24,9 +23,16 @@ function PasswordlessContent() {
   const [loading, setLoading] = useState(false);
   const tsRef = useRef<TurnstileInstance>(null);
 
+  const redirectParam = searchParams.get('redirect');
+  function destForRole(role: string) {
+    if (role === 'seller') return '/dashboard/seller';
+    if (role === 'admin') return '/admin';
+    return '/dashboard/buyer';
+  }
+
   useEffect(() => {
-    if (!initializing && user) router.replace(redirect);
-  }, [user, initializing, redirect, router]);
+    if (!initializing && user) router.replace(redirectParam || destForRole(user.role));
+  }, [user, initializing, redirectParam, router]);
 
   async function handleRequest(e: React.FormEvent) {
     e.preventDefault();
@@ -64,7 +70,7 @@ function PasswordlessContent() {
       login(data.access_token, data.user);
       // Sync best-effort — sign-in shouldn't fail due to escrow
       syncUserToEscrow(data.user).catch(() => {});
-      router.replace(redirect);
+      router.replace(redirectParam || destForRole(data.user.role));
     } catch {
       setError('Network error. Please try again.');
     } finally {
