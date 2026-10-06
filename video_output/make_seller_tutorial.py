@@ -1085,20 +1085,16 @@ def main():
     print("=" * 58)
     lines = [
         ("S1  0\u20135 s",    "Ready to sell your cricket gear? Here\u2019s how to get started\n"
-                               "             on Cricket Market USA in just three steps."),
-        ("S2  5\u201313 s",   "First, go to cricketmarketusa.com and create a seller account.\n"
-                               "             Choose \u201cI\u2019m selling\u201d, enter your name, email, and a password."),
+                               "             on Cricket Market USA."),
+        ("S2  5\u201313 s",   "Go to cricketmarketusa.com and create a seller account.\n"
+                               "             Choose \u201cI\u2019m selling\u201d, then enter your name, email, and a password."),
         ("S3  13\u201318 s",  "Check your inbox for a verification link, then sign back in."),
-        ("S4  18\u201327 s",  "In your Seller Dashboard, connect Stripe to receive payouts\u2014\n"
+        ("S4  18\u201327 s",  "In your Seller Dashboard, connect Stripe to receive payouts \u2014\n"
                                "             and add a ship-from address so buyers know where their order ships from."),
         ("S5  27\u201336 s",  "Click \u201cNew Listing\u201d, choose a category, set the condition and price,\n"
-                               "             and upload a few photos.\n"
-                               "             I\u2019m using a sample cricket bat listing here \u2014\n"
-                               "             all details shown on screen are demonstration data only."),
+                               "             and upload a few photos."),
         ("S6  36\u201342 s",  "Save as a draft to review, then hit Publish \u2014\n"
-                               "             your listing goes live instantly.\n"
-                               "             The listing name and price in this tutorial are\n"
-                               "             fictional demonstration data, not a real item for sale."),
+                               "             your listing goes live instantly."),
     ]
     for sec, text in lines:
         print(f"\n  [{sec}]")
