@@ -1,11 +1,13 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { getListing, createOrder, getUserReviews, type ShippingAddress } from '@/lib/api';
 import { analytics, priceBand } from '@/lib/posthog';
-import { useUser } from '@/lib/auth';
+import { useAuth } from '@/lib/auth';
+
+const GUEST_CHECKOUT = process.env.NEXT_PUBLIC_GUEST_CHECKOUT === 'true';
 import { CONDITION_LABELS, CATEGORY_LABELS } from '@/lib/constants';
 import ErrorAlert from '@/components/ErrorAlert';
 
@@ -185,8 +187,9 @@ interface ListingDetailClientProps {
 
 export default function ListingDetailClient({ initialListing }: ListingDetailClientProps) {
   const { id } = useParams<{ id: string }>();
-  const router = useRouter();
-  const user = useUser();
+  const router       = useRouter();
+  const searchParams = useSearchParams();
+  const { user, initializing } = useAuth();
   const [listing, setListing] = useState<Listing | null>(initialListing ?? null);
   const [loading, setLoading] = useState(!initialListing);
   const viewedRef = useRef(false);
@@ -223,8 +226,21 @@ export default function ListingDetailClient({ initialListing }: ListingDetailCli
       .finally(() => setLoading(false));
   }, [id, initialListing]);
 
+  // Auto-open checkout when returning from OTP verify with ?buy=1
+  useEffect(() => {
+    if (initializing || !user || user.role !== 'buyer') return;
+    if (searchParams.get('buy') === '1') setShowCheckout(true);
+  }, [initializing, user, searchParams]);
+
   function handleBuy() {
-    if (!user) { router.push('/login'); return; }
+    if (!user) {
+      if (GUEST_CHECKOUT) {
+        router.push(`/checkout/start?listing=${id}`);
+      } else {
+        router.push('/login');
+      }
+      return;
+    }
     if (!listing) return;
     analytics.capture('checkout_started', {
       listing_id: listing.id,
@@ -396,13 +412,13 @@ export default function ListingDetailClient({ initialListing }: ListingDetailCli
                 </button>
               ) : !user ? (
                 <Link
-                  href="/login"
+                  href={GUEST_CHECKOUT ? `/checkout/start?listing=${id}` : '/login'}
                   className="w-full bg-brand-700 text-white py-3.5 rounded-xl font-bold text-lg hover:bg-brand-800 transition-colors flex items-center justify-center gap-2"
                 >
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" />
                   </svg>
-                  Sign in to Buy
+                  {GUEST_CHECKOUT ? 'Buy Now' : 'Sign in to Buy'}
                 </Link>
               ) : null}
             </>

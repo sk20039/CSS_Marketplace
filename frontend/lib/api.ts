@@ -105,6 +105,26 @@ export async function getSellerConnectStatus() {
   return res.json() as Promise<{ connected: boolean; charges_enabled: boolean; details_submitted: boolean; stub?: boolean; stripe_account_id?: string }>;
 }
 
+export async function authOtpRequest(body: { email: string; name?: string; turnstile_token: string }) {
+  const res = await fetch(`${AUTH_URL}/auth/otp/request`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    credentials: 'include',
+  });
+  return res;
+}
+
+export async function authOtpVerify(body: { email: string; code: string }) {
+  const res = await fetch(`${AUTH_URL}/auth/otp/verify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    credentials: 'include',
+  });
+  return res;
+}
+
 export async function authLogin(body: { email: string; password: string; turnstile_token: string }) {
   const res = await fetch(`${AUTH_URL}/auth/login`, {
     method: 'POST',

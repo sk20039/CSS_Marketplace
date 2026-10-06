@@ -71,4 +71,23 @@ async function sendMfaRecoveryCodeUsedEmail(email) {
   });
 }
 
-module.exports = { sendVerificationEmail, sendPasswordResetEmail, sendMfaRecoveryCodeUsedEmail };
+async function sendOtpEmail(email, code) {
+  const msg =
+    `Your Cricket Market USA verification code is: ${code}\n\n` +
+    `This code expires in 15 minutes. If you did not request this, you can safely ignore this email.`;
+  if (!process.env.RESEND_API_KEY) {
+    // Log the destination only — never log the code itself
+    console.log(`[EMAIL STUB] OTP email → ${email} (set RESEND_API_KEY to send for real)`);
+    return;
+  }
+  await resendSend({
+    to: email,
+    subject: `${code} — your Cricket Market USA verification code`,
+    text: msg,
+    html: `<p style="font-size:32px;font-weight:bold;letter-spacing:8px;">${code}</p>
+           <p>Enter this code to continue checking out on Cricket Market USA.</p>
+           <p>This code expires in 15 minutes. If you did not request this, you can safely ignore this email.</p>`,
+  });
+}
+
+module.exports = { sendVerificationEmail, sendPasswordResetEmail, sendMfaRecoveryCodeUsedEmail, sendOtpEmail };

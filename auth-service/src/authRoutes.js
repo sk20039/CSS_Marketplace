@@ -4,7 +4,8 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const pool = require('./db');
 const requireAuth = require('./middleware/requireAuth');
-const { sendVerificationEmail, sendPasswordResetEmail, sendMfaRecoveryCodeUsedEmail } = require('./emailer');
+const { sendVerificationEmail, sendPasswordResetEmail, sendMfaRecoveryCodeUsedEmail, sendOtpEmail } = require('./emailer');
+const { generateCode, storeOtp, consumeOtp, checkRateLimit, REQ_WINDOW_MS, REQ_MAX, VER_WINDOW_MS, VER_MAX } = require('./otpService');
 const { authenticator } = require('otplib');
 const { encryptSecret, decryptSecret, generateRecoveryCodes, hashRecoveryCode, verifyRecoveryCode } = require('./mfaHelpers');
 const requireAuthOrMfaEnrollment = require('./middleware/requireAuthOrMfaEnrollment');
@@ -254,7 +255,7 @@ router.post('/login', async (req, res, next) => {
 
     const { rows } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
     const user = rows[0];
-    if (!user || !(await bcrypt.compare(password, user.password_hash))) {
+    if (!user || !user.password_hash || !(await bcrypt.compare(password, user.password_hash))) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
     if (!user.email_verified) {
@@ -784,6 +785,113 @@ router.post('/mfa/disable', requireAuth, async (req, res, next) => {
     await pool.query('DELETE FROM mfa_recovery_codes WHERE user_id = $1', [req.user.id]);
 
     res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── Passwordless OTP ─────────────────────────────────────────────────────────
+
+// POST /auth/otp/request
+// Accepts email + optional name. Creates a buyer account if the email is new.
+// Always returns { status: 'code_sent' } regardless of account state (prevents enumeration).
+// Turnstile + IP rate limiter applied in app.js before this handler.
+router.post('/otp/request', async (req, res, next) => {
+  try {
+    if (process.env.GUEST_CHECKOUT !== 'true') {
+      return res.status(404).json({ error: 'Not found' });
+    }
+
+    const email = String(req.body.email ?? '').trim().toLowerCase();
+    const name  = String(req.body.name  ?? '').trim();
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: 'A valid email address is required' });
+    }
+
+    // DB-based per-email rate limit (shared across instances)
+    const rl = await checkRateLimit('req', email, REQ_WINDOW_MS, REQ_MAX);
+    if (!rl.allowed) {
+      return res.status(429).json({ error: 'Too many code requests for this email. Please wait 15 minutes.' });
+    }
+
+    // Look up existing account
+    const { rows } = await pool.query('SELECT id, role FROM users WHERE email = $1', [email]);
+    let user = rows[0];
+
+    // Create a passwordless buyer account if this email is new
+    if (!user) {
+      const safeName = name || email.split('@')[0];
+      const { rows: created } = await pool.query(
+        `INSERT INTO users (name, email, role, email_verified, created_at)
+         VALUES ($1, $2, 'buyer', true, NOW())
+         RETURNING id, role`,
+        [safeName, email]
+      );
+      user = created[0];
+    }
+
+    const code = generateCode();
+    await storeOtp(email, code, user.id);
+
+    // Non-blocking — if email fails the code is still in the DB; user can retry
+    sendOtpEmail(email, code).catch((err) => {
+      console.error('[otp/request] email failed (non-fatal):', err.message);
+    });
+
+    res.json({ status: 'code_sent' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /auth/otp/verify
+// Accepts email + 6-digit code. Atomically consumes the OTP and issues a session.
+// For existing sellers/admins: issues a JWT matching their existing role (no demotion).
+// For admin accounts: blocked — passwordless is for buyers only.
+router.post('/otp/verify', async (req, res, next) => {
+  try {
+    if (process.env.GUEST_CHECKOUT !== 'true') {
+      return res.status(404).json({ error: 'Not found' });
+    }
+
+    const email = String(req.body.email ?? '').trim().toLowerCase();
+    const code  = String(req.body.code  ?? '').trim();
+    if (!email || !code) {
+      return res.status(400).json({ error: 'email and code are required' });
+    }
+
+    // DB-based per-email verify rate limit
+    const rl = await checkRateLimit('ver', email, VER_WINDOW_MS, VER_MAX);
+    if (!rl.allowed) {
+      return res.status(429).json({ error: 'Too many verification attempts for this email. Please wait 15 minutes.' });
+    }
+
+    const result = await consumeOtp(email, code);
+    if (!result.ok) {
+      return res.status(401).json({ error: 'Invalid or expired code. Please request a new one.' });
+    }
+
+    // Load user (should always exist at this point since request creates it)
+    const { rows } = await pool.query(
+      'SELECT id, name, email, role, ship_from_address FROM users WHERE id = $1',
+      [result.userId]
+    );
+    const user = rows[0];
+    if (!user) {
+      return res.status(500).json({ error: 'Account not found after verification. Please try again.' });
+    }
+
+    // Admin accounts cannot sign in via OTP
+    if (user.role === 'admin') {
+      return res.status(403).json({ error: 'Admin accounts must use password sign-in.' });
+    }
+
+    const raw = await storeRefreshToken(user.id);
+    setRefreshCookie(res, raw);
+    res.json({
+      access_token: issueAccessToken(user),
+      user: { id: user.id, name: user.name, email: user.email, role: user.role },
+    });
   } catch (err) {
     next(err);
   }
