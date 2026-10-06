@@ -76,6 +76,19 @@ async function checkRateLimit(prefix, email, windowMs, max) {
 // ── Store ─────────────────────────────────────────────────────────────────────
 
 /**
+ * Invalidate all live (unused, unexpired) codes for this email.
+ * Called before issuing a new code so resend cannot be used to accumulate
+ * valid codes that could be guessed during a brute-force window.
+ */
+async function invalidatePreviousCodes(email) {
+  await pool.query(
+    `UPDATE otp_codes SET used_at = NOW()
+     WHERE email = $1 AND used_at IS NULL AND expires_at > NOW()`,
+    [email.toLowerCase().trim()]
+  );
+}
+
+/**
  * Persist a new OTP for the given email.
  * user_id may be null for brand-new accounts (created at verify time).
  */
@@ -151,6 +164,7 @@ async function consumeOtp(email, code) {
 
 module.exports = {
   generateCode,
+  invalidatePreviousCodes,
   storeOtp,
   consumeOtp,
   checkRateLimit,
