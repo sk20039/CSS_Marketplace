@@ -50,14 +50,18 @@ AMBER_900  = (120, 53,  15)
 
 # ── Timing (30 fps) ───────────────────────────────────────────────────────────
 FPS   = 30
-TOTAL = 42 * FPS   # 1260 frames
+# S1 extended +1.5 s so narration finishes before S2 begins.
+# All subsequent scenes shifted by the same amount.
+# S6 extended +1 s to hold the final frame after narration ends.
+# Total: 44.5 s (was 42 s).
+TOTAL = 1335   # 44.5 s
 
-S1 = (0,    150)
-S2 = (150,  390)
-S3 = (390,  540)
-S4 = (540,  810)
-S5 = (810,  1080)
-S6 = (1080, 1260)
+S1 = (0,    195)   # 0–6.5 s  (was 0–5 s)
+S2 = (195,  435)   # 6.5–14.5 s
+S3 = (435,  585)   # 14.5–19.5 s
+S4 = (585,  855)   # 19.5–28.5 s
+S5 = (855,  1125)  # 28.5–37.5 s
+S6 = (1125, 1335)  # 37.5–44.5 s
 
 OUTDIR = os.path.dirname(os.path.abspath(__file__))
 

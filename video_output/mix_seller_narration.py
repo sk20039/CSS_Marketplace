@@ -54,12 +54,15 @@ AUDIO_IN = os.path.join(OUTDIR, "_audio", "seller 9.41.55 AM.mp4")
 #   src boundaries include 0.20 s padding on each side
 #   target_delay = scene_start + 0.30 s lead-in
 SECTIONS = [
-    ("s1",  0.664,  6.585,  0.30),   # scene  0– 5 s
-    ("s2",  6.691, 11.331,  5.30),   # scene  5–13 s
-    ("s3", 11.897, 15.541, 13.30),   # scene 13–18 s
-    ("s4", 16.024, 21.202, 18.30),   # scene 18–27 s
-    ("s5", 21.452, 29.934, 27.30),   # scene 27–36 s
-    ("s6", 30.192, 36.520, 36.30),   # scene 36–42 s
+    # S1 extended to 6.5 s; speech (5.92 s) finishes before S2 begins — no overlap.
+    # S2-S6 target delays shifted +1.5 s to match the extended video timeline.
+    # S6 placed at 37.8 s; ends ~44.0 s; video holds final frame to 44.5 s.
+    ("s1",  0.664,  6.585,  0.30),   # scene  0.0– 6.5 s
+    ("s2",  6.691, 11.331,  6.80),   # scene  6.5–14.5 s
+    ("s3", 11.897, 15.541, 14.80),   # scene 14.5–19.5 s
+    ("s4", 16.024, 21.202, 19.80),   # scene 19.5–28.5 s
+    ("s5", 21.452, 29.934, 28.80),   # scene 28.5–37.5 s
+    ("s6", 30.192, 36.520, 37.80),   # scene 37.5–44.5 s
 ]
 
 VIDEOS = [
