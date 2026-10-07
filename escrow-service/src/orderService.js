@@ -252,15 +252,28 @@ class FinalizeConflictError extends Error {
 
 // Returns true if the reservation succeeded (rowCount > 0).
 // Uses a single conditional UPDATE — atomic in PostgreSQL.
+// Also catches 23505 (unique_violation) from the one_active_order_per_listing
+// index: if another order for the same listing is already in an active state,
+// the UPDATE raises 23505 rather than returning rowCount=0, so we normalise it
+// to false here so callers get the same 409 path as any other race conflict.
 async function reserveTransition(orderId, fromStatus, toStatus) {
   const ts_now = nowIso();
-  const result = await pool.query(
-    `UPDATE orders
-     SET status = $1, updated_at = $2, prior_status = status, transition_started_at = $3
-     WHERE id = $4 AND status = $5`,
-    [toStatus, ts_now, ts_now, orderId, fromStatus]
-  );
-  return result.rowCount > 0;
+  try {
+    const result = await pool.query(
+      `UPDATE orders
+       SET status = $1, updated_at = $2, prior_status = status, transition_started_at = $3
+       WHERE id = $4 AND status = $5`,
+      [toStatus, ts_now, ts_now, orderId, fromStatus]
+    );
+    return result.rowCount > 0;
+  } catch (err) {
+    if (err.code === '23505') {
+      // Another order for this listing already holds an active state.
+      // Treat as a failed reservation; caller will throw 409.
+      return false;
+    }
+    throw err;
+  }
 }
 
 async function revertTransition(orderId, fromStatus, toStatus) {
