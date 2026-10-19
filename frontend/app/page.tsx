@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import ListingCard from '@/components/ListingCard';
-import { getListings } from '@/lib/api';
+import { getListings, getLaunchOfferStatus } from '@/lib/api';
 
 interface Listing {
   id: number;
@@ -94,18 +94,33 @@ const TRUST_BADGES = [
 export default function HomePage() {
   const [listings, setListings] = useState<Listing[]>([]);
   const [loading, setLoading] = useState(true);
+  const [launchOfferActive, setLaunchOfferActive] = useState(false);
 
   useEffect(() => {
     getListings({ limit: 8 })
       .then((data) => setListings(data.listings || []))
       .catch(() => {})
       .finally(() => setLoading(false));
+
+    getLaunchOfferStatus()
+      .then((s) => setLaunchOfferActive(s.active))
+      .catch(() => {});
   }, []);
 
   return (
     <div className="space-y-14">
-      {/* Hero */}
-      <section className="-mx-4 sm:-mx-6 lg:-mx-8 -mt-8 bg-gray-900 relative overflow-hidden">
+      {/* Hero — wrapped with optional launch offer banner so they share the top bleed */}
+      <div className="-mt-8">
+        {launchOfferActive && (
+          <Link
+            href="/listings"
+            className="-mx-4 sm:-mx-6 lg:-mx-8 block bg-brand-800 text-white text-xs text-center py-2 px-4 font-medium tracking-wide hover:bg-brand-900 transition-colors"
+          >
+            🎉 Launch offer: the first 10 sales are 100% fee-free — sellers keep every dollar.
+          </Link>
+        )}
+        {/* Hero */}
+        <section className="-mx-4 sm:-mx-6 lg:-mx-8 bg-gray-900 relative overflow-hidden">
         <div className="absolute inset-0 bg-gradient-to-br from-gray-900 via-gray-900 to-brand-900 opacity-90" />
         <div className="absolute inset-0 opacity-5" style={{
           backgroundImage: 'radial-gradient(circle at 20% 50%, #22c55e 0%, transparent 50%), radial-gradient(circle at 80% 20%, #16a34a 0%, transparent 40%)',
@@ -137,7 +152,8 @@ export default function HomePage() {
             </Link>
           </div>
         </div>
-      </section>
+        </section>
+      </div>
 
       {/* Trust badges */}
       <section>

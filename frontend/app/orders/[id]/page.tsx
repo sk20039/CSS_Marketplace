@@ -20,8 +20,10 @@ interface Order {
   id: number; status: string; amount_cents: number;
   listing_id: number; buyer_id: number; seller_id: number;
   item_price_cents: number | null;
-  shipping_cents: number | null;
+  platform_fee_cents: number | null;
   seller_payout_cents: number | null;
+  launch_fee_waiver: boolean;
+  shipping_cents: number | null;
   label_cost_cents: number | null;
   label_id: string | null;
   label_url: string | null;
@@ -415,6 +417,23 @@ function OrderContent() {
             <span className="text-gray-500">Amount</span>
             <span className="font-bold text-gray-900 text-base">${(order.amount_cents / 100).toFixed(2)}</span>
           </div>
+          {(isSeller || isAdmin) && order.platform_fee_cents != null && (
+            <>
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-500">Platform fee</span>
+                {order.launch_fee_waiver
+                  ? <span className="font-medium text-green-600">$0.00 <span className="text-xs font-normal text-green-500">(launch offer)</span></span>
+                  : <span className="font-medium text-gray-700">${(order.platform_fee_cents / 100).toFixed(2)}</span>
+                }
+              </div>
+              {order.seller_payout_cents != null && (
+                <div className="flex justify-between text-sm border-t border-gray-100 pt-2">
+                  <span className="text-gray-700 font-medium">Your payout</span>
+                  <span className="font-bold text-gray-900">${(order.seller_payout_cents / 100).toFixed(2)}</span>
+                </div>
+              )}
+            </>
+          )}
           <div className="flex justify-between text-sm">
             <span className="text-gray-500">{isSeller ? 'Buyer' : 'Seller'} ID</span>
             <span className="font-medium text-gray-700">#{isSeller ? order.buyer_id : order.seller_id}</span>

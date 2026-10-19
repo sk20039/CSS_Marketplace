@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import LegalPage, { H2, H3, P, UL, LI, Note } from '@/components/LegalPage';
+import LegalPage, { H2, H3, P, UL, LI } from '@/components/LegalPage';
 import { SITE } from '@/lib/site';
 
 export const metadata: Metadata = {
@@ -24,11 +24,6 @@ const NAV = [
 export default function TermsPage() {
   return (
     <LegalPage title="Terms of Service" updated="August 27, 2026" navLinks={NAV}>
-      <Note>
-        This is a draft for attorney review. It does not constitute legal advice and is subject
-        to revision before public launch.
-      </Note>
-
       <H2 id="acceptance">1. Acceptance of Terms</H2>
       <P>
         By creating an account or using Cricket Market (the &ldquo;Platform&rdquo;), you agree to

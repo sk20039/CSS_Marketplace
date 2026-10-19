@@ -631,6 +631,7 @@ async function performRelease(orderId, { triggeredBy, fromStatus }) {
   const order = await getOrder(orderId);
 
   let transfer;
+  let launchFeeWaiver = false;
   try {
     const { rows: sellerRows } = await pool.query('SELECT * FROM users WHERE id = $1', [order.seller_id]);
     const seller = sellerRows[0];
@@ -662,13 +663,25 @@ async function performRelease(orderId, { triggeredBy, fromStatus }) {
     // Deduct platform label cost from seller payout if they used a platform label.
     // Historical orders (label_cost_cents IS NULL) pay full payout — no change.
     const labelCostCents  = order.label_cost_cents || 0;
-    const actualPayoutCents = order.seller_payout_cents - labelCostCents;
-    console.log(`[release] order ${orderId}: seller_payout=${order.seller_payout_cents} label_cost=${labelCostCents} actual_transfer=${actualPayoutCents}`);
+
+    // Launch offer: first 10 completed sales are fee-free.
+    // Atomically claim one slot (increment only if count < 10).
+    const { rowCount: slotClaimed } = await pool.query(
+      `UPDATE platform_settings
+       SET value_int = value_int + 1, updated_at = now()
+       WHERE key = 'completed_sales_count' AND value_int < 10`
+    );
+    launchFeeWaiver = slotClaimed > 0;
+
+    // If waiver applies, seller gets the full item price (no platform fee deducted).
+    const basePayoutCents   = launchFeeWaiver ? order.item_price_cents : order.seller_payout_cents;
+    const actualPayoutCents = basePayoutCents - labelCostCents;
+    console.log(`[release] order ${orderId}: seller_payout=${order.seller_payout_cents} label_cost=${labelCostCents} actual_transfer=${actualPayoutCents} launch_fee_waiver=${launchFeeWaiver}`);
     transfer = await stripeClient.createTransfer({
       amountCents:         actualPayoutCents,
       currency:            'usd',
       destination,
-      metadata:            { orderId: String(order.id), operationType: 'release', labelCostCents: String(labelCostCents) },
+      metadata:            { orderId: String(order.id), operationType: 'release', labelCostCents: String(labelCostCents), launchFeeWaiver: String(launchFeeWaiver) },
       sourceTransactionId: order.stripe_charge_id,
       transferGroup:       `order_${orderId}`,
       idempotencyKey:      `release_order_${orderId}`,
@@ -677,28 +690,41 @@ async function performRelease(orderId, { triggeredBy, fromStatus }) {
     if (!(err instanceof OrderError)) {
       await revertTransition(orderId, 'RELEASING', fromStatus);
       await recordEvent(orderId, 'RELEASE_FAILED', { triggeredBy, error: err.message });
+      // If we claimed a launch offer slot but the transfer failed, release it so
+      // the slot is not consumed by a sale that never completed.
+      if (launchFeeWaiver) {
+        await pool.query(
+          `UPDATE platform_settings SET value_int = GREATEST(value_int - 1, 0) WHERE key = 'completed_sales_count'`
+        );
+      }
       throw new OrderError(`Stripe transfer failed for order ${orderId}: ${err.message}`, 502);
     }
     throw err;
   }
 
-  return finalizeReleased(order, transfer, { triggeredBy });
+  return finalizeReleased(order, transfer, { triggeredBy, launchFeeWaiver });
 }
 
 // Shared release finalization — called by performRelease and by recoveryService.
-async function finalizeReleased(order, stripeTransfer, { triggeredBy }) {
+async function finalizeReleased(order, stripeTransfer, { triggeredBy, launchFeeWaiver = false }) {
   const ts_now = nowIso();
   const client = await pool.connect();
   let conflict = false;
+
+  // When the launch offer waiver applies, update stored fee fields so the
+  // seller-facing UI reflects $0 fee rather than the originally calculated amount.
+  const finalPlatformFee  = launchFeeWaiver ? 0 : order.platform_fee_cents;
+  const finalSellerPayout = launchFeeWaiver ? order.item_price_cents : order.seller_payout_cents;
 
   try {
     await client.query('BEGIN');
     const result = await client.query(
       `UPDATE orders
        SET status = 'RELEASED', stripe_transfer_id = $1,
-           updated_at = $2, transition_started_at = NULL, recovery_claimed_at = NULL
+           updated_at = $2, transition_started_at = NULL, recovery_claimed_at = NULL,
+           platform_fee_cents = $4, seller_payout_cents = $5, launch_fee_waiver = $6
        WHERE id = $3 AND status = 'RELEASING'`,
-      [stripeTransfer.id, ts_now, order.id]
+      [stripeTransfer.id, ts_now, order.id, finalPlatformFee, finalSellerPayout, launchFeeWaiver]
     );
     if (result.rowCount === 0) {
       conflict = true;
@@ -710,8 +736,9 @@ async function finalizeReleased(order, stripeTransfer, { triggeredBy }) {
       [order.id, 'RELEASED', JSON.stringify({
         triggeredBy,
         stripeTransferId:    stripeTransfer.id,
-        sellerPayoutCents:   order.seller_payout_cents,
-        platformFeeCents:    order.platform_fee_cents,
+        sellerPayoutCents:   finalSellerPayout,
+        platformFeeCents:    finalPlatformFee,
+        launchFeeWaiver,
       }), ts_now]
     );
     await client.query('COMMIT');
@@ -1846,6 +1873,20 @@ async function shipWithOwnLabel(orderId, { carrier, trackingNumber }) {
   return getOrderWithTimeline(orderId);
 }
 
+// ---------------------------------------------------------------------------
+// GET /api/launch-offer  — public status endpoint for the frontend banner
+// ---------------------------------------------------------------------------
+
+async function getLaunchOfferStatus() {
+  const { rows } = await pool.query(
+    `SELECT value_int FROM platform_settings WHERE key = 'completed_sales_count'`
+  );
+  const completed = rows[0] ? Number(rows[0].value_int) : 0;
+  const total     = 10;
+  const remaining = Math.max(total - completed, 0);
+  return { active: remaining > 0, completed, remaining, total };
+}
+
 module.exports = {
   OrderError,
   FinalizeConflictError,
@@ -1877,4 +1918,6 @@ module.exports = {
   fetchListingPublic,
   // Phase 3 (tracking): Shippo webhook handler.
   handleTrackingWebhook,
+  // Launch offer counter.
+  getLaunchOfferStatus,
 };
