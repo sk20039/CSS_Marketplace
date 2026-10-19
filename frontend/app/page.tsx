@@ -6,7 +6,7 @@ import Image from 'next/image';
 import ListingCard from '@/components/ListingCard';
 import PromoVideoSection from '@/components/PromoVideoSection';
 import SellerTutorialSection from '@/components/SellerTutorialSection';
-import { getListings } from '@/lib/api';
+import { getListings, getLaunchOfferStatus } from '@/lib/api';
 
 interface Listing {
   id: number;
@@ -96,58 +96,74 @@ const TRUST_BADGES = [
 export default function HomePage() {
   const [listings, setListings] = useState<Listing[]>([]);
   const [loading, setLoading] = useState(true);
+  const [launchOfferActive, setLaunchOfferActive] = useState(false);
 
   useEffect(() => {
     getListings({ limit: 8 })
       .then((data) => setListings(data.listings || []))
       .catch(() => {})
       .finally(() => setLoading(false));
+
+    getLaunchOfferStatus()
+      .then((s) => setLaunchOfferActive(s.active))
+      .catch(() => {});
   }, []);
 
   return (
     <div className="space-y-14">
-      {/* Hero */}
-      <section className="-mx-4 sm:-mx-6 lg:-mx-8 -mt-8 relative overflow-hidden min-h-[440px] sm:min-h-[540px] flex items-center">
-        {/* Background image — Next.js auto-serves as WebP */}
-        <Image
-          src="/hero-cricket-bg.png"
-          alt=""
-          fill
-          priority
-          quality={80}
-          className="object-cover object-center"
-          sizes="100vw"
-        />
-        {/* Dark overlay for text readability */}
-        <div className="absolute inset-0 bg-gray-950/65" />
-        <div className="relative w-full max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-20 text-center">
-          <div className="inline-flex items-center gap-2 bg-green-100 border border-green-300 text-green-900 text-sm font-medium px-4 py-1.5 rounded-full mb-6">
-            <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-            USA&apos;s Cricket Equipment Marketplace
+      {/* Hero — wrapped with optional launch offer banner so they share the top bleed */}
+      <div className="-mt-8">
+        {launchOfferActive && (
+          <Link
+            href="/listings"
+            className="-mx-4 sm:-mx-6 lg:-mx-8 block bg-brand-800 text-white text-xs text-center py-2 px-4 font-medium tracking-wide hover:bg-brand-900 transition-colors"
+          >
+            🎉 Launch offer: the first 10 sales are 100% fee-free — sellers keep every dollar.
+          </Link>
+        )}
+        {/* Hero */}
+        <section className="-mx-4 sm:-mx-6 lg:-mx-8 relative overflow-hidden min-h-[440px] sm:min-h-[540px] flex items-center">
+          {/* Background image — Next.js auto-serves as WebP */}
+          <Image
+            src="/hero-cricket-bg.png"
+            alt=""
+            fill
+            priority
+            quality={80}
+            className="object-cover object-center"
+            sizes="100vw"
+          />
+          {/* Dark overlay for text readability */}
+          <div className="absolute inset-0 bg-gray-950/65" />
+          <div className="relative w-full max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-20 text-center">
+            <div className="inline-flex items-center gap-2 bg-green-100 border border-green-300 text-green-900 text-sm font-medium px-4 py-1.5 rounded-full mb-6">
+              <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+              USA&apos;s Cricket Equipment Marketplace
+            </div>
+            <h1 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold text-white leading-tight mb-5">
+              Buy & Sell Premium<br />
+              <span className="text-brand-500">Cricket Equipment</span>
+            </h1>
+            <p className="text-gray-300 text-lg sm:text-xl max-w-2xl mx-auto mb-8">
+              From cricket bats to helmets, find quality used gear from players across the USA, with secure buyer protection.
+            </p>
+            <div className="flex flex-wrap items-center justify-center gap-4">
+              <Link
+                href="/listings"
+                className="bg-brand-700 text-white font-bold px-8 py-3.5 rounded-lg hover:bg-brand-800 transition-colors text-base"
+              >
+                Browse All Gear
+              </Link>
+              <Link
+                href="/register"
+                className="bg-white/10 backdrop-blur text-white font-semibold px-8 py-3.5 rounded-lg border border-white/30 hover:bg-white/20 transition-colors text-base"
+              >
+                Start Selling
+              </Link>
+            </div>
           </div>
-          <h1 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold text-white leading-tight mb-5">
-            Buy & Sell Premium<br />
-            <span className="text-brand-500">Cricket Equipment</span>
-          </h1>
-          <p className="text-gray-300 text-lg sm:text-xl max-w-2xl mx-auto mb-8">
-            From cricket bats to helmets, find quality used gear from players across the USA, with secure buyer protection.
-          </p>
-          <div className="flex flex-wrap items-center justify-center gap-4">
-            <Link
-              href="/listings"
-              className="bg-brand-700 text-white font-bold px-8 py-3.5 rounded-lg hover:bg-brand-800 transition-colors text-base"
-            >
-              Browse All Gear
-            </Link>
-            <Link
-              href="/register"
-              className="bg-white/10 backdrop-blur text-white font-semibold px-8 py-3.5 rounded-lg border border-white/30 hover:bg-white/20 transition-colors text-base"
-            >
-              Start Selling
-            </Link>
-          </div>
-        </div>
-      </section>
+        </section>
+      </div>
 
       {/* Promo video */}
       <PromoVideoSection />

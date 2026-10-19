@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
+import Link from 'next/link';
 import ListingCard from '@/components/ListingCard';
 import SearchSidebar from '@/components/SearchSidebar';
 import { getListings } from '@/lib/api';
@@ -138,13 +139,31 @@ function MarketplaceContent() {
               ))}
             </div>
           ) : listings.length === 0 ? (
-            <div className="text-center py-24 bg-white rounded-xl border border-gray-200">
-              <svg className="w-16 h-16 text-gray-200 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              <p className="text-gray-500 font-medium text-lg">No listings found</p>
-              <p className="text-gray-400 text-sm mt-1">Try adjusting your filters or search term.</p>
-            </div>
+            category ? (
+              <div className="text-center py-24 bg-white rounded-xl border border-gray-200 px-8">
+                <svg className="w-16 h-16 text-gray-200 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                </svg>
+                <p className="text-gray-900 font-bold text-lg mb-2">Nothing here yet — be the first to list.</p>
+                <p className="text-gray-500 text-sm mb-6">
+                  This category is empty. List your gear in about a minute and reach every player in the USA.
+                </p>
+                <Link
+                  href="/listings/new"
+                  className="inline-flex items-center gap-2 bg-brand-700 text-white font-semibold px-6 py-2.5 rounded-lg hover:bg-brand-800 transition-colors text-sm"
+                >
+                  List your gear &rarr;
+                </Link>
+              </div>
+            ) : (
+              <div className="text-center py-24 bg-white rounded-xl border border-gray-200">
+                <svg className="w-16 h-16 text-gray-200 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <p className="text-gray-500 font-medium text-lg">No listings found</p>
+                <p className="text-gray-400 text-sm mt-1">Try adjusting your filters or search term.</p>
+              </div>
+            )
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-4">
               {listings.map((l) => <ListingCard key={l.id} listing={l} />)}

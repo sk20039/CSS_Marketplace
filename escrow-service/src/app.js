@@ -220,6 +220,14 @@ function buildApp() {
     app.use(express.static(path.join(__dirname, '..', 'public')));
   }
 
+  // ---- launch offer status (public — used by frontend banner) ----
+  app.get('/api/launch-offer', async (req, res, next) => {
+    try {
+      const status = await orderService.getLaunchOfferStatus();
+      res.json(status);
+    } catch (err) { next(err); }
+  });
+
   // ---- helper endpoints (admin-only: expose user/listing mirror for demo UI) ----
   app.get('/api/users', requireAuth, requireAdmin, async (req, res, next) => {
     try {

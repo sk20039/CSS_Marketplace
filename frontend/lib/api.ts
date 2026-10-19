@@ -269,6 +269,12 @@ export async function escrowFetch(path: string, options: RequestInit = {}) {
   return apiFetch(`${ESCROW_URL}${path}`, options);
 }
 
+export async function getLaunchOfferStatus(): Promise<{ active: boolean; completed: number; remaining: number; total: number }> {
+  const res = await fetch(`${ESCROW_URL}/api/launch-offer`);
+  if (!res.ok) throw new Error('Failed to fetch launch offer status');
+  return res.json();
+}
+
 export async function syncUserToEscrow(user: { id: number; name: string; email: string; role: string; stripe_account_id?: string }) {
   return escrowFetch('/api/sync/user', {
     method: 'POST',
