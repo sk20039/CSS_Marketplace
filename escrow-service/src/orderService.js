@@ -20,6 +20,12 @@ const DELIVERY_WINDOW_MS =
 const PLATFORM_FEE_BPS = Number(process.env.PLATFORM_FEE_BPS || 800); // 800 bps = 8%
 const MIN_PLATFORM_FEE_CENTS = Number(process.env.MIN_PLATFORM_FEE_CENTS || 200); // $2.00 minimum
 const LISTING_SERVICE_URL = process.env.LISTING_SERVICE_URL || 'http://localhost:3002';
+const LAUNCH_OFFER_EXCLUDED_EMAILS = new Set(
+  (process.env.LAUNCH_OFFER_EXCLUDED_SELLER_EMAILS || '')
+    .split(',')
+    .map(e => e.trim().toLowerCase())
+    .filter(Boolean)
+);
 
 // US address validation (buyer shipping address on orders)
 const US_STATES = new Set([
@@ -665,13 +671,17 @@ async function performRelease(orderId, { triggeredBy, fromStatus }) {
     const labelCostCents  = order.label_cost_cents || 0;
 
     // Launch offer: first 10 completed sales are fee-free.
-    // Atomically claim one slot (increment only if count < 10).
-    const { rowCount: slotClaimed } = await pool.query(
-      `UPDATE platform_settings
-       SET value_int = value_int + 1, updated_at = now()
-       WHERE key = 'completed_sales_count' AND value_int < 10`
-    );
-    launchFeeWaiver = slotClaimed > 0;
+    // Excluded sellers (e.g. owner test accounts) never claim a slot.
+    const sellerExcluded = LAUNCH_OFFER_EXCLUDED_EMAILS.has((seller.email || '').toLowerCase());
+    if (!sellerExcluded) {
+      // Atomically claim one slot (increment only if count < 10).
+      const { rowCount: slotClaimed } = await pool.query(
+        `UPDATE platform_settings
+         SET value_int = value_int + 1, updated_at = now()
+         WHERE key = 'completed_sales_count' AND value_int < 10`
+      );
+      launchFeeWaiver = slotClaimed > 0;
+    }
 
     // If waiver applies, seller gets the full item price (no platform fee deducted).
     const basePayoutCents   = launchFeeWaiver ? order.item_price_cents : order.seller_payout_cents;
