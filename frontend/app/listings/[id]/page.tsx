@@ -36,10 +36,15 @@ export async function generateMetadata({ params }: { params: { id: string } }): 
       ? `${listingBase}/photos/${firstPhoto.filename}`
       : undefined;
 
+  // Only live listings belong in Google. Inactive (withdrawn/test) and sold listings stay
+  // reachable by direct link for buyers and sellers, but are kept out of search results.
+  const isActive = listing.status === 'active';
+
   return {
     title,
     description,
     keywords: tags.join(', '),
+    ...(isActive ? {} : { robots: { index: false, follow: true } }),
     alternates: {
       canonical: canonicalUrl,
     },
@@ -80,6 +85,10 @@ export default async function ListingDetailPage({ params }: { params: { id: stri
       price:          (listing.price_cents / 100).toFixed(2),
       priceCurrency:  'USD',
       url:            canonicalUrl,
+      availability:
+        listing.status === 'active' ? 'https://schema.org/InStock'
+        : listing.status === 'sold' ? 'https://schema.org/SoldOut'
+        : 'https://schema.org/Discontinued',
       ...(CONDITION_SCHEMA[listing.condition as string]
         ? { itemCondition: CONDITION_SCHEMA[listing.condition as string] }
         : {}),
