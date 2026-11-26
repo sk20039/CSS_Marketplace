@@ -1,5 +1,9 @@
 import type { MetadataRoute } from 'next';
 
+// Regenerate at most once an hour so newly published listings appear without a redeploy.
+// (Without this, Next.js builds the sitemap once at deploy time and serves that copy forever.)
+export const revalidate = 3600;
+
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const listingBase = process.env.NEXT_PUBLIC_LISTING_URL || 'http://localhost:3002';
   const appBase     = process.env.NEXT_PUBLIC_APP_URL    || 'http://localhost:3003';
@@ -15,7 +19,9 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   ];
 
   try {
-    const res = await fetch(`${listingBase}/listings?status=active&limit=500`);
+    const res = await fetch(`${listingBase}/listings?status=active&limit=500`, {
+      next: { revalidate: 3600 },
+    });
     const data = await res.json();
     const listings: any[] = Array.isArray(data) ? data : (data.listings || []);
     const listingPages: MetadataRoute.Sitemap = listings.map((l: any) => ({
